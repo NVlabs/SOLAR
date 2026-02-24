@@ -1,0 +1,31 @@
+# Solar - All Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core
+torch>=2.0.0
+torchview>=0.2.6
+networkx>=3.0
+pyyaml>=6.0
+numpy>=1.24.0
+matplotlib>=3.5.0
+
+# Solar Analysis & Verification
+scipy>=1.10.0
+
+# Data Processing
+pandas>=1.5.0
+einops>=0.6.0
+
+# HuggingFace (for model download)
+huggingface-hub>=0.16.0
+safetensors>=0.3.0
+
+# LLM Agent (optional - for auto-generating einsum handlers)
+openai>=1.0.0
+
+# Graph Visualization (optional - for PDF graph rendering)
+graphviz>=0.20
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
