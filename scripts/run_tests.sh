@@ -71,7 +71,7 @@ run_tests() {
 # Function to run example scripts
 run_example() {
     local example_name=$1
-    local example_dir="${SCRIPT_DIR}/examples/${example_name}"
+    local example_dir="${SOLAR_ROOT}/examples/${example_name}"
     local output_dir="/tmp/solar_test_${example_name}"
     
     echo -e "\n${YELLOW}Running ${example_name} example...${NC}"
