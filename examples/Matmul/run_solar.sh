@@ -1,21 +1,37 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 set -euo pipefail
 
-# Run Solar processing + einsum pipeline for the Random Attention example.
+# Run Solar pipeline for the Matmul example.
 #
-# Random Attention only computes attention for randomly selected positions:
-#   - Each position randomly samples which other positions to attend to
-#   - Provides a sparse approximation of full attention
-#   - Diagonal (self-attention) is always included
+# Single torch.matmul: [4,32,64] @ [64,128] -> [4,32,128]
+#
+# Expected results:
+#   MACs:           1,048,576   (4 * 32 * 64 * 128)
+#   Unfused elems:  32,768      (8192 + 8192 + 16384)
 #
 # Outputs are written under:
-#   solar/examples/RandomAttention/output/{graph,einsum,analysis,perf,timeloop}
+#   solar/examples/Matmul/output/{graph,einsum,analysis,perf,timeloop}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOLAR_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-MODEL_FILE="${SCRIPT_DIR}/RandomAttention.py"
-OUT_BASE="${SOLAR_RANDOM_ATTN_OUTPUT_DIR:-${SCRIPT_DIR}/output}"
+MODEL_FILE="${SCRIPT_DIR}/Matmul.py"
+OUT_BASE="${SOLAR_MATMUL_OUTPUT_DIR:-${SCRIPT_DIR}/output}"
 GRAPH_OUT="${OUT_BASE}/graph"
 EINSUM_OUT="${OUT_BASE}/einsum"
 ANALYSIS_OUT="${OUT_BASE}/analysis"
@@ -23,9 +39,7 @@ PERF_OUT="${OUT_BASE}/perf"
 TIMELOOP_OUT="${OUT_BASE}/timeloop"
 
 if ! mkdir -p "${GRAPH_OUT}" "${EINSUM_OUT}" "${ANALYSIS_OUT}" "${PERF_OUT}" "${TIMELOOP_OUT}"; then
-  echo "❌ Failed to create output directories under: ${OUT_BASE}" >&2
-  echo "   Tip: set SOLAR_RANDOM_ATTN_OUTPUT_DIR to a writable path, e.g.:" >&2
-  echo "     SOLAR_RANDOM_ATTN_OUTPUT_DIR=/tmp/solar_random_attn_output bash ${SCRIPT_DIR}/run_solar.sh" >&2
+  echo "Failed to create output directories under: ${OUT_BASE}" >&2
   exit 1
 fi
 
@@ -57,15 +71,10 @@ python3 -m solar.cli.predict_perf_model \
   --arch-config "H100_PCIe" \
   --precision "fp32"
 
-echo "==> Converting to Timeloop format -> ${TIMELOOP_OUT}"
-python3 -m solar.cli.totimeloop \
-  --einsum-graph-path "${EINSUM_OUT}/einsum_graph_renamed.yaml" \
-  --output-dir "${TIMELOOP_OUT}"
-
 echo ""
 echo "Done."
 echo ""
-echo "=== Random Attention Example Outputs ==="
+echo "=== Matmul Outputs ==="
 echo "PyTorch graph:   ${GRAPH_OUT}/pytorch_graph.yaml"
 echo "Einsum graph:    ${EINSUM_OUT}/einsum_graph.yaml"
 echo "Einsum renamed:  ${EINSUM_OUT}/einsum_graph_renamed.yaml"
@@ -73,9 +82,4 @@ echo "Graph PDF:       ${EINSUM_OUT}/einsum_graph.pdf"
 echo "Analysis:        ${ANALYSIS_OUT}/analysis.yaml"
 echo "Perf:            ${PERF_OUT}/perf_H100_PCIe.yaml"
 echo "Timeloop graph:  ${TIMELOOP_OUT}/timeloop_graph.yaml"
-echo ""
-echo "Random attention (sparsity_prob=0.5):"
-echo "  - Each position randomly samples ~50% of positions to attend to"
-echo "  - Self-attention (diagonal) always included"
-echo "  - Sparse approximation of full attention"
-
+echo "Verification:    ${OUT_BASE}/einsum_verification/einsum_verification.yaml"
