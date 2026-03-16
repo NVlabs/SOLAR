@@ -1,0 +1,13 @@
+name: "B200"
+SRAM_capacity: 201326592  # L2 192MB
+SRAM_byte_per_cycle: 43691  # 64TB/s @ 1.5GHz
+DRAM_capacity: 206158430208  # 192GB HBM3e
+DRAM_byte_per_cycle: 5111.6  # 8TB/s @ 1.5GHz
+freq_GHz: 1.5
+MAC_per_cycle_int8_tc: 1207500  # @ 1.5GHz: 1.811 PFLOPS
+MAC_per_cycle_fp32_sm: 40251  # @ 1.5GHz: 0.121 PFLOPS = 0.0605 PMACS
+MAC_per_cycle_tf32_tc: 301875  # @ 1.5GHz: 0.906 PFLOPS = 0.453 PMACS
+MAC_per_cycle_fp16_tc: 603751  # @ 1.5GHz: 1.811 PFLOPS = 0.906 PMACS
+MAC_per_cycle_bf16_tc: 603751  # Same as FP16 - BF16 has identical TC throughput
+MAC_per_cycle_fp8_tc: 1207501  # @ 1.5GHz: 3.623 PFLOPS = 1.811 PMACS
+MAC_per_cycle_nvfp4_tc: 2415000  # @ 1.5GHz: 7.245 PFLOPS = 3.623 PMACS

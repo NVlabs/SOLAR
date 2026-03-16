@@ -1,0 +1,12 @@
+name: "H100_PCIe"
+SRAM_capacity: 52428800  # 50MB
+SRAM_byte_per_cycle: 10000  # 20TB/s
+DRAM_capacity: 85899345920  # 80GB
+DRAM_byte_per_cycle: 1019.4  # 2TB/s  
+freq_GHz: 2  # base clock frequency 
+MAC_per_cycle_fp32_sm: 25500  # 0.051 PFLOPS
+MAC_per_cycle_int8_tc: 756000  # 1.512 PFLOPS
+MAC_per_cycle_fp8_tc: 756000  # 1.512 PFLOPS 
+MAC_per_cycle_fp16_tc: 378000  # 0.756 PFLOPS 
+MAC_per_cycle_bf16_tc: 378000  # 0.756 PFLOPS 
+MAC_per_cycle_tf32_tc: 189000   # 0.378 PFLOPS
