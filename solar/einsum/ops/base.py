@@ -24,7 +24,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 import logging
 
-from solar.common.types import ShapeDict, TensorShape
+import re
+
+from solar.common.types import TensorShape, TensorShapes
 from solar.common.utils import validate_einsum_ranks_match_shapes
 
 logger = logging.getLogger(__name__)
@@ -86,42 +88,64 @@ class EinsumOp:
         """Get output operands."""
         return [op for op in self.operands if op.is_output]
     
-    def get_compute_cost(self, shapes: ShapeDict) -> int:
-        """Calculate compute cost for the operation."""
-        # Special-cases for operations where a direct formula is clearer and more
-        # accurate than deriving cost from symbolic einsum dims.
-        if self.name in {"conv1d", "conv2d", "conv3d"}:
-            weight = shapes.get("Weight")
-            output = shapes.get("Output")
-            if weight and output:
-                # Weight shapes:
-                # - conv1d: [O, C, K]
-                # - conv2d: [O, C, KH, KW]
-                # - conv3d: [O, C, KD, KH, KW]
-                out_elems = 1
-                for d in output:
-                    out_elems *= d
-                in_channels = int(weight[1]) if len(weight) >= 2 else 1
-                kernel_elems = 1
-                for d in weight[2:]:
-                    kernel_elems *= d
-                return out_elems * in_channels * kernel_elems
+    def get_compute_cost(self, tensor_shapes: TensorShapes) -> int:
+        """Calculate compute cost from einsum rank dimensions.
+        
+        Collects unique rank dimension sizes from ALL operands (input + output).
+        Compound dims like 'P+R' are split into atoms and resolved from other
+        operands. No op-specific special cases — purely driven by einsum equation.
+        
+        Total cost = product of all unique resolved rank dimension sizes.
+        """
+        all_ranks: Dict[str, Optional[int]] = {}
 
-        # Generic fallback: multiply unique ranks across *input* operands only.
-        # This keeps tests/user code simple (no need to provide Output shapes)
-        # while remaining correct for matmul/linear/elementwise/reduction-style ops.
-        all_ranks: Dict[str, int] = {}
-        for op in self.input_operands:
-            if op.name not in shapes:
-                raise ValueError(f"Shape not found for operand {op.name}")
-            shape = shapes[op.name]
-            for idx, dim in enumerate(op.dims):
-                if dim not in all_ranks:
-                    all_ranks[dim] = int(shape[idx])
+        # Pass 1: mark compound rank atoms (e.g. P+R, Q+S) as unresolved.
+        # This preserves the intent that P/Q come from output shapes while
+        # R/S can still be resolved from concrete single-token dims (often input 1).
+        for i, op in enumerate(self.input_operands):
+            if i >= tensor_shapes.num_inputs:
+                break
+            for dim in op.dims:
+                atoms = _parse_dim_atoms(dim)
+                if len(atoms) > 1:
+                    for atom in atoms:
+                        if atom not in all_ranks:
+                            all_ranks[atom] = None
+
+        # Pass 2: resolve concrete (single-token) dims from inputs.
+        # For conv2d BC(P+R)(Q+S),OCRS->BOPQ this resolves R/S from input 1 (OCRS).
+        for i, op in enumerate(self.input_operands):
+            if i >= tensor_shapes.num_inputs:
+                break
+            shape = tensor_shapes.inputs[i]
+            dim_offset = 0
+            for dim in op.dims:
+                atoms = _parse_dim_atoms(dim)
+                if len(atoms) == 1:
+                    atom = atoms[0]
+                    if (atom not in all_ranks or all_ranks[atom] is None) and dim_offset < len(shape):
+                        all_ranks[atom] = int(shape[dim_offset])
+                dim_offset += 1
+
+        # Pass 3: resolve remaining ranks from outputs.
+        # For conv2d this fills P/Q from output shape.
+        for i, op in enumerate(self.output_operands):
+            if i >= tensor_shapes.num_outputs:
+                break
+            shape = tensor_shapes.outputs[i]
+            dim_offset = 0
+            for dim in op.dims:
+                atoms = _parse_dim_atoms(dim)
+                for atom in atoms:
+                    if atom not in all_ranks or all_ranks[atom] is None:
+                        if dim_offset < len(shape):
+                            all_ranks[atom] = int(shape[dim_offset])
+                dim_offset += 1
         
         total_ops = 1
-        for rank in all_ranks.values():
-            total_ops *= rank
+        for v in all_ranks.values():
+            if v is not None:
+                total_ops *= v
         return int(total_ops)
     
     def to_torch_einsum(self, tensor_names: Optional[List[str]] = None) -> str:
@@ -141,14 +165,24 @@ class EinsumOp:
         return f"torch.einsum({equation_str}, {tensor_args})"
 
 
+def _parse_dim_atoms(dim: str) -> List[str]:
+    """Parse a possibly compound dim into atomic rank names.
+    
+    'P+R' -> ['P', 'R']
+    'B'   -> ['B']
+    'P+R0' -> ['P', 'R0']
+    """
+    return [d.strip() for d in re.split(r'[+\-]', dim) if d.strip()]
+
+
 class EinsumOpHandler(ABC):
     """Abstract base class for einsum operation handlers.
     
     Each handler is responsible for converting one or more related operation
-    types to einsum notation.
+    types to einsum notation. Handlers receive TensorShapes (positional)
+    and should access inputs/outputs by index, not by name.
     """
     
-    # Class attribute: list of operation names this handler supports
     supported_ops: List[str] = []
     
     def __init__(self, debug: bool = False):
@@ -163,21 +197,18 @@ class EinsumOpHandler(ABC):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate an einsum operation for the given operation.
         
         Args:
             op_name: Normalized operation name.
-            shapes: Dictionary of tensor shapes.
+            tensor_shapes: Positional input/output shapes.
             **kwargs: Additional operation-specific parameters.
             
         Returns:
             EinsumOp representing the operation.
-            
-        Raises:
-            ValueError: If operation cannot be converted.
         """
         pass
     
@@ -191,18 +222,6 @@ class EinsumOpHandler(ABC):
             True if this handler supports the operation.
         """
         return op_name.lower() in [op.lower() for op in self.supported_ops]
-    
-    def _get_input_shape(self, shapes: ShapeDict) -> Optional[TensorShape]:
-        """Get input shape from shapes dict."""
-        return shapes.get("Input") or shapes.get("input")
-    
-    def _get_weight_shape(self, shapes: ShapeDict) -> Optional[TensorShape]:
-        """Get weight shape from shapes dict."""
-        return shapes.get("Weight") or shapes.get("weight")
-    
-    def _get_output_shape(self, shapes: ShapeDict) -> Optional[TensorShape]:
-        """Get output shape from shapes dict."""
-        return shapes.get("Output") or shapes.get("output")
     
     def _validate_einsum(
         self, 

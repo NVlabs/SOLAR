@@ -1,0 +1,181 @@
+diff --git a/src/torchview/computation_graph.py b/src/torchview/computation_graph.py
+index 53b3a37..856b21c 100644
+--- a/src/torchview/computation_graph.py
++++ b/src/torchview/computation_graph.py
+@@ -136,6 +136,31 @@ class ComputationGraph:
+             'subgraph': None,
+         }
+         self.traverse_graph(self.collect_graph, **kwargs)
++        # Add parameter-tensor nodes that aren't in the hierarchy tree
++        self._render_parameter_nodes()
++
++    def _render_parameter_nodes(self) -> None:
++        '''Find parameter-tensor TensorNodes that are parents of visited
++        FunctionNodes but weren't reached by the hierarchy traversal.
++        Add them as nodes and create edges param -> func.'''
++        # Collect all FunctionNodes/ModuleNodes that were visited
++        visited_compute_nodes: set[int] = set()
++        compute_node_list: list[COMPUTATION_NODES] = []
++        for tail, head in self.edge_list:
++            for n in (tail, head):
++                if isinstance(n, (FunctionNode, ModuleNode)) and id(n) not in visited_compute_nodes:
++                    visited_compute_nodes.add(id(n))
++                    compute_node_list.append(n)
++
++        for compute_node in compute_node_list:
++            for parent in compute_node.parents:
++                if (
++                    isinstance(parent, TensorNode)
++                    and getattr(parent, 'is_param', False)
++                    and id(parent) not in self.node_set
++                ):
++                    self.add_node(parent, self.visual_graph)
++                    self.edge_list.append((parent, compute_node))
+ 
+     def render_edges(self) -> None:
+         '''Records all edges in self.edge_list to
+@@ -289,6 +314,10 @@ class ComputationGraph:
+             return is_visible
+ 
+         else:
++            # Parameter tensor nodes are always visible
++            if getattr(compute_node, 'is_param', False):
++                return True
++
+             if compute_node.main_node.depth < 0 or compute_node.is_aux:
+                 return False
+ 
+@@ -433,6 +462,9 @@ class ComputationGraph:
+     def get_node_color(
+         node: COMPUTATION_NODES
+     ) -> str:
++        # Parameter tensor nodes get a distinct color
++        if isinstance(node, TensorNode) and getattr(node, 'is_param', False):
++            return "lightsalmon"
+         return node2color[type(node)]
+ 
+     def check_node(self, node: COMPUTATION_NODES) -> None:
+diff --git a/src/torchview/recorder_tensor.py b/src/torchview/recorder_tensor.py
+index c0e2aee..f6ecf1a 100644
+--- a/src/torchview/recorder_tensor.py
++++ b/src/torchview/recorder_tensor.py
+@@ -236,7 +236,8 @@ class RecorderTensor(torch.Tensor):
+         if kwargs is None:
+             kwargs = {}
+ 
+-        args_nodes: NodeContainer[TensorNode] = (
++        # Collect activation TensorNodes (from RecorderTensor args only)
++        recorder_nodes: NodeContainer[TensorNode] = (
+             reduce_data_info([args, kwargs], collect_tensor_node, NodeContainer())
+         )
+ 
+@@ -245,32 +246,69 @@ class RecorderTensor(torch.Tensor):
+             out = nn.parameter.Parameter.__torch_function__(
+                 func, types, args, kwargs).as_subclass(RecorderTensor)
+         else:
+-            # use original torch_function; otherwise,
+-            # it leads to infinite recursive call of torch_function
+             out = super().__torch_function__(func, types, args, kwargs)
+ 
+         # if no RecorderTensor is found in input or output
+         # dont create any node, give the result only
+-        if not args_nodes:
++        if not recorder_nodes:
+             return out
+         if not reduce_data_info(out, collect_tensor, OrderedSet()):
+             return out
+ 
+-        # Create function_node and connect to its parents tensor node
+-        cur_depth = next(iter(args_nodes)).depth
+-        input_context = next(iter(args_nodes)).context
+-        collect_attributes = next(iter(args_nodes)).collect_attributes
++        cur_depth = next(iter(recorder_nodes)).depth
++        input_context = next(iter(recorder_nodes)).context
++        collect_attributes = next(iter(recorder_nodes)).collect_attributes
++
++        # Build ordered_input_nodes in positional arg order.
++        # For each tensor arg:
++        #   - RecorderTensor -> use its existing TensorNode
++        #   - plain torch.Tensor (nn.Parameter) -> create a parameter-tensor TensorNode
++        # This preserves arg order so torch.matmul(x, w) vs torch.matmul(w, x) are distinct.
++        ordered_input_nodes: list[TensorNode] = []
++        all_input_shapes: list[tuple[int, ...]] = []
++        _seen_param_ids: set[int] = set()
++
++        for arg in _flatten_args(args):
++            if not isinstance(arg, torch.Tensor) or not hasattr(arg, 'shape') or len(arg.shape) == 0:
++                continue
++
++            # Determine if this tensor is a model parameter or an activation.
++            # nn.Parameter is a subclass of torch.Tensor, and on meta device
++            # it may also be a RecorderTensor. Check nn.Parameter first.
++            is_model_param = isinstance(arg, nn.Parameter)
++
++            if is_model_param and id(arg) not in _seen_param_ids:
++                _seen_param_ids.add(id(arg))
++                param_node = TensorNode(
++                    tensor=arg,
++                    depth=cur_depth,
++                    name='parameter-tensor',
++                    context=input_context,
++                    is_aux=False,
++                    main_node=None,
++                    collect_attributes=collect_attributes,
++                )
++                param_node.is_param = True
++                ordered_input_nodes.append(param_node)
++                all_input_shapes.append(tuple(arg.shape))
++            elif isinstance(arg, RecorderTensor) and not is_model_param:
++                if getattr(arg, 'tensor_nodes', None):
++                    ordered_input_nodes.append(arg.tensor_nodes[-1])
++                all_input_shapes.append(tuple(arg.shape))
++
++        # Build args_nodes: all parent TensorNodes (activation + parameter) in arg order
++        args_nodes: NodeContainer[TensorNode] = NodeContainer(ordered_input_nodes)
+ 
+         func_name = (
+             func.name if isinstance(func, ScriptMethod) else func.__name__
+         )
+ 
+-        # record attributes of the function
+         attributes = stringify_attributes((args, kwargs)) if collect_attributes else None
+ 
+         cur_node = FunctionNode(
+             func, cur_depth, args_nodes, name=func_name, attributes=attributes # type: ignore[arg-type]
+         )
++        cur_node.ordered_input_nodes = ordered_input_nodes
+ 
+         for i in args_nodes:
+             i.add_child(cur_node)
+@@ -284,19 +322,23 @@ class RecorderTensor(torch.Tensor):
+         }
+         traverse_data_inplace(out, attach_node(attach_kwargs))
+ 
+-        # note that when processing inplace operation, input shape is calculated
+-        # correctly only if inplace operation preserves the input shape
+-        # which it does for all torch-builtin inplace operations
+-        # you cant use this before output computation since shape calls
+-        # to another torch_function (infinite recursion)
+-        cur_node.set_input_shape(
+-            reduce_data_info([args, kwargs], collect_shape, [])
+-        )
++        cur_node.set_input_shape(all_input_shapes)
+         cur_node.set_output_shape(reduce_data_info(out, collect_shape, []))
+ 
+         return out
+ 
+ 
++def _flatten_args(args: Any) -> list[Any]:
++    """Flatten nested args (tuples/lists) into a flat list of leaf values."""
++    result: list[Any] = []
++    if isinstance(args, (tuple, list)):
++        for item in args:
++            result.extend(_flatten_args(item))
++    else:
++        result.append(args)
++    return result
++
++
+ L = TypeVar('L', bound=Iterable[Any])
+ 
+ 

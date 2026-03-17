@@ -225,7 +225,7 @@ class BenchmarkEinsumConverter:
         return stats
 
     def _extract_basic_shapes(self, layer_info: Dict[str, Any]) -> Dict[str, List[int]]:
-        """Extract a minimal ShapeDict from a pytorch_graph.yaml layer entry."""
+        """Extract minimal named shapes from a pytorch_graph.yaml layer entry."""
         shapes: Dict[str, List[int]] = {}
         input_shapes = layer_info.get("input_shapes") or []
         output_shapes = layer_info.get("output_shapes") or []

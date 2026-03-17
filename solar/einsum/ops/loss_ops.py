@@ -43,7 +43,7 @@ from solar.einsum.ops.base import (
     EinsumOperand,
 )
 from solar.einsum.ops.registry import get_global_registry
-from solar.common.types import ShapeDict, TensorShape
+from solar.common.types import TensorShapes, TensorShape
 
 
 class LossHandler(EinsumOpHandler):
@@ -90,7 +90,7 @@ class LossHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for loss function operation.
@@ -98,8 +98,8 @@ class LossHandler(EinsumOpHandler):
         Loss functions compute a loss value from predictions and targets.
         The output shape depends on the reduction parameter.
         """
-        input_shape = self._get_input_shape(shapes)
-        output_shape = self._get_output_shape(shapes)
+        input_shape = tensor_shapes.inputs[0] if tensor_shapes.num_inputs > 0 else None
+        output_shape = tensor_shapes.outputs[0] if tensor_shapes.num_outputs > 0 else None
         
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")

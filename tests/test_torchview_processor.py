@@ -23,8 +23,8 @@ This module tests that the TorchviewProcessor correctly extracts:
 - output_nodes: List of output node IDs (connections to successors)
 - input_shapes: List of input tensor shapes
 - output_shapes: List of output tensor shapes
-- weight_nodes: List of parameter names
-- weight_shapes: List of parameter shapes
+- input_types: List of input tensor type classifications ('input' or 'weight')
+- output_types: List of output tensor type classifications ('output')
 - module_args: Dictionary of module configuration arguments
 """
 
@@ -150,26 +150,26 @@ class TestNodeInfoFields:
             for node in nodes:
                 # Check all required fields exist
                 assert hasattr(node, 'node_id'), "Missing node_id"
-                assert hasattr(node, 'node_type'), "Missing node_type"
+                assert hasattr(node, 'type'), "Missing type"
                 assert hasattr(node, 'node_class'), "Missing node_class"
                 assert hasattr(node, 'input_nodes'), "Missing input_nodes"
                 assert hasattr(node, 'output_nodes'), "Missing output_nodes"
                 assert hasattr(node, 'input_shapes'), "Missing input_shapes"
                 assert hasattr(node, 'output_shapes'), "Missing output_shapes"
-                assert hasattr(node, 'weight_nodes'), "Missing weight_nodes"
-                assert hasattr(node, 'weight_shapes'), "Missing weight_shapes"
+                assert hasattr(node, 'input_types'), "Missing input_types"
+                assert hasattr(node, 'output_types'), "Missing output_types"
                 assert hasattr(node, 'module_args'), "Missing module_args"
                 
                 # Check types
                 assert isinstance(node.node_id, str)
-                assert isinstance(node.node_type, str)
+                assert isinstance(node.type, str)
                 assert isinstance(node.node_class, str)
                 assert isinstance(node.input_nodes, list)
                 assert isinstance(node.output_nodes, list)
                 assert isinstance(node.input_shapes, list)
                 assert isinstance(node.output_shapes, list)
-                assert isinstance(node.weight_nodes, list)
-                assert isinstance(node.weight_shapes, list)
+                assert isinstance(node.input_types, list)
+                assert isinstance(node.output_types, list)
                 assert isinstance(node.module_args, dict)
     
     def test_node_class_values(self, processor):
@@ -259,7 +259,7 @@ class TestShapeExtraction:
             nodes = processor.process_graph(graph, tmpdir, "test_model", model)
             
             # Find linear node
-            linear_nodes = [n for n in nodes if 'linear' in n.node_type.lower()]
+            linear_nodes = [n for n in nodes if 'linear' in n.type.lower()]
             assert len(linear_nodes) > 0, "Should find linear node"
             
             linear_node = linear_nodes[0]
@@ -280,7 +280,7 @@ class TestShapeExtraction:
             nodes = processor.process_graph(graph, tmpdir, "test_model", model)
             
             # Find conv node
-            conv_nodes = [n for n in nodes if 'conv' in n.node_type.lower()]
+            conv_nodes = [n for n in nodes if 'conv' in n.type.lower()]
             assert len(conv_nodes) > 0, "Should find conv node"
             
             conv_node = conv_nodes[0]
@@ -289,11 +289,11 @@ class TestShapeExtraction:
 
 
 @pytest.mark.skipif(not TORCHVIEW_AVAILABLE, reason="torchview not installed")
-class TestWeightExtraction:
-    """Test that weight_nodes and weight_shapes are correctly extracted."""
+class TestInputTypeClassification:
+    """Test that input_types correctly classify inputs vs weights."""
     
-    def test_linear_weights(self, processor):
-        """Verify weights are extracted for linear layers."""
+    def test_linear_has_weight_input(self, processor):
+        """Verify linear layer inputs are classified with 'weight' for parameters."""
         model = SimpleLinearModel(in_features=64, out_features=32)
         x = torch.randn(2, 64)
         
@@ -301,20 +301,15 @@ class TestWeightExtraction:
             graph = draw_graph(model, input_data=x, expand_nested=True)
             nodes = processor.process_graph(graph, tmpdir, "test_model", model)
             
-            # Find linear node
-            linear_nodes = [n for n in nodes if 'linear' in n.node_type.lower()]
+            linear_nodes = [n for n in nodes if 'linear' in n.type.lower()]
             assert len(linear_nodes) > 0, "Should find linear node"
             
             linear_node = linear_nodes[0]
-            assert 'weight' in linear_node.weight_nodes, "Should have weight parameter"
-            
-            # Check weight shape
-            weight_idx = linear_node.weight_nodes.index('weight')
-            weight_shape = linear_node.weight_shapes[weight_idx]
-            assert weight_shape == [32, 64], f"Weight shape should be [32, 64], got {weight_shape}"
+            assert 'weight' in linear_node.input_types, \
+                f"Linear should have 'weight' in input_types, got {linear_node.input_types}"
     
-    def test_conv_weights(self, processor):
-        """Verify weights are extracted for conv layers."""
+    def test_conv_has_weight_input(self, processor):
+        """Verify conv layer inputs are classified with 'weight' for parameters."""
         model = ConvModel(in_channels=3, out_channels=16)
         x = torch.randn(2, 3, 32, 32)
         
@@ -322,17 +317,12 @@ class TestWeightExtraction:
             graph = draw_graph(model, input_data=x, expand_nested=True)
             nodes = processor.process_graph(graph, tmpdir, "test_model", model)
             
-            # Find conv node
-            conv_nodes = [n for n in nodes if 'conv' in n.node_type.lower()]
+            conv_nodes = [n for n in nodes if 'conv' in n.type.lower()]
             assert len(conv_nodes) > 0, "Should find conv node"
             
             conv_node = conv_nodes[0]
-            assert 'weight' in conv_node.weight_nodes, "Should have weight parameter"
-            
-            # Check weight shape
-            weight_idx = conv_node.weight_nodes.index('weight')
-            weight_shape = conv_node.weight_shapes[weight_idx]
-            assert weight_shape == [16, 3, 3, 3], f"Weight shape should be [16, 3, 3, 3], got {weight_shape}"
+            assert 'weight' in conv_node.input_types, \
+                f"Conv should have 'weight' in input_types, got {conv_node.input_types}"
 
 
 @pytest.mark.skipif(not TORCHVIEW_AVAILABLE, reason="torchview not installed")
@@ -349,7 +339,7 @@ class TestModuleArgsExtraction:
             nodes = processor.process_graph(graph, tmpdir, "test_model", model)
             
             # Find linear node
-            linear_nodes = [n for n in nodes if 'linear' in n.node_type.lower()]
+            linear_nodes = [n for n in nodes if 'linear' in n.type.lower()]
             assert len(linear_nodes) > 0, "Should find linear node"
             
             linear_node = linear_nodes[0]
@@ -370,7 +360,7 @@ class TestModuleArgsExtraction:
             nodes = processor.process_graph(graph, tmpdir, "test_model", model)
             
             # Find conv node
-            conv_nodes = [n for n in nodes if 'conv' in n.node_type.lower()]
+            conv_nodes = [n for n in nodes if 'conv' in n.type.lower()]
             assert len(conv_nodes) > 0, "Should find conv node"
             
             conv_node = conv_nodes[0]
@@ -418,7 +408,8 @@ class TestYAMLOutput:
             
             required_fields = [
                 'type', 'node_class', 'input_shapes', 'output_shapes',
-                'weight_nodes', 'weight_shapes', 'module_args', 'connections'
+                'input_dtypes', 'output_dtypes', 'input_types', 'output_types',
+                'module_args', 'connections'
             ]
             
             for layer_id, layer_data in data['layers'].items():
@@ -475,7 +466,7 @@ class TestAttentionModel:
             nodes = processor.process_graph(graph, tmpdir, "test_model", model)
             
             # Should have 4 linear layers: q, k, v, out projections
-            linear_nodes = [n for n in nodes if 'linear' in n.node_type.lower()]
+            linear_nodes = [n for n in nodes if 'linear' in n.type.lower()]
             assert len(linear_nodes) >= 4, \
                 f"Should have at least 4 linear nodes, got {len(linear_nodes)}"
     
@@ -489,7 +480,7 @@ class TestAttentionModel:
             nodes = processor.process_graph(graph, tmpdir, "test_model", model)
             
             # Should have matmul operations for Q@K and attn@V
-            matmul_nodes = [n for n in nodes if 'matmul' in n.node_type.lower()]
+            matmul_nodes = [n for n in nodes if 'matmul' in n.type.lower()]
             assert len(matmul_nodes) >= 2, \
                 f"Should have at least 2 matmul nodes, got {len(matmul_nodes)}"
 

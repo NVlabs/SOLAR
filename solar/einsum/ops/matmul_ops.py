@@ -30,7 +30,7 @@ from solar.einsum.ops.base import (
     EinsumOperand,
 )
 from solar.einsum.ops.registry import get_global_registry
-from solar.common.types import ShapeDict, TensorShape
+from solar.common.types import TensorShape, TensorShapes
 
 
 class MatmulHandler(EinsumOpHandler):
@@ -41,17 +41,16 @@ class MatmulHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for matrix multiplication."""
-        input_shape = self._get_input_shape(shapes)
-        weight_shape = self._get_weight_shape(shapes)
+        input_shape = tensor_shapes.inputs[0]
+        weight_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
         
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")
         
-        # matmul can work without explicit weight shape - infer from input
         if weight_shape is None:
             weight_shape = [input_shape[-1], input_shape[-1]]
         
@@ -160,17 +159,16 @@ class LinearHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for linear layer."""
-        input_shape = self._get_input_shape(shapes)
-        weight_shape = self._get_weight_shape(shapes)
+        input_shape = tensor_shapes.inputs[0]
+        weight_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
         
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")
         
-        # Linear can work without weight shape - use a default based on input
         if weight_shape is None:
             weight_shape = [input_shape[-1], input_shape[-1]]
         
@@ -226,12 +224,12 @@ class BmmHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for batch matrix multiplication."""
-        input_shape = self._get_input_shape(shapes)
-        weight_shape = self._get_weight_shape(shapes)
+        input_shape = tensor_shapes.inputs[0]
+        weight_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
         
         if input_shape is None or weight_shape is None:
             raise ValueError(f"Missing Input/Weight shapes for {op_name}")

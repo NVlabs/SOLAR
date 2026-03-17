@@ -38,7 +38,7 @@ from solar.einsum.ops.base import (
     EinsumOperand,
 )
 from solar.einsum.ops.registry import get_global_registry
-from solar.common.types import ShapeDict, TensorShape
+from solar.common.types import TensorShape, TensorShapes
 
 
 class ScaledDotProductAttentionHandler(EinsumOpHandler):
@@ -64,39 +64,22 @@ class ScaledDotProductAttentionHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for scaled dot-product attention.
         
-        Gets shapes from input_shapes (Q, K, V) and output_shapes.
+        Gets shapes from tensor_shapes.inputs (Q, K, V).
         No weights are involved in SDPA.
         """
-        # Get shapes from the new format (input_shapes list)
-        input_shapes = shapes.get("input_shapes", [])
-        output_shapes = shapes.get("output_shapes", [])
-        
-        # Also try legacy format
-        if not input_shapes:
-            inputs = shapes.get("inputs", [])
-            input_shapes = inputs if inputs else []
-        
-        # Try to get from Input, Input_1, Input_2 keys (legacy)
-        if not input_shapes:
-            query = shapes.get("Input")
-            key = shapes.get("Input_1")
-            value = shapes.get("Input_2")
-            if query and key and value:
-                input_shapes = [query, key, value]
-        
-        if len(input_shapes) < 3:
+        if tensor_shapes.num_inputs < 3:
             raise ValueError(
-                f"SDPA requires 3 input shapes (Q, K, V). Got {len(input_shapes)}: {shapes}"
+                f"SDPA requires 3 input shapes (Q, K, V). Got {tensor_shapes.num_inputs}"
             )
         
-        query_shape = input_shapes[0]
-        key_shape = input_shapes[1]
-        value_shape = input_shapes[2]
+        query_shape = tensor_shapes.inputs[0]
+        key_shape = tensor_shapes.inputs[1]
+        value_shape = tensor_shapes.inputs[2]
         
         is_causal = kwargs.get("is_causal", False)
         
@@ -308,17 +291,19 @@ class FlexAttentionHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for flex_attention."""
-        inputs = shapes.get("inputs", [])
-        query = inputs[0] if inputs else None
-        key = inputs[1] if len(inputs) > 1 else None
-        value = inputs[2] if len(inputs) > 2 else None
+        if tensor_shapes.num_inputs < 3:
+            raise ValueError(
+                f"flex_attention requires 3 input shapes (Q, K, V). "
+                f"Got {tensor_shapes.num_inputs}"
+            )
         
-        if not query or not key or not value:
-            raise ValueError(f"Missing Q/K/V shapes for attention. Got: {shapes}")
+        query = tensor_shapes.inputs[0]
+        key = tensor_shapes.inputs[1]
+        value = tensor_shapes.inputs[2]
         
         return self._generate_flex_attention_einsum(query, key, value)
     
@@ -355,15 +340,14 @@ class MultiHeadAttentionHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for multi-head attention."""
-        input_shape = self._get_input_shape(shapes)
-        
-        if input_shape is None:
+        if tensor_shapes.num_inputs < 1:
             raise ValueError(f"Missing Input shape for {op_name}")
         
+        input_shape = tensor_shapes.inputs[0]
         return self._generate_mha_einsum(input_shape)
     
     def _generate_mha_einsum(self, input_shape: TensorShape) -> EinsumOp:

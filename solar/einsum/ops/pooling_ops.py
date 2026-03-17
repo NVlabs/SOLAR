@@ -31,7 +31,7 @@ from solar.einsum.ops.base import (
     EinsumOperand,
 )
 from solar.einsum.ops.registry import get_global_registry
-from solar.common.types import ShapeDict, TensorShape
+from solar.common.types import TensorShape, TensorShapes
 
 
 class PoolingHandler(EinsumOpHandler):
@@ -47,14 +47,14 @@ class PoolingHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for pooling operation."""
-        input_shape = self._get_input_shape(shapes)
-        
-        if input_shape is None:
+        if tensor_shapes.num_inputs < 1:
             raise ValueError(f"Missing Input shape for {op_name}")
+        
+        input_shape = tensor_shapes.inputs[0]
         
         kernel_size = kwargs.get("kernel_size", (2, 2))
         stride = kwargs.get("stride")

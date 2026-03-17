@@ -24,9 +24,34 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 # Type aliases for better readability
 TensorShape = List[int]
-ShapeDict = Dict[str, TensorShape]
 NodeDict = Dict[str, Any]
 EdgeList = List[Tuple[str, str]]
+
+
+@dataclass
+class TensorShapes:
+    """Positional tensor shapes for an operation.
+    with ordered lists of shapes matching the einsum operand order.
+    """
+    inputs: List[TensorShape] = field(default_factory=list)
+    outputs: List[TensorShape] = field(default_factory=list)
+
+    @property
+    def num_inputs(self) -> int:
+        return len(self.inputs)
+
+    @property
+    def num_outputs(self) -> int:
+        return len(self.outputs)
+
+    def input_rank(self, idx: int) -> int:
+        """Rank (ndim) of input tensor at position idx."""
+        return len(self.inputs[idx]) if idx < len(self.inputs) else 0
+
+    def output_rank(self, idx: int) -> int:
+        """Rank (ndim) of output tensor at position idx."""
+        return len(self.outputs[idx]) if idx < len(self.outputs) else 0
+
 
 
 @dataclass
@@ -35,20 +60,20 @@ class NodeInfo:
     
     Attributes:
         node_id: Unique identifier for the node.
-        node_type: Type of operation (e.g., 'matmul', 'conv2d').
+        type: Type of operation (e.g., 'matmul', 'conv2d').
         node_class: Class of the node (e.g., 'FunctionNode', 'ModuleNode').
-        input_nodes: List of input node IDs.
+        input_nodes: List of input node IDs (in positional arg order).
         output_nodes: List of output node IDs.
-        input_shapes: Shapes of input tensors.
+        input_shapes: Shapes of input tensors (in positional arg order).
         output_shapes: Shapes of output tensors.
         input_dtypes: Data types of input tensors (one per input shape).
         output_dtypes: Data types of output tensors (one per output shape).
-        weight_nodes: Names of weight parameters.
-        weight_shapes: Shapes of weight parameters.
+        input_types: Type classification per input: 'input' or 'weight'.
+        output_types: Type classification per output: 'output'.
         module_args: Module-specific arguments.
     """
     node_id: str
-    node_type: str
+    type: str
     node_class: str = "UnknownNode"
     input_nodes: List[str] = field(default_factory=list)
     output_nodes: List[str] = field(default_factory=list)
@@ -56,25 +81,26 @@ class NodeInfo:
     output_shapes: List[TensorShape] = field(default_factory=list)
     input_dtypes: List[str] = field(default_factory=list)
     output_dtypes: List[str] = field(default_factory=list)
-    weight_nodes: List[str] = field(default_factory=list)
-    weight_shapes: List[TensorShape] = field(default_factory=list)
+    input_types: List[str] = field(default_factory=list)
+    output_types: List[str] = field(default_factory=list)
     module_args: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> NodeDict:
         """Convert NodeInfo to a dictionary representation."""
         return {
-            "node_id": self.node_id,
-            "node_type": self.node_type,
+            "type": self.type,
             "node_class": self.node_class,
-            "input_nodes": self.input_nodes,
-            "output_nodes": self.output_nodes,
             "input_shapes": self.input_shapes,
             "output_shapes": self.output_shapes,
             "input_dtypes": self.input_dtypes,
             "output_dtypes": self.output_dtypes,
-            "weight_nodes": self.weight_nodes,
-            "weight_shapes": self.weight_shapes,
+            "input_types": self.input_types,
+            "output_types": self.output_types,
             "module_args": self.module_args,
+            "connections": {
+                "inputs": self.input_nodes,
+                "outputs": self.output_nodes,
+            },
         }
 
 

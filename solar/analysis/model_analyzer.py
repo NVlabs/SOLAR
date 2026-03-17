@@ -36,8 +36,8 @@ from solar.einsum.node_type_registry import (
     NodeTypeHandlerFactory,
     NodeTypeRegistry,
 )
-from solar.common.constants import ARCHITECTURE_CONFIGS, BYTES_PER_ELEMENT, DEFAULT_PRECISION
-from solar.common.types import AnalysisResult, NodeInfo, ShapeDict
+from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
+from solar.common.types import AnalysisResult, NodeInfo, TensorShapes
 from solar.common.utils import convert_numpy_types, ensure_directory, format_number
 
 
@@ -229,7 +229,7 @@ class ModelAnalyzer:
         op_intensity = total_compute / total_memory if total_memory > 0 else 0
         
         # Get architecture configuration
-        arch_cfg = ARCHITECTURE_CONFIGS.get(arch_config, ARCHITECTURE_CONFIGS["H100_PCIe"])
+        arch_cfg = self._load_arch_config(arch_config)
         
         # Calculate roofline performance
         roofline = self._calculate_roofline_performance(
@@ -252,6 +252,34 @@ class ModelAnalyzer:
                 "agent_enabled": self.agent is not None
             }
         )
+
+    def _load_arch_config(self, arch_config: str) -> Dict[str, Any]:
+        """Load an architecture YAML by name or path.
+        
+        Supports either:
+        - A full path to a YAML file
+        - A config name looked up under `solar/configs/arch/<name>.yaml`
+        """
+        # Explicit path.
+        cfg_path = Path(arch_config)
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                return yaml.safe_load(f) or {}
+
+        # Look under solar root: solar/configs/arch/<name>.yaml
+        solar_root = Path(__file__).resolve().parents[2]
+        candidate = solar_root / "configs" / "arch" / f"{arch_config}.yaml"
+        if candidate.exists():
+            with open(candidate) as f:
+                return yaml.safe_load(f) or {}
+
+        # Backward-compatible fallback.
+        fallback = solar_root / "configs" / "arch" / "H100_PCIe.yaml"
+        if fallback.exists():
+            with open(fallback) as f:
+                return yaml.safe_load(f) or {}
+
+        return {}
     
     def _convert_torchview_to_model_info(self,
                                         nodes_data: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -509,8 +537,14 @@ class ModelAnalyzer:
                 )
 
                 if einsum_op:
+                    # Positional shapes for compute cost (matches EinsumOp operand order).
+                    tensor_shapes = TensorShapes(
+                        inputs=list(node_data.get("input_shapes", []) or [])
+                        + list(node_data.get("weight_shapes", []) or []),
+                        outputs=list(node_data.get("output_shapes", []) or []),
+                    )
                     # Calculate costs.
-                    analysis["compute_macs"] = einsum_op.get_compute_cost(shapes)
+                    analysis["compute_macs"] = einsum_op.get_compute_cost(tensor_shapes)
                     analysis["memory_elements"] = self.einsum_analyzer.get_memory_cost(shapes)
                     analysis["einsum_equation"] = einsum_op.equation
             except Exception as e:
@@ -520,7 +554,7 @@ class ModelAnalyzer:
         return analysis
     
     def _extract_shapes_from_node(self,
-                                 node_data: Dict[str, Any]) -> ShapeDict:
+                                 node_data: Dict[str, Any]) -> Dict[str, Any]:
         """Extract shapes from node data.
         
         Args:
@@ -565,7 +599,7 @@ class ModelAnalyzer:
         handler: NodeTypeHandler,
         node_type: str,
         node_data: Dict[str, Any],
-        shapes: ShapeDict,
+        shapes: Dict[str, Any],
     ) -> Optional[Any]:
         """Call the einsum generator for a handler.
 

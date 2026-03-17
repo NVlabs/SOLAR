@@ -32,7 +32,7 @@ from solar.einsum.ops.base import (
     EinsumOperand,
 )
 from solar.einsum.ops.registry import get_global_registry
-from solar.common.types import ShapeDict, TensorShape
+from solar.common.types import TensorShape, TensorShapes
 
 
 def generate_dim_labels(num_dims: int, prefix: str = "") -> List[str]:
@@ -87,16 +87,15 @@ class TensorManipulationHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for tensor manipulation operation."""
-        input_shape = self._get_input_shape(shapes)
-        
-        if input_shape is None:
+        if tensor_shapes.num_inputs < 1:
             raise ValueError(f"Missing Input shape for {op_name}")
         
-        output_shape = self._get_output_shape(shapes) or input_shape
+        input_shape = tensor_shapes.inputs[0]
+        output_shape = tensor_shapes.outputs[0] if tensor_shapes.num_outputs > 0 else input_shape
         
         # Get module_args for explicit permutation info
         module_args = kwargs.get('module_args', {})
@@ -398,14 +397,14 @@ class MatrixStructureHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for matrix structure operation."""
-        input_shape = self._get_input_shape(shapes)
-        
-        if input_shape is None:
+        if tensor_shapes.num_inputs < 1:
             raise ValueError(f"Missing Input shape for {op_name}")
+        
+        input_shape = tensor_shapes.inputs[0]
         
         return self._generate_matrix_structure_einsum(input_shape, op_name)
     

@@ -19,10 +19,11 @@ This module provides the EinsumAnalyzer class which uses the registered
 operation handlers to convert PyTorch operations to einsum notation.
 """
 
+import re
 import string
 from typing import Any, Dict, List, Optional, Tuple
 
-from solar.common.types import ShapeDict, TensorShape
+from solar.common.types import TensorShape, TensorShapes
 from solar.einsum.ops.base import EinsumOp, EinsumOperand
 from solar.einsum.ops.registry import get_global_registry, EinsumOpRegistry
 
@@ -46,32 +47,31 @@ class EinsumAnalyzer:
         self.debug = debug
         self._registry = get_global_registry()
     
-    def get_compute_cost(self, op_name: str, shapes: ShapeDict, **kwargs: Any) -> int:
+    def get_compute_cost(self, op_name: str, shapes: TensorShapes, **kwargs: Any) -> int:
         """Get compute cost for an operation.
         
         Args:
             op_name: Name of the operation.
-            shapes: Dictionary of tensor shapes.
+            shapes: Positional input/output tensor shapes.
             
         Returns:
             Number of operations required.
         """
-        shapes_for_cost: ShapeDict = dict(shapes)
+        ts = TensorShapes(inputs=list(shapes.inputs), outputs=list(shapes.outputs))
 
         op_norm = self._get_operation_from_name(op_name)
         if op_norm in {"conv1d", "conv2d", "conv3d"}:
-            # If output shape is not provided, derive it from input/weight and kwargs.
-            if "Output" not in shapes_for_cost and "Input" in shapes_for_cost and "Weight" in shapes_for_cost:
-                input_shape = shapes_for_cost["Input"]
-                weight_shape = shapes_for_cost["Weight"]
+            if not ts.outputs and ts.num_inputs >= 2:
+                input_shape = ts.inputs[0]
+                weight_shape = ts.inputs[1]
                 out_shape = self._infer_conv_output_shape(op_norm, input_shape, weight_shape, **kwargs)
                 if out_shape:
-                    shapes_for_cost["Output"] = out_shape
+                    ts = TensorShapes(inputs=ts.inputs, outputs=[out_shape])
 
-        einsum_op = self.get_einsum_op(op_name, shapes_for_cost, **kwargs)
-        return einsum_op.get_compute_cost(shapes_for_cost)
+        einsum_op = self.get_einsum_op(op_name, ts, **kwargs)
+        return einsum_op.get_compute_cost(ts)
     
-    def get_memory_cost(self, shapes: ShapeDict) -> Dict[str, int]:
+    def get_memory_cost(self, shapes: Dict[str, TensorShape]) -> Dict[str, int]:
         """Calculate memory cost for tensors.
         
         Args:
@@ -89,12 +89,12 @@ class EinsumAnalyzer:
         memory_cost["total"] = sum(memory_cost.values())
         return memory_cost
     
-    def get_einsum_op(self, op_name: str, shapes: ShapeDict, **kwargs: Any) -> EinsumOp:
+    def get_einsum_op(self, op_name: str, shapes: TensorShapes, **kwargs: Any) -> EinsumOp:
         """Get an einsum operation for the given operation name.
         
         Args:
             op_name: Name of the operation.
-            shapes: Dictionary of tensor shapes.
+            shapes: Positional input/output tensor shapes.
             
         Returns:
             EinsumOp object.
@@ -102,15 +102,16 @@ class EinsumAnalyzer:
         Raises:
             ValueError: If operation is not supported.
         """
+        ts = shapes
+
         op_norm = self._get_operation_from_name(op_name)
         
         # Try to get handler from registry
         if self._registry.has_handler(op_norm):
-            return self._registry.get_einsum_op(op_norm, shapes, **kwargs)
+            return self._registry.get_einsum_op(op_norm, ts, **kwargs)
         
-        # Fallback: if we have input_shape, treat as generic elementwise
-        inputs = shapes.get("inputs", [])
-        input_shape = inputs[0] if inputs else None
+        # Fallback: if we have input shapes, treat as generic elementwise
+        input_shape = ts.inputs[0] if ts.inputs else None
         if input_shape is not None:
             dims = len(input_shape)
             labels = string.ascii_uppercase[:dims]
@@ -142,6 +143,9 @@ class EinsumAnalyzer:
             op = op[len("torch.nn.") :]
         if op.startswith("torch."):
             op = op[len("torch.") :]
+
+        # Strip trailing _<digits> (e.g. Model.clamp_4 -> clamp, div_2 -> div, mul_4 -> mul)
+        op = re.sub(r"_\d+$", "", op)
 
         # Transpose Convolutions (check first since they contain conv1d/2d/3d)
         if "convtranspose1d" in op or "conv_transpose1d" in op:
@@ -208,6 +212,19 @@ class EinsumAnalyzer:
             return "mul"
         if op == "div" or op.endswith(".div") or op.endswith("_div"):
             return "div"
+        # Comparison (elementwise, same shape as input)
+        if op in ("eq", "__eq__") or op.endswith(".eq") or op.endswith("_eq"):
+            return "eq"
+        if op in ("ne", "__ne__") or op.endswith(".ne") or op.endswith("_ne"):
+            return "ne"
+        if op in ("lt", "__lt__") or op.endswith(".lt") or op.endswith("_lt"):
+            return "lt"
+        if op in ("le", "__le__") or op.endswith(".le") or op.endswith("_le"):
+            return "le"
+        if op in ("gt", "__gt__") or op.endswith(".gt") or op.endswith("_gt"):
+            return "gt"
+        if op in ("ge", "__ge__") or op.endswith(".ge") or op.endswith("_ge"):
+            return "ge"
 
         # Unary elementwise activations
         # IMPORTANT: Check specific variants BEFORE generic ones!
@@ -263,6 +280,10 @@ class EinsumAnalyzer:
         if "softsign" in op:
             return "softsign"
         
+        # Clamp (unary elementwise with optional bounds)
+        if "clamp" in op:
+            return "clamp"
+
         # Math functions
         if op in {"abs", "neg", "exp", "log", "log2", "log10", "sqrt", "rsqrt", "sin", "cos", "tan"}:
             return op
@@ -302,7 +323,7 @@ class EinsumAnalyzer:
     def get_reduction_einsum_op(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        shapes: TensorShapes,
         reduce_dims: Optional[List[int]] = None,
         keepdim: bool = False,
     ) -> EinsumOp:
@@ -354,7 +375,7 @@ class EinsumAnalyzer:
     def get_torch_einsum_equation(
         self,
         op_name: str,
-        shapes: Optional[ShapeDict] = None
+        shapes: Optional[TensorShapes] = None
     ) -> str:
         """Get torch einsum equation string for an operation.
         
@@ -388,11 +409,11 @@ class EinsumAnalyzer:
     
     def generate_matmul_einsum(self, input_shape: TensorShape, other_shape: TensorShape) -> EinsumOp:
         """Generate einsum for matrix multiplication (backward compatibility)."""
-        return self.get_einsum_op("matmul", {"Input": input_shape, "Weight": other_shape})
+        return self.get_einsum_op("matmul", TensorShapes(inputs=[input_shape, other_shape]))
     
     def generate_linear_einsum(self, input_shape: TensorShape, weight_shape: TensorShape) -> EinsumOp:
         """Generate einsum for linear layer (backward compatibility)."""
-        return self.get_einsum_op("linear", {"Input": input_shape, "Weight": weight_shape})
+        return self.get_einsum_op("linear", TensorShapes(inputs=[input_shape, weight_shape]))
     
     def generate_conv2d_einsum(
         self,
@@ -405,7 +426,7 @@ class EinsumAnalyzer:
         """Generate einsum for 2D convolution (backward compatibility)."""
         return self.get_einsum_op(
             "conv2d",
-            {"Input": input_shape, "Weight": weight_shape},
+            TensorShapes(inputs=[input_shape, weight_shape]),
             stride=stride, padding=padding, dilation=dilation
         )
     
@@ -420,7 +441,7 @@ class EinsumAnalyzer:
         """Generate einsum for 1D convolution (backward compatibility)."""
         return self.get_einsum_op(
             "conv1d",
-            {"Input": input_shape, "Weight": weight_shape},
+            TensorShapes(inputs=[input_shape, weight_shape]),
             stride=stride, padding=padding, dilation=dilation
         )
     
@@ -435,13 +456,13 @@ class EinsumAnalyzer:
         """Generate einsum for 3D convolution (backward compatibility)."""
         return self.get_einsum_op(
             "conv3d",
-            {"Input": input_shape, "Weight": weight_shape},
+            TensorShapes(inputs=[input_shape, weight_shape]),
             stride=stride, padding=padding, dilation=dilation
         )
     
     def generate_elementwise_einsum(self, shape: TensorShape, op_type: str = "elementwise") -> EinsumOp:
         """Generate einsum for elementwise operations (backward compatibility)."""
-        return self.get_einsum_op(op_type, {"Input": shape})
+        return self.get_einsum_op(op_type, TensorShapes(inputs=[shape]))
     
     def generate_binary_elementwise_einsum(
         self,
@@ -450,7 +471,7 @@ class EinsumAnalyzer:
         op_type: str = "add"
     ) -> EinsumOp:
         """Generate einsum for binary elementwise operations (backward compatibility)."""
-        return self.get_einsum_op(op_type, {"Input": input_shape, "Input_1": input_1_shape})
+        return self.get_einsum_op(op_type, TensorShapes(inputs=[input_shape, input_1_shape]))
     
     def generate_reduction_einsum(
         self,
@@ -460,7 +481,7 @@ class EinsumAnalyzer:
         keepdim: bool = False
     ) -> EinsumOp:
         """Generate einsum for reduction operations (backward compatibility)."""
-        return self.get_einsum_op(op_type, {"Input": shape}, dims=dims, keepdim=keepdim)
+        return self.get_einsum_op(op_type, TensorShapes(inputs=[shape]), dims=dims, keepdim=keepdim)
 
 
 __all__ = ["EinsumAnalyzer"]

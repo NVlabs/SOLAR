@@ -20,13 +20,11 @@ from solar.common.types import (
     GraphInfo,
     AnalysisResult,
     EinsumOperation,
-    ShapeDict,
     TensorShape,
 )
 from solar.common.constants import (
     DEFAULT_PRECISION,
     SUPPORTED_OPERATIONS,
-    ARCHITECTURE_CONFIGS,
 )
 from solar.common.utils import (
     format_number,
@@ -47,12 +45,10 @@ __all__ = [
     "GraphInfo", 
     "AnalysisResult",
     "EinsumOperation",
-    "ShapeDict",
     "TensorShape",
     # Constants
     "DEFAULT_PRECISION",
     "SUPPORTED_OPERATIONS",
-    "ARCHITECTURE_CONFIGS",
     # Utils
     "format_number",
     "setup_safe_environment",
