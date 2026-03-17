@@ -34,7 +34,7 @@ from typing import Any, Dict, Optional, Union
 
 import yaml
 
-from solar.common.constants import DEFAULT_PRECISION
+from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
 from solar.common.utils import ensure_directory, NoAliasDumper
 
 
@@ -107,20 +107,34 @@ class EinsumGraphPerfModel:
 
         arch_name = str(arch.get("name") or Path(str(arch_config)).stem or "arch")
 
+        # Check for quantization metadata (e.g., nvfp4/fp8 conversions)
+        quant_metadata = self._load_quant_metadata(analysis_path)
+        quant_mac_key = None
+        quant_bpe = None
+        quant_label = None
+        if quant_metadata:
+            quant_mac_key, quant_bpe, quant_label = self._resolve_quant_overrides(
+                quant_metadata, arch, precision
+            )
+
         total = analysis.get("total") or {}
         metadata = analysis.get("metadata") or {}
         
-        # Get bytes_per_element from metadata (default to 4 for fp32)
-        bytes_per_element = int(metadata.get("bytes_per_element", 4))
+        # Get bytes_per_element: quant override > metadata > default
+        if quant_bpe is not None:
+            bytes_per_element = quant_bpe
+        else:
+            bytes_per_element = float(metadata.get("bytes_per_element", BYTES_PER_ELEMENT.get(precision, 4)))
         
         total_macs = float(total.get("macs", 0))
         total_flops = float(total.get("flops", 0))
         
         # Parse elements from new format, with fallback to old bytes format
-        # New format uses _elements suffix, old format uses _bytes suffix
-        if "orojenesis_elements" in total:
+        # New format uses unfused_elements, old format uses orojenesis_elements or _bytes suffix
+        unfused_val = total.get("unfused_elements") or total.get("orojenesis_elements")
+        if unfused_val is not None:
             # New format: elements
-            total_orojenesis_elems = float(total.get("orojenesis_elements", 0))
+            total_orojenesis_elems = float(unfused_val)
             total_fused_elems = float(total.get("fused_elements", 0))
             total_fused_prefetched_elems = float(
                 total.get("fused_prefetched_elements", total_fused_elems)
@@ -158,8 +172,11 @@ class EinsumGraphPerfModel:
         freq_ghz = float(arch.get("freq_GHz", 1.0))
         dram_bw = float(arch.get("DRAM_byte_per_cycle", 1.0))
 
-        # Smart fallback for MAC throughput based on precision
-        mac_key = f"MAC_per_cycle_{precision}_tc"
+        # MAC throughput: quant override takes priority over precision flag
+        if quant_mac_key:
+            mac_key = quant_mac_key
+        else:
+            mac_key = f"MAC_per_cycle_{precision}_tc"
         mac_per_cycle = arch.get(mac_key)
 
         if mac_per_cycle is None:
@@ -177,8 +194,15 @@ class EinsumGraphPerfModel:
 
         mac_per_cycle = float(mac_per_cycle)
 
-        # Compute cycles (same for all models - total compute doesn't change)
-        compute_cycles = total_macs / mac_per_cycle if mac_per_cycle > 0 else 0.0
+        total_other_ops = float(total.get("other_ops", 0))
+        sm_per_cycle = float(arch.get("MAC_per_cycle_fp32_sm", 0))
+
+        # Tensor-core cycles (matmul/conv MACs)
+        compute_tc_cycles = total_macs / mac_per_cycle if mac_per_cycle > 0 else 0.0
+        # SM cycles (elementwise / reduction ops that run on CUDA cores)
+        compute_sm_cycles = total_other_ops / sm_per_cycle if sm_per_cycle > 0 else 0.0
+        # Overall compute bottleneck: whichever pipeline is slower
+        compute_cycles = max(compute_tc_cycles, compute_sm_cycles)
         
         # Memory cycles for each model (using bytes)
         unfused_mem_cycles = total_orojenesis_bytes / dram_bw if dram_bw > 0 else 0.0
@@ -205,17 +229,22 @@ class EinsumGraphPerfModel:
                 "DRAM_byte_per_cycle": dram_bw,
                 "mac_per_cycle_key": mac_key,
                 "MAC_per_cycle": mac_per_cycle,
+                "MAC_per_cycle_fp32_sm": sm_per_cycle,
                 "ridge_point": ridge_point,
             },
             "workload": {
                 "total_macs": int(total_macs),
+                "total_other_ops": int(total_other_ops),
                 "total_flops": int(total_flops),
                 "bytes_per_element": bytes_per_element,
+                **({"quant_orig_dtype": quant_label} if quant_label else {}),
             },
             "unfused": {
                 "description": "Each op in isolation, all tensors from DRAM",
                 "memory_elements": int(total_orojenesis_elems),
                 "memory_bytes": int(total_orojenesis_bytes),
+                "compute_tc_cycles": int(compute_tc_cycles),
+                "compute_sm_cycles": int(compute_sm_cycles),
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(unfused_mem_cycles),
                 "total_cycles": int(unfused_total_cycles),
@@ -227,6 +256,8 @@ class EinsumGraphPerfModel:
                 "description": "Per-op roofline, intermediate tensors excluded",
                 "memory_elements": int(total_fused_elems),
                 "memory_bytes": int(total_fused_bytes),
+                "compute_tc_cycles": int(compute_tc_cycles),
+                "compute_sm_cycles": int(compute_sm_cycles),
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(fused_mem_cycles),
                 "total_cycles": int(fused_total_cycles),
@@ -238,6 +269,8 @@ class EinsumGraphPerfModel:
                 "description": "Single roofline for entire graph, perfect overlap",
                 "memory_elements": int(total_fused_prefetched_elems),
                 "memory_bytes": int(total_fused_prefetched_bytes),
+                "compute_tc_cycles": int(compute_tc_cycles),
+                "compute_sm_cycles": int(compute_sm_cycles),
                 "compute_cycles": int(compute_cycles),
                 "memory_cycles": int(fused_prefetched_mem_cycles),
                 "total_cycles": int(fused_prefetched_total_cycles),
@@ -272,6 +305,90 @@ class EinsumGraphPerfModel:
             print(f"✅ Wrote perf: {out_path}")
 
         return perf
+
+    # Maps orig_dtypes keywords from metadata.yaml to (precision_key, bytes_per_element)
+    _QUANT_DTYPE_MAP = {
+        "nvfp4": ("nvfp4", 0.5),
+        "float4_e2m1fn_x2": ("nvfp4", 0.5),
+        "fp4": ("nvfp4", 0.5),
+        "fp8": ("fp8", 1),
+        "float8_e4m3fn": ("fp8", 1),
+        "float8_e5m2": ("fp8", 1),
+        "float8_e4m3fnuz": ("fp8", 1),
+        "float8_e5m2fnuz": ("fp8", 1),
+    }
+
+    def _load_quant_metadata(
+        self, analysis_path: Path
+    ) -> Optional[Dict[str, Any]]:
+        """Search for metadata.yaml near the analysis path.
+
+        Typical layout::
+
+            <model_output>/metadata.yaml
+            <model_output>/analysis/analysis.yaml   <-- analysis_path
+
+        We walk up from ``analysis_path`` checking each parent for
+        ``metadata.yaml`` (max 3 levels).
+        """
+        search_dir = analysis_path.parent
+        for _ in range(3):
+            candidate = search_dir / "metadata.yaml"
+            if candidate.exists():
+                try:
+                    with open(candidate) as f:
+                        return yaml.safe_load(f) or {}
+                except Exception:
+                    return None
+            search_dir = search_dir.parent
+        return None
+
+    def _resolve_quant_overrides(
+        self,
+        metadata: Dict[str, Any],
+        arch: Dict[str, Any],
+        precision: str,
+    ) -> tuple:
+        """Derive MAC key and bytes_per_element from quantization metadata.
+
+        Scans ``dtype_conversions`` for the *highest-throughput* original
+        quantized dtype (nvfp4 > fp8).  Returns the corresponding
+        ``(mac_per_cycle_key, bytes_per_element, orig_dtype_label)`` or
+        ``(None, None, None)`` if no quantized dtypes are found.
+        """
+        conversions = metadata.get("dtype_conversions") or []
+        if not conversions:
+            return None, None, None
+
+        # Priority: nvfp4 > fp8  (pick highest throughput)
+        best_precision = None
+        best_bpe = None
+        best_label = None
+
+        for conv in conversions:
+            orig = str(conv.get("orig_dtypes", "")).lower()
+            for keyword, (prec, bpe) in self._QUANT_DTYPE_MAP.items():
+                if keyword in orig:
+                    if best_precision is None or bpe < best_bpe:
+                        best_precision = prec
+                        best_bpe = bpe
+                        best_label = orig
+                    break
+
+        if best_precision is None:
+            return None, None, None
+
+        mac_key = f"MAC_per_cycle_{best_precision}_tc"
+        if mac_key not in arch:
+            if self.debug:
+                print(f"Debug: arch config missing {mac_key}, falling back to precision={precision}")
+            return None, None, None
+
+        if self.debug:
+            print(f"  Quant override: orig_dtype={best_label} -> "
+                  f"mac_key={mac_key}, bytes_per_element={best_bpe}")
+
+        return mac_key, best_bpe, best_label
 
     def _load_arch_config(self, arch_config: str) -> Dict[str, Any]:
         """Load an architecture YAML by name or path."""

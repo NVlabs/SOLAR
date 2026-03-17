@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from solar.einsum.ops.base import EinsumOpHandler, EinsumOp
-    from solar.common.types import ShapeDict
+    from solar.common.types import TensorShapes
 
 # Flag to track if handlers are being loaded (to prevent circular imports)
 _loading_handlers = False
@@ -115,14 +115,14 @@ class EinsumOpRegistry:
     def get_einsum_op(
         self,
         op_name: str,
-        shapes: "ShapeDict",
+        shapes: "TensorShapes",
         **kwargs: Any
     ) -> "EinsumOp":
         """Get an einsum operation for the given operation name.
         
         Args:
             op_name: Operation name.
-            shapes: Dictionary of tensor shapes.
+            shapes: Positional input/output tensor shapes.
             **kwargs: Additional operation-specific parameters.
             
         Returns:

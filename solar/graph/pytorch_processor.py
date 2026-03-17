@@ -392,21 +392,25 @@ class PyTorchProcessor:
             Computation graph or None if failed.
         """
         devices_to_try = ["meta", "cpu"]
-        
+
         for device in devices_to_try:
             try:
                 # Prepare model
                 model = model.to_empty(device=device)
                 model.eval()
-                
+
                 # Check for RNN-like models that need CPU
                 if device == "meta" and self._is_rnn_model(model):
                     continue
-                
+
+                # Move inputs to the target device to avoid allocating
+                # large tensors on CPU when only shapes are needed (meta).
+                device_inputs = self._move_inputs_to_device(inputs, device)
+
                 # Generate graph (don't let torchview save - we'll do it ourselves)
                 graph = torchview.draw_graph(
                     model,
-                    input_data=inputs,
+                    input_data=device_inputs,
                     device=device,
                     save_graph=False,  # We handle saving separately
                     expand_nested=True,
@@ -440,6 +444,30 @@ class PyTorchProcessor:
                 raise
         
         return None
+
+    @staticmethod
+    def _move_inputs_to_device(inputs: Any, device: str) -> Any:
+        """Move input tensors to the given device.
+
+        For ``meta`` device this replaces real tensors with zero-memory
+        meta tensors that preserve shape and dtype, avoiding large CPU
+        allocations when only graph structure is needed.
+        """
+        import torch
+
+        def _move(obj: Any) -> Any:
+            if isinstance(obj, torch.Tensor):
+                if device == "meta":
+                    return torch.empty(obj.shape, dtype=obj.dtype, device="meta")
+                return obj.to(device)
+            if isinstance(obj, (list, tuple)):
+                moved = [_move(x) for x in obj]
+                return type(obj)(moved)
+            if isinstance(obj, dict):
+                return {k: _move(v) for k, v in obj.items()}
+            return obj
+
+        return _move(inputs)
 
     def _save_torchview_graph(self, graph: Any, output_dir: str) -> None:
         """Save torchview graph visualization to the output directory.

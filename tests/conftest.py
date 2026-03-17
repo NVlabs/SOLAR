@@ -28,7 +28,8 @@ def sample_node_data() -> Dict[str, Any]:
         "node_type": "conv2d",
         "input_shapes": [[1, 3, 224, 224]],
         "output_shapes": [[1, 64, 112, 112]],
-        "weight_shapes": [[64, 3, 7, 7]],
+        "input_types": ["input", "weight"],
+        "output_types": ["output"],
         "module_args": {
             "in_channels": 3,
             "out_channels": 64,
@@ -51,8 +52,8 @@ def sample_torchview_nodes() -> List[Dict[str, Any]]:
             "output_nodes": ["Model.relu1"],
             "input_shapes": [[1, 3, 224, 224]],
             "output_shapes": [[1, 64, 112, 112]],
-            "weight_nodes": ["weight", "bias"],
-            "weight_shapes": [[64, 3, 7, 7], [64]],
+            "input_types": ["input", "weight", "weight"],
+            "output_types": ["output"],
             "module_args": {"kernel_size": [7, 7], "stride": [2, 2]}
         },
         {
@@ -63,8 +64,8 @@ def sample_torchview_nodes() -> List[Dict[str, Any]]:
             "output_nodes": ["Model.pool1"],
             "input_shapes": [[1, 64, 112, 112]],
             "output_shapes": [[1, 64, 112, 112]],
-            "weight_nodes": [],
-            "weight_shapes": [],
+            "input_types": ["input"],
+            "output_types": ["output"],
             "module_args": {"inplace": False}
         }
     ]

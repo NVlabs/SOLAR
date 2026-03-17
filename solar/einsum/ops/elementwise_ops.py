@@ -29,7 +29,7 @@ from solar.einsum.ops.base import (
     EinsumOperand,
 )
 from solar.einsum.ops.registry import get_global_registry
-from solar.common.types import ShapeDict, TensorShape
+from solar.common.types import TensorShapes, TensorShape
 
 
 class UnaryElementwiseHandler(EinsumOpHandler):
@@ -47,11 +47,11 @@ class UnaryElementwiseHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for unary elementwise operation."""
-        input_shape = self._get_input_shape(shapes)
+        input_shape = tensor_shapes.inputs[0] if tensor_shapes.num_inputs > 0 else None
         
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")
@@ -103,25 +103,23 @@ class BinaryElementwiseHandler(EinsumOpHandler):
         "add_", "sub_", "mul_", "div_",
         "__add__", "__sub__", "__mul__", "__truediv__",
         "__radd__", "__rsub__", "__rmul__", "__rtruediv__",
+        "eq", "ne", "lt", "le", "gt", "ge",
+        "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__",
     ]
     
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for binary elementwise operation."""
-        input_shape = self._get_input_shape(shapes)
+        input_shape = tensor_shapes.inputs[0] if tensor_shapes.num_inputs > 0 else None
         
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")
         
-        # Get second input shape - try multiple keys
-        input_1_shape = (
-            shapes.get("Input_1") or 
-            shapes.get("Weight") 
-        )
+        input_1_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
         
         # Normalize op name (remove underscores and dunder)
         op_type = op_name.lower().rstrip("_")
@@ -130,27 +128,25 @@ class BinaryElementwiseHandler(EinsumOpHandler):
         if op_type.startswith("r"):
             op_type = op_type[1:]  # __radd__ -> add
         
+        output_shape = tensor_shapes.outputs[0] if tensor_shapes.num_outputs > 0 else None
+        
         if input_1_shape is not None:
             einsum_op = self._generate_binary_elementwise_einsum(
                 input_shape, input_1_shape, op_type
             )
-            # Build tensor_shapes for validation
-            output_shape = self._get_output_shape(shapes)
-            tensor_shapes = {
+            shapes_dict = {
                 "inputs": [list(input_shape), list(input_1_shape)],
                 "outputs": [list(output_shape)] if output_shape else []
             }
-            # Validate and fix if needed
-            return self._validate_einsum(einsum_op, tensor_shapes)
+            return self._validate_einsum(einsum_op, shapes_dict)
         
         # Fallback to unary (scalar broadcast case)
         einsum_op = self._generate_unary_elementwise_einsum(input_shape, op_type)
-        output_shape = self._get_output_shape(shapes)
-        tensor_shapes = {
+        shapes_dict = {
             "inputs": [list(input_shape)],
             "outputs": [list(output_shape)] if output_shape else []
         }
-        return self._validate_einsum(einsum_op, tensor_shapes)
+        return self._validate_einsum(einsum_op, shapes_dict)
     
     def _generate_binary_elementwise_einsum(
         self,

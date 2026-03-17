@@ -38,7 +38,7 @@ from solar.einsum.ops.base import (
     EinsumOperand,
 )
 from solar.einsum.ops.registry import get_global_registry
-from solar.common.types import ShapeDict, TensorShape
+from solar.common.types import TensorShapes, TensorShape
 
 
 class CumulativeHandler(EinsumOpHandler):
@@ -67,7 +67,7 @@ class CumulativeHandler(EinsumOpHandler):
     def generate_einsum(
         self,
         op_name: str,
-        shapes: ShapeDict,
+        tensor_shapes: TensorShapes,
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for cumulative operation.
@@ -75,7 +75,7 @@ class CumulativeHandler(EinsumOpHandler):
         Since cumulative operations preserve input shape, the einsum
         equation has identical input and output dimensions.
         """
-        input_shape = self._get_input_shape(shapes)
+        input_shape = tensor_shapes.inputs[0] if tensor_shapes.num_inputs > 0 else None
         
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")

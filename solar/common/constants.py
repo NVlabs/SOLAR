@@ -18,7 +18,7 @@
 This module defines constants following Google's Python style guide conventions.
 """
 
-from typing import Dict, FrozenSet, List
+from typing import FrozenSet
 
 # Default settings
 DEFAULT_PRECISION = "fp16"
@@ -29,10 +29,13 @@ DEFAULT_OUTPUT_DIR = "outputs"
 # Precision settings
 BYTES_PER_ELEMENT = {
     "fp32": 4,
+    "tf32": 4,
     "fp16": 2, 
     "bf16": 2,
     "int8": 1,
     "fp64": 8,
+    "fp8": 1,
+    "nvfp4": 0.5,
 }
 
 # Supported operations for einsum analysis
@@ -65,33 +68,6 @@ SUPPORTED_OPERATIONS: FrozenSet[str] = frozenset({
     # Other operations
     "transpose", "reshape", "flatten", "view",
 })
-
-# Architecture configurations directory
-ARCHITECTURE_CONFIGS = {
-    "H100_PCIe": {
-        "freq_GHz": 1.41,
-        "MAC_per_cycle_fp32_tc": 378000,
-        "MAC_per_cycle_fp16_tc": 756000,
-        "MAC_per_cycle_int8": 1513000,
-        "DRAM_byte_per_cycle": 2000,
-        "SRAM_capacity": 52428800,
-    },
-    "A6000": {
-        "freq_GHz": 1.8,
-        "MAC_per_cycle_fp32_tc": 43008,
-        "MAC_per_cycle_bf16_tc": 86016,
-        "MAC_per_cycle_int8": 172032,
-        "DRAM_byte_per_cycle": 768,
-        "SRAM_capacity": 48000000,
-    },
-    "H100_fp32": {
-        "freq_GHz": 1.0,
-        "MAC_per_cycle_fp32_tc": 189000,
-        "MAC_per_cycle_int8": 1513000,
-        "DRAM_byte_per_cycle": 2000,
-        "SRAM_capacity": 52428800,
-    },
-}
 
 # Node type mappings for graph processing
 NODE_TYPE_MAPPINGS = {

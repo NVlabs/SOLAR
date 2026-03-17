@@ -27,8 +27,10 @@ The output format matches the original process_torchview_graph.py output:
 - output_nodes: List of output node IDs (connections to successors)
 - input_shapes: List of input tensor shapes
 - output_shapes: List of output tensor shapes
-- weight_nodes: List of parameter names (e.g., ["weight", "bias"])
-- weight_shapes: List of parameter shapes
+- input_dtypes: List of input tensor data types
+- output_dtypes: List of output tensor data types
+- input_types: List of input tensor types
+- output_types: List of output tensor types
 - module_args: Dictionary of module configuration arguments
 """
 
@@ -46,7 +48,7 @@ from solar.common.constants import (
     GEOMETRIC_ATTRS,
     MODULE_ATTR_NAMES,
 )
-from solar.common.types import GraphInfo, NodeInfo, ShapeDict, TensorShape
+from solar.common.types import GraphInfo, NodeInfo, TensorShape
 from solar.common.utils import ensure_directory
 
 
@@ -70,6 +72,7 @@ class TorchviewProcessor:
         self._node_counter: Dict[str, int] = {}
         # Mapping from original node object id to clean node_id
         self._original_to_clean_id: Dict[str, str] = {}
+        self._cached_default_dtype: Optional[str] = None
     
     def process_graph(self,
                      computation_graph: Any,
@@ -263,21 +266,21 @@ class TorchviewProcessor:
         # Extract dtypes (pass shapes and original_model for dtype inference fallback)
         input_dtypes, output_dtypes = self._extract_dtypes(node, node_type, original_model, input_shapes, output_shapes)
         
-        # Extract module parameters
+        # Extract module args (no longer extracting weight_nodes/weight_shapes)
         module_info = self._extract_module_info(node)
         
         return NodeInfo(
             node_id=node_id,
-            node_type=node_type,
+            type=node_type,
             node_class=node_class_name,
-            input_nodes=[],  # Will be filled in by relationship building
-            output_nodes=[],  # Will be filled in by relationship building
+            input_nodes=[],
+            output_nodes=[],
             input_shapes=input_shapes,
             output_shapes=output_shapes,
             input_dtypes=input_dtypes,
             output_dtypes=output_dtypes,
-            weight_nodes=module_info['weight_nodes'],
-            weight_shapes=module_info['weight_shapes'],
+            input_types=[],   # populated later from connection node types
+            output_types=[],  # populated later from connection node types
             module_args=module_info['module_args']
         )
     
@@ -325,17 +328,16 @@ class TorchviewProcessor:
             if tensor_shape:
                 node_name = node_type.lower() if node_type else ''
                 if node_name in ['input-tensor', 'auxiliary-tensor']:
-                    # Input tensors: shape is output (what they produce)
                     output_shapes = [tensor_shape]
                 elif node_name == 'output-tensor':
-                    # Final output tensors: shape is input (what they receive)
                     input_shapes = [tensor_shape]
+                elif node_name == 'parameter-tensor':
+                    # Parameter tensors (weights/biases): shape is output (what they provide)
+                    output_shapes = [tensor_shape]
                 elif node_name == 'hidden-tensor':
-                    # Hidden tensors: intermediate nodes have both input and output shapes
                     input_shapes = [tensor_shape]
                     output_shapes = [tensor_shape]
                 else:
-                    # Unknown tensor type: add to both
                     input_shapes = [tensor_shape]
                     output_shapes = [tensor_shape]
                 return input_shapes, output_shapes
@@ -507,41 +509,34 @@ class TorchviewProcessor:
             output_shapes = []
         
         if original_model is not None:
-            # Try to get dtype from model parameters or inputs
-            default_dtype = None
-            
-            # Check model parameters for dtype
-            for param in original_model.parameters():
-                if param.dtype is not None:
-                    default_dtype = str(param.dtype)
-                    break
-            
-            # If no parameter dtype found, use default float32
-            if default_dtype is None:
-                default_dtype = "torch.float32"
-            
-            # Fill in missing input dtypes to match input_shapes count
+            if self._cached_default_dtype is None:
+                for param in original_model.parameters():
+                    if param.dtype is not None:
+                        self._cached_default_dtype = str(param.dtype)
+                        break
+                if self._cached_default_dtype is None:
+                    self._cached_default_dtype = "torch.float32"
+
+            default_dtype = self._cached_default_dtype
+
             while len(input_dtypes) < len(input_shapes):
                 input_dtypes.append(default_dtype)
-            
-            # Fill in missing output dtypes to match output_shapes count
+
             while len(output_dtypes) < len(output_shapes):
                 output_dtypes.append(default_dtype)
         
         return input_dtypes, output_dtypes
     
     def _extract_module_info(self, node: Any) -> Dict[str, Any]:
-        """Extract module parameter information from a node.
+        """Extract module argument information from a node.
         
         Args:
             node: Node object.
             
         Returns:
-            Dictionary with weight_nodes, weight_shapes, and module_args.
+            Dictionary with module_args.
         """
         module_info = {
-            'weight_nodes': [],
-            'weight_shapes': [],
             'module_args': {}
         }
         
@@ -561,23 +556,9 @@ class TorchviewProcessor:
             node: ModuleNode object.
             module_info: Dictionary to populate with extracted information.
         """
-        # Try to access the underlying PyTorch module
         module = self._get_pytorch_module(node)
         
         if module is not None:
-            # Extract parameters
-            for param_name, param in module.named_parameters(recurse=False):
-                if param is not None:
-                    module_info['weight_nodes'].append(param_name)
-                    module_info['weight_shapes'].append(list(param.shape))
-            
-            # Extract buffers
-            for buffer_name, buffer in module.named_buffers(recurse=False):
-                if buffer is not None:
-                    module_info['weight_nodes'].append(buffer_name)
-                    module_info['weight_shapes'].append(list(buffer.shape))
-            
-            # Extract module arguments
             module_info['module_args'] = self._extract_module_arguments(module)
         else:
             # Fallback: parse the 'attributes' string from torchview
@@ -702,6 +683,10 @@ class TorchviewProcessor:
     def _extract_function_node_info(self, node: Any, module_info: Dict[str, Any]) -> None:
         """Extract information from a FunctionNode.
         
+        Uses input_types from torchview (if available) to identify which
+        input tensors are activations ('input') vs parameters ('weight').
+        Falls back to raw_attributes parsing for older torchview versions.
+        
         Args:
             node: FunctionNode object.
             module_info: Dictionary to populate with extracted information.
@@ -716,50 +701,11 @@ class TorchviewProcessor:
             if parsed_args:
                 module_info['module_args'].update(parsed_args)
         
-        # Extract from args attribute (fallback)
-        if hasattr(node, 'args') and node.args:
-            for i, arg in enumerate(node.args):
-                if hasattr(arg, 'shape') and hasattr(arg, 'numel'):
-                    param_name = self._infer_parameter_name(node_name, i, list(arg.shape))
-                    if param_name != 'input':
-                        module_info['weight_nodes'].append(param_name)
-                        module_info['weight_shapes'].append(list(arg.shape))
-                        # Infer module arguments from parameter shapes
-                        self._infer_module_arguments(node_name, param_name, list(arg.shape), module_info['module_args'])
-        
-        # Extract from kwargs
+        # Extract scalar kwargs as module_args
         if hasattr(node, 'kwargs') and node.kwargs:
             for key, value in node.kwargs.items():
-                if hasattr(value, 'shape'):
-                    module_info['weight_nodes'].append(key)
-                    module_info['weight_shapes'].append(list(value.shape))
-                else:
+                if not hasattr(value, 'shape'):
                     module_info['module_args'][key] = value
-
-        # ------------------------------------------------------------------
-        # Fallback: extract weight info from raw_attributes for known ops
-        # (linear, conv*, batch_norm, layer_norm, …).  This covers the
-        # common case where torchview FunctionNodes don't expose `args`
-        # with actual tensor data but DO record tensor shapes in the
-        # stringified `attributes` field.
-        # ------------------------------------------------------------------
-        if (
-            not module_info['weight_nodes']
-            and hasattr(node, 'attributes')
-            and node.attributes
-        ):
-            w_nodes, w_shapes = self._extract_weights_from_attributes(
-                node.attributes, node_name
-            )
-            if w_nodes:
-                module_info['weight_nodes'] = w_nodes
-                module_info['weight_shapes'] = w_shapes
-                # Also infer module_args (in_features, out_features, …)
-                for param_name, param_shape in zip(w_nodes, w_shapes):
-                    self._infer_module_arguments(
-                        node_name, param_name, param_shape,
-                        module_info['module_args'],
-                    )
     
     def _parse_torchview_attributes(
         self,
@@ -1140,8 +1086,64 @@ class TorchviewProcessor:
                         if source_clean_id not in target_info.input_nodes:
                             target_info.input_nodes.append(source_clean_id)
         
+        # Reorder input_nodes to match positional arg order using ordered_input_nodes
+        # from the patched torchview FunctionNode
+        for original_id in node_order:
+            node = computation_nodes[original_id]
+            ordered_inputs = getattr(node, 'ordered_input_nodes', None)
+            if ordered_inputs:
+                clean_id = self._original_to_clean_id.get(original_id)
+                if clean_id:
+                    node_info = id_to_node_info.get(clean_id)
+                    if node_info and node_info.input_nodes:
+                        # Build ordered input_nodes from ordered_input_nodes
+                        ordered_clean_ids = []
+                        for input_node in ordered_inputs:
+                            inp_orig_id = str(getattr(input_node, 'node_id', id(input_node)))
+                            inp_clean_id = self._original_to_clean_id.get(inp_orig_id)
+                            if inp_clean_id and inp_clean_id in node_info.input_nodes:
+                                ordered_clean_ids.append(inp_clean_id)
+                        # Append any remaining input_nodes not in ordered list
+                        for inp_id in node_info.input_nodes:
+                            if inp_id not in ordered_clean_ids:
+                                ordered_clean_ids.append(inp_id)
+                        node_info.input_nodes = ordered_clean_ids
+        
+        # Populate input_types and output_types based on connected node types.
+        # Input classification:
+        #   'input-tensor', 'auxiliary-tensor', 'hidden-tensor' -> 'input'
+        #   'parameter-tensor' -> 'weight'
+        #   FunctionNode/ModuleNode predecessor -> 'input'
+        # Output classification:
+        #   'output-tensor', 'auxiliary-tensor', 'hidden-tensor' -> 'output'
+        #   FunctionNode/ModuleNode successor -> 'output'
+        #   'parameter-tensor' -> ASSERT FAIL (invalid)
+        _WEIGHT_TENSOR_TYPES = {'parameter-tensor'}
+        
+        for node_info in result:
+            # input_types
+            input_types = []
+            for inp_id in node_info.input_nodes:
+                inp_node = id_to_node_info.get(inp_id)
+                if inp_node and inp_node.type.lower() in _WEIGHT_TENSOR_TYPES:
+                    input_types.append('weight')
+                else:
+                    input_types.append('input')
+            node_info.input_types = input_types
+            
+            # output_types
+            output_types = []
+            for out_id in node_info.output_nodes:
+                out_node = id_to_node_info.get(out_id)
+                if out_node:
+                    assert out_node.type.lower() != 'parameter-tensor', (
+                        f"Output node {out_id} of {node_info.node_id} is parameter-tensor, "
+                        f"which should only appear as input."
+                    )
+                output_types.append('output')
+            node_info.output_types = output_types
+        
         if self.debug:
-            # Count nodes with connections
             nodes_with_inputs = sum(1 for n in result if n.input_nodes)
             nodes_with_outputs = sum(1 for n in result if n.output_nodes)
             print(f"  Nodes with input connections: {nodes_with_inputs}")
@@ -1612,7 +1614,7 @@ class TorchviewProcessor:
             candidate_nodes = [
                 node for node in layer_nodes
                 if node.node_class in ('FunctionNode', 'ModuleNode')
-                and module_type.lower() in node.node_type.lower()
+                and module_type.lower() in node.type.lower()
                 and node.node_id not in self._processed_nodes
             ]
             
@@ -1681,30 +1683,13 @@ class TorchviewProcessor:
                             node: NodeInfo,
                             module: nn.Module,
                             module_type: str) -> None:
-        """Apply module parameters to a node.
+        """Apply module arguments to a node.
         
         Args:
             node: NodeInfo to update.
             module: PyTorch module with parameters.
             module_type: Type name of the module.
         """
-        # Clear existing parameters to avoid duplicates
-        node.weight_nodes.clear()
-        node.weight_shapes.clear()
-        
-        # Extract parameters
-        for param_name, param in module.named_parameters(recurse=False):
-            if param is not None:
-                node.weight_nodes.append(param_name)
-                node.weight_shapes.append(list(param.shape))
-        
-        # Extract buffers
-        for buffer_name, buffer in module.named_buffers(recurse=False):
-            if buffer is not None:
-                node.weight_nodes.append(buffer_name)
-                node.weight_shapes.append(list(buffer.shape))
-        
-        # Update module arguments
         node.module_args['module_type'] = module_type
         node.module_args.update(self._extract_module_arguments(module))
     
@@ -1717,7 +1702,7 @@ class TorchviewProcessor:
     ) -> None:
         """Save extracted nodes to a structured YAML graph.
 
-        The YAML format matches the original process_torchview_graph.py output:
+        The YAML format:
 
           model_name: <str>
           layers:
@@ -1726,8 +1711,8 @@ class TorchviewProcessor:
               node_class: <str>
               input_shapes: [...]
               output_shapes: [...]
-              weight_nodes: [...]
-              weight_shapes: [...]
+              input_types: [...]
+              output_types: [...]
               module_args: {...}
               connections:
                 inputs: [...]
@@ -1744,21 +1729,7 @@ class TorchviewProcessor:
         }
 
         for node in layer_nodes:
-            graph_dict["layers"][node.node_id] = {
-                "type": node.node_type,
-                "node_class": node.node_class,
-                "input_shapes": node.input_shapes,
-                "output_shapes": node.output_shapes,
-                "input_dtypes": node.input_dtypes,
-                "output_dtypes": node.output_dtypes,
-                "weight_nodes": node.weight_nodes,
-                "weight_shapes": node.weight_shapes,
-                "module_args": node.module_args,
-                "connections": {
-                    "inputs": node.input_nodes,
-                    "outputs": node.output_nodes,
-                },
-            }
+            graph_dict["layers"][node.node_id] = node.to_dict()
 
         with open(filename, "w") as f:
             from solar.common.utils import NoAliasDumper
@@ -1779,15 +1750,15 @@ class TorchviewProcessor:
         
         for i, node in enumerate(layer_nodes[:5], 1):  # Show first 5
             print(f"\n[{i}] Node ID: {node.node_id}")
-            print(f"    Type: {node.node_type} ({node.node_class})")
+            print(f"    Type: {node.type} ({node.node_class})")
             print(f"    Input Nodes: {node.input_nodes}")
             print(f"    Output Nodes: {node.output_nodes}")
             print(f"    Input Shapes: {node.input_shapes}")
             print(f"    Output Shapes: {node.output_shapes}")
             print(f"    Input Dtypes: {node.input_dtypes}")
             print(f"    Output Dtypes: {node.output_dtypes}")
-            if node.weight_nodes:
-                print(f"    Weights: {node.weight_nodes}")
+            if node.input_types:
+                print(f"    Input Types: {node.input_types}")
         
         if len(layer_nodes) > 5:
             print(f"\n... and {len(layer_nodes) - 5} more nodes")

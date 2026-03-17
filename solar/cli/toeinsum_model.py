@@ -82,6 +82,11 @@ def main() -> None:
         help="Disable best-effort complex-op expansion before writing einsum_graph.yaml.",
     )
     parser.add_argument(
+        "--enable-rename",
+        action="store_true",
+        help="Enable BFS rank renaming (disabled by default to save time).",
+    )
+    parser.add_argument(
         "--save-graph",
         action="store_true",
         help="Save a PDF visualization of the einsum graph.",
@@ -117,6 +122,7 @@ def main() -> None:
         output_dir,
         copy_graph=not args.no_copy_graph,
         expand_complex_ops=not args.no_expand,
+        enable_rename=args.enable_rename,
     )
     if results is None:
         print("❌ Conversion failed.")
