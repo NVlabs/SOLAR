@@ -4,9 +4,9 @@
 
 [![Docs](https://img.shields.io/badge/docs-guides-brightgreen.svg)](#documentation) [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-%3E%3D3.8-blue.svg)](https://www.python.org/) [![GitHub stars](https://img.shields.io/github/stars/NVlabs/SOLAR?style=social)](https://github.com/NVlabs/SOLAR/stargazers)
 
-**SOL** = **Speed of Light Analysis for Runtime**
+**SOLAR** = **Speed of Light Analysis for Runtime**
 
-SOLAR is a toolkit for analyzing PyTorch model graphs, converting them to einsum representations, and performing hardware-aware SOL performance analysis.
+SOLAR is a toolkit for analyzing PyTorch model graphs, converting them to einsum representations, and performing SOL performance analysis.
 
 It is used by [SOL-ExecBench](https://github.com/nvidia/sol-execbench) for deriving SOL performance metrics that serve as ground-truth references for evaluating LLM-generated GPU kernels.
 
@@ -19,21 +19,16 @@ It is used by [SOL-ExecBench](https://github.com/nvidia/sol-execbench) for deriv
 ## Quickstart
 
 ```bash
-# From repo root
-python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
+# From repo root (installs SOLAR + patched torchview)
+bash install.sh  # or: bash install_uv.sh && source .venv/bin/activate
 
 cd examples/Attention
 bash run_solar.sh
 ```
 
+Note: SOLAR depends on a **patched `torchview`** for parameter-tensor support. The install scripts apply `patches/torchview-parameter-tensors.patch` by default.
+
 For PDF graph rendering, install Graphviz (`dot`).
-
-Run a quick smoke test:
-
-```bash
-bash scripts/run_tests.sh quick
-```
 
 ## Documentation
 
