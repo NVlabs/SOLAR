@@ -24,6 +24,7 @@ This module tests:
 import pytest
 from solar.einsum import EinsumAnalyzer
 from solar.einsum.ops import EinsumOp, EinsumOperand
+from solar.common.types import TensorShapes
 
 
 class TestExtendedEinsumDefinition:
@@ -33,7 +34,7 @@ class TestExtendedEinsumDefinition:
         """Test matmul has mul/add semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64], "Weight": [64, 128]}
+        shapes = TensorShapes(inputs=[[32, 64], [64, 128]], outputs=[])
         einsum_op = analyzer.get_einsum_op("matmul", shapes)
         
         assert einsum_op.elementwise_op == "mul"
@@ -44,7 +45,7 @@ class TestExtendedEinsumDefinition:
         """Test linear has mul/add semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [8, 16, 64], "Weight": [128, 64]}
+        shapes = TensorShapes(inputs=[[8, 16, 64], [128, 64]], outputs=[])
         
         einsum_op = analyzer.get_einsum_op("linear", shapes)
         
@@ -56,7 +57,7 @@ class TestExtendedEinsumDefinition:
         """Test conv2d has mul/add semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [1, 3, 224, 224], "Weight": [64, 3, 7, 7]}
+        shapes = TensorShapes(inputs=[[1, 3, 224, 224], [64, 3, 7, 7]], outputs=[])
         einsum_op = analyzer.get_einsum_op("conv2d", shapes)
         
         assert einsum_op.elementwise_op == "mul"
@@ -67,7 +68,7 @@ class TestExtendedEinsumDefinition:
         """Test add has add/none semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64], "Input_1": [32, 64]}
+        shapes = TensorShapes(inputs=[[32, 64], [32, 64]], outputs=[])
         einsum_op = analyzer.get_einsum_op("add", shapes)
         
         assert einsum_op.elementwise_op == "add"
@@ -78,7 +79,7 @@ class TestExtendedEinsumDefinition:
         """Test sub has sub/none semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64], "Input_1": [32, 64]}
+        shapes = TensorShapes(inputs=[[32, 64], [32, 64]], outputs=[])
         einsum_op = analyzer.get_einsum_op("sub", shapes)
         
         assert einsum_op.elementwise_op == "sub"
@@ -89,7 +90,7 @@ class TestExtendedEinsumDefinition:
         """Test mul has mul/none semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64], "Input_1": [32, 64]}
+        shapes = TensorShapes(inputs=[[32, 64], [32, 64]], outputs=[])
         einsum_op = analyzer.get_einsum_op("mul", shapes)
         
         assert einsum_op.elementwise_op == "mul"
@@ -100,7 +101,7 @@ class TestExtendedEinsumDefinition:
         """Test div has div/none semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64], "Input_1": [32, 64]}
+        shapes = TensorShapes(inputs=[[32, 64], [32, 64]], outputs=[])
         einsum_op = analyzer.get_einsum_op("div", shapes)
         
         assert einsum_op.elementwise_op == "div"
@@ -111,7 +112,7 @@ class TestExtendedEinsumDefinition:
         """Test sum has copy/add semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64, 128]}
+        shapes = TensorShapes(inputs=[[32, 64, 128]], outputs=[])
         einsum_op = analyzer.get_einsum_op("sum", shapes, dims=[1])
         
         assert einsum_op.elementwise_op == "copy"
@@ -122,7 +123,7 @@ class TestExtendedEinsumDefinition:
         """Test mean has copy/add semantics (mean = sum / count)."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64, 128]}
+        shapes = TensorShapes(inputs=[[32, 64, 128]], outputs=[])
         einsum_op = analyzer.get_einsum_op("mean", shapes, dims=[1])
         
         assert einsum_op.elementwise_op == "copy"
@@ -133,7 +134,7 @@ class TestExtendedEinsumDefinition:
         """Test prod has copy/mul semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64, 128]}
+        shapes = TensorShapes(inputs=[[32, 64, 128]], outputs=[])
         einsum_op = analyzer.get_einsum_op("prod", shapes, dims=[1])
         
         assert einsum_op.elementwise_op == "copy"
@@ -144,7 +145,7 @@ class TestExtendedEinsumDefinition:
         """Test max has copy/max semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64, 128]}
+        shapes = TensorShapes(inputs=[[32, 64, 128]], outputs=[])
         einsum_op = analyzer.get_einsum_op("max", shapes, dims=[1])
         
         assert einsum_op.elementwise_op == "copy"
@@ -155,7 +156,7 @@ class TestExtendedEinsumDefinition:
         """Test min has copy/min semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64, 128]}
+        shapes = TensorShapes(inputs=[[32, 64, 128]], outputs=[])
         einsum_op = analyzer.get_einsum_op("min", shapes, dims=[1])
         
         assert einsum_op.elementwise_op == "copy"
@@ -166,7 +167,7 @@ class TestExtendedEinsumDefinition:
         """Test relu has copy/none semantics."""
         analyzer = EinsumAnalyzer()
         
-        shapes = {"Input": [32, 64]}
+        shapes = TensorShapes(inputs=[[32, 64]], outputs=[])
         einsum_op = analyzer.get_einsum_op("relu", shapes)
         
         assert einsum_op.elementwise_op == "copy"
@@ -260,25 +261,25 @@ class TestMultiNodeExpansion:
         analyzer = EinsumAnalyzer()
         
         # Step 1: max reduction
-        max_op = analyzer.get_einsum_op("max", {"Input": [32, 64]}, dims=[1])
+        max_op = analyzer.get_einsum_op("max", TensorShapes(inputs=[[32, 64]], outputs=[]), dims=[1])
         assert max_op.reduction_op == "max"
         
         # Step 2: subtraction
-        sub_op = analyzer.get_einsum_op("sub", {"Input": [32, 64], "Input_1": [32, 1]})
+        sub_op = analyzer.get_einsum_op("sub", TensorShapes(inputs=[[32, 64], [32, 1]], outputs=[]))
         assert sub_op.elementwise_op == "sub"
         
         # Step 3: exp (unary)
-        exp_shapes = {"Input": [32, 64]}
+        exp_shapes = TensorShapes(inputs=[[32, 64]], outputs=[])
         exp_op = analyzer.generate_elementwise_einsum([32, 64], "exp")
         assert exp_op.elementwise_op == "copy"
         assert exp_op.reduction_op == "none"
         
         # Step 4: sum reduction
-        sum_op = analyzer.get_einsum_op("sum", {"Input": [32, 64]}, dims=[1])
+        sum_op = analyzer.get_einsum_op("sum", TensorShapes(inputs=[[32, 64]], outputs=[]), dims=[1])
         assert sum_op.reduction_op == "add"
         
         # Step 5: division
-        div_op = analyzer.get_einsum_op("div", {"Input": [32, 64], "Input_1": [32, 1]})
+        div_op = analyzer.get_einsum_op("div", TensorShapes(inputs=[[32, 64], [32, 1]], outputs=[]))
         assert div_op.elementwise_op == "div"
     
     def test_layer_norm_expansion_concept(self):
@@ -297,23 +298,23 @@ class TestMultiNodeExpansion:
         analyzer = EinsumAnalyzer()
         
         # Step 1: mean reduction
-        mean_op = analyzer.get_einsum_op("mean", {"Input": [8, 16, 64]}, dims=[2])
+        mean_op = analyzer.get_einsum_op("mean", TensorShapes(inputs=[[8, 16, 64]], outputs=[]), dims=[2])
         assert mean_op.reduction_op == "add"
         
         # Step 2: subtraction (centering)
-        sub_op = analyzer.get_einsum_op("sub", {"Input": [8, 16, 64], "Input_1": [8, 16, 1]})
+        sub_op = analyzer.get_einsum_op("sub", TensorShapes(inputs=[[8, 16, 64], [8, 16, 1]], outputs=[]))
         assert sub_op.elementwise_op == "sub"
         
         # Step 5: division (normalize)
-        div_op = analyzer.get_einsum_op("div", {"Input": [8, 16, 64], "Input_1": [8, 16, 1]})
+        div_op = analyzer.get_einsum_op("div", TensorShapes(inputs=[[8, 16, 64], [8, 16, 1]], outputs=[]))
         assert div_op.elementwise_op == "div"
         
         # Step 6a: scale by gamma
-        mul_op = analyzer.get_einsum_op("mul", {"Input": [8, 16, 64], "Input_1": [64]})
+        mul_op = analyzer.get_einsum_op("mul", TensorShapes(inputs=[[8, 16, 64], [64]], outputs=[]))
         assert mul_op.elementwise_op == "mul"
         
         # Step 6b: add beta
-        add_op = analyzer.get_einsum_op("add", {"Input": [8, 16, 64], "Input_1": [64]})
+        add_op = analyzer.get_einsum_op("add", TensorShapes(inputs=[[8, 16, 64], [64]], outputs=[]))
         assert add_op.elementwise_op == "add"
     
     def test_attention_expansion_concept(self):
@@ -332,27 +333,18 @@ class TestMultiNodeExpansion:
         batch_size, num_heads, seq_len, head_dim = 2, 8, 16, 64
         
         # Step 1: Q @ K^T -> scores
-        qk_shapes = {
-            "Input": [batch_size, num_heads, seq_len, head_dim],  # Q
-            "Weight": [batch_size, num_heads, seq_len, head_dim],  # K (will be transposed)
-        }
+        qk_shapes = TensorShapes(inputs=[[batch_size, num_heads, seq_len, head_dim], [batch_size, num_heads, seq_len, head_dim]], outputs=[])
         qk_op = analyzer.get_einsum_op("matmul", qk_shapes)
         assert qk_op.elementwise_op == "mul"
         assert qk_op.reduction_op == "add"
         
         # Step 2: Scale by 1/sqrt(d_k)
-        scale_shapes = {
-            "Input": [batch_size, num_heads, seq_len, seq_len],  # scores
-            "Input_1": [1],  # scalar scale factor
-        }
+        scale_shapes = TensorShapes(inputs=[[batch_size, num_heads, seq_len, seq_len], [1]], outputs=[])
         div_op = analyzer.get_einsum_op("div", scale_shapes)
         assert div_op.elementwise_op == "div"
         
         # Step 4: weights @ V -> output
-        wv_shapes = {
-            "Input": [batch_size, num_heads, seq_len, seq_len],  # weights
-            "Weight": [batch_size, num_heads, seq_len, head_dim],  # V
-        }
+        wv_shapes = TensorShapes(inputs=[[batch_size, num_heads, seq_len, seq_len], [batch_size, num_heads, seq_len, head_dim]], outputs=[])
         wv_op = analyzer.get_einsum_op("matmul", wv_shapes)
         assert wv_op.elementwise_op == "mul"
         assert wv_op.reduction_op == "add"
@@ -368,7 +360,7 @@ class TestMultiNodeExpansion:
         analyzer = EinsumAnalyzer()
         
         # GELU as a single unary operation
-        gelu_op = analyzer.get_einsum_op("gelu", {"Input": [32, 64]})
+        gelu_op = analyzer.get_einsum_op("gelu", TensorShapes(inputs=[[32, 64]], outputs=[]))
         assert gelu_op.elementwise_op == "copy"  # Treated as unary transform
         assert gelu_op.reduction_op == "none"
 
@@ -380,7 +372,7 @@ class TestEinsumOpYamlSerialization:
         """Test converting EinsumOp to dict for YAML."""
         analyzer = EinsumAnalyzer()
         
-        einsum_op = analyzer.get_einsum_op("add", {"Input": [32, 64], "Input_1": [32, 64]})
+        einsum_op = analyzer.get_einsum_op("add", TensorShapes(inputs=[[32, 64], [32, 64]], outputs=[]))
         
         # Simulate what pytorch_einsum_converter does
         output = {
@@ -400,7 +392,7 @@ class TestEinsumOpYamlSerialization:
         """Test matmul serialization."""
         analyzer = EinsumAnalyzer()
         
-        einsum_op = analyzer.get_einsum_op("matmul", {"Input": [32, 64], "Weight": [64, 128]})
+        einsum_op = analyzer.get_einsum_op("matmul", TensorShapes(inputs=[[32, 64], [64, 128]], outputs=[]))
         
         output = {
             "type": einsum_op.name,
