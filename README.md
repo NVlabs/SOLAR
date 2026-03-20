@@ -35,9 +35,6 @@ For PDF graph rendering, install Graphviz (`dot`).
 - [`docs/USAGE.md`](docs/USAGE.md): End-to-end pipeline + CLI + Python API overview
 - [`docs/SOL_GUIDE.md`](docs/SOL_GUIDE.md): SOL (Speed of Light Analysis for Runtime) methodology + metrics
 - [`docs/EINSUM_GUIDE.md`](docs/EINSUM_GUIDE.md): Einsum conversion details and conventions
-- [`docs/EINSUM_GRAPH_CHECKER_GUIDE.md`](docs/EINSUM_GRAPH_CHECKER_GUIDE.md): Einsum graph checker usage
-- [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md): Testing guide
-- [`scripts/README.md`](scripts/README.md): Benchmark runner notes
 
 ## Contributing
 

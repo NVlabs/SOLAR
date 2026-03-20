@@ -7,8 +7,7 @@ This guide explains the einsum equation conventions used in the Solar codebase f
 1. [Rank Variable Naming Convention](#rank-variable-naming-convention)
 2. [Einsum Equation Format](#einsum-equation-format)
 3. [Extended Einsum Operations](#extended-einsum-operations)
-4. [TACO Expression Format](#taco-expression-format)
-5. [Examples](#examples)
+4. [Examples](#examples)
 
 ---
 
@@ -126,10 +125,15 @@ einsum_equation: BC(P+T)(Q+R)(U+S),OCTRS->BOPQU
 
 #### Transposed Convolutions
 
-Transposed convolutions use subtraction in the sliding window:
+Transposed convolutions can be viewed as either:
+
+- **scatter**: each input element contributes to a window in the output (e.g., `out[p+r, q+s] += in[p, q] * w[r, s]`)
+- **gather**: each output element gathers from shifted input coordinates
+
+Solar uses the **gather** form so the output ranks stay as plain tokens (`P`, `Q`) and the sliding-window relationship appears in the input ranks via subtraction:
 
 ```yaml
-# ConvTranspose2d: BC(P-R)(Q-S),CKRS->BKPQ
+# ConvTranspose2d (gather form): out[b,k,p,q] += inp[b,c,p-r,q-s] * weight[c,k,r,s]
 einsum_equation: BC(P-R)(Q-S),CKRS->BKPQ
 ```
 
@@ -200,59 +204,6 @@ reduction_op: add
 
 ---
 
-## TACO Expression Format
-
-Solar can convert einsum equations to [TACO](http://tensor-compiler.org/) (Tensor Algebra Compiler) expression format for compatibility with sparse tensor compilers.
-
-### TACO Expression Syntax
-
-```
-Output(indices) = Output(indices) <reduction_op> Input0(indices) <elementwise_op> Input1(indices)
-```
-
-Where:
-- Indices are lowercase versions of the rank variables
-- `O0`, `In0`, `In1`, etc. are tensor names
-- Operations are explicit
-
-### Conversion Rules
-
-| Einsum | TACO |
-|--------|------|
-| `MK,KN->MN` | `O0(m,n) = O0(m,n) + In0(m,k) * In1(k,n)` |
-| `ABC->ABC` | `O0(a,b,c) = In0(a,b,c)` |
-| `ABC->AB` | `O0(a,b) = O0(a,b) + In0(a,b,c)` |
-
-### Examples
-
-```yaml
-# Matrix multiplication
-einsum_equation: B0B1K,NK->B0B1N
-elementwise_op: mul
-reduction_op: add
-taco_expression: O0(b0,b1,n) = O0(b0,b1,n) + In0(b0,b1,k) * In1(n,k)
-
-# Batched matmul
-einsum_equation: BMK,BKN->BMN
-elementwise_op: mul
-reduction_op: add
-taco_expression: O0(b,m,n) = O0(b,m,n) + In0(b,m,k) * In1(b,k,n)
-
-# Elementwise copy
-einsum_equation: ABC->ABC
-elementwise_op: null
-reduction_op: null
-taco_expression: O0(a,b,c) = In0(a,b,c)
-
-# Reduction (sum)
-einsum_equation: ABC->AB
-elementwise_op: null
-reduction_op: add
-taco_expression: O0(a,b) = O0(a,b) + In0(a,b,c)
-```
-
----
-
 ## Examples
 
 ### Complete Layer Examples
@@ -268,7 +219,6 @@ linear_0:
   einsum_equation: B0B1K,NK->B0B1N
   elementwise_op: mul
   reduction_op: add
-  taco_expression: O0(b0,b1,n) = O0(b0,b1,n) + In0(b0,b1,k) * In1(n,k)
   is_real_einsum: true
   is_einsum_supportable: true
   shapes:
@@ -304,7 +254,6 @@ linear_0:
   einsum_equation: B0B1K,NK->B0B1N
   elementwise_op: mul
   reduction_op: add
-  taco_expression: O0(b0,b1,n) = O0(b0,b1,n) + In0(b0,b1,k) * In1(n,k)
   is_real_einsum: true
   is_einsum_supportable: true
   shapes:
@@ -321,7 +270,6 @@ relu_0:
   einsum_equation: ABC->ABC
   elementwise_op: relu
   reduction_op: null
-  taco_expression: O0(a,b,c) = relu(In0(a,b,c))
   is_real_einsum: false
   is_einsum_supportable: true
   shapes:
@@ -338,7 +286,6 @@ softmax_max:
   einsum_equation: ABC->AB
   elementwise_op: null
   reduction_op: max
-  taco_expression: O0(a,b) = max(O0(a,b), In0(a,b,c))
   is_real_einsum: false
   is_einsum_supportable: true
 
@@ -348,7 +295,6 @@ softmax_exp:
   einsum_equation: ABC->ABC
   elementwise_op: exp
   reduction_op: null
-  taco_expression: O0(a,b,c) = exp(In0(a,b,c))
   is_real_einsum: false
   is_einsum_supportable: true
 
@@ -358,7 +304,6 @@ softmax_sum:
   einsum_equation: ABC->AB
   elementwise_op: null
   reduction_op: add
-  taco_expression: O0(a,b) = O0(a,b) + In0(a,b,c)
   is_real_einsum: false
   is_einsum_supportable: true
 ```
@@ -373,7 +318,6 @@ flatten_0:
   einsum_equation: ABCD->AE
   elementwise_op: null
   reduction_op: null
-  taco_expression: O0(a,e) = In0(a,b,c,d)  # where e = b*C*D + c*D + d
   is_real_einsum: false
   is_einsum_supportable: false
   shapes:
@@ -384,7 +328,7 @@ flatten_0:
     end_dim: -1
 ```
 
-Note: Flatten is marked `is_einsum_supportable: false` because it involves dimension reshaping rather than computation. The TACO expression shows the logical mapping but requires special handling for the index transformation.
+Note: Flatten is marked `is_einsum_supportable: false` because it involves dimension reshaping rather than computation and requires special handling for index transformations.
 
 ---
 
