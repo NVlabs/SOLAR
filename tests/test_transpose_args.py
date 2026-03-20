@@ -27,7 +27,13 @@ import pytest
 import torch
 import torch.nn as nn
 
+from solar.common.types import TensorShapes
 from solar.einsum.ops.shape_ops import TensorManipulationHandler, generate_dim_labels
+
+
+def _ts(inp, out=None):
+    """Shorthand to build TensorShapes from a single input/output pair."""
+    return TensorShapes(inputs=[inp], outputs=[out] if out else [])
 
 
 class TestGenerateDimLabels:
@@ -62,10 +68,7 @@ class TestTransposeShapeInference:
     def test_transpose_swap_dims_1_2(self, handler):
         """Test transpose(1, 2) on 4D tensor."""
         # [2, 32, 4, 16] -> [2, 4, 32, 16] (swap dims 1 and 2)
-        shapes = {
-            "Input": [2, 32, 4, 16],
-            "Output": [2, 4, 32, 16],
-        }
+        shapes = _ts([2, 32, 4, 16], [2, 4, 32, 16])
         result = handler.generate_einsum("transpose", shapes)
         
         assert result.equation == "ABCD->ACBD", \
@@ -77,10 +80,7 @@ class TestTransposeShapeInference:
     def test_transpose_swap_dims_2_3(self, handler):
         """Test transpose(2, 3) on 4D tensor."""
         # [2, 4, 32, 16] -> [2, 4, 16, 32] (swap dims 2 and 3)
-        shapes = {
-            "Input": [2, 4, 32, 16],
-            "Output": [2, 4, 16, 32],
-        }
+        shapes = _ts([2, 4, 32, 16], [2, 4, 16, 32])
         result = handler.generate_einsum("transpose", shapes)
         
         assert result.equation == "ABCD->ABDC", \
@@ -89,10 +89,7 @@ class TestTransposeShapeInference:
     def test_transpose_2d_matrix(self, handler):
         """Test transpose on 2D matrix."""
         # [32, 64] -> [64, 32]
-        shapes = {
-            "Input": [32, 64],
-            "Output": [64, 32],
-        }
+        shapes = _ts([32, 64], [64, 32])
         result = handler.generate_einsum("transpose", shapes)
         
         assert result.equation == "AB->BA", \
@@ -101,10 +98,7 @@ class TestTransposeShapeInference:
     def test_t_operation(self, handler):
         """Test t() operation (2D transpose)."""
         # t() is equivalent to transpose(0, 1) for 2D tensors
-        shapes = {
-            "Input": [32, 64],
-            "Output": [64, 32],
-        }
+        shapes = _ts([32, 64], [64, 32])
         result = handler.generate_einsum("t", shapes)
         
         assert result.equation == "AB->BA", \
@@ -112,10 +106,7 @@ class TestTransposeShapeInference:
     
     def test_contiguous_identity(self, handler):
         """Test contiguous operation (should be identity)."""
-        shapes = {
-            "Input": [2, 4, 32, 16],
-            "Output": [2, 4, 32, 16],
-        }
+        shapes = _ts([2, 4, 32, 16], [2, 4, 32, 16])
         result = handler.generate_einsum("contiguous", shapes)
         
         assert result.equation == "ABCD->ABCD", \
@@ -124,10 +115,7 @@ class TestTransposeShapeInference:
     def test_permute_reorder_all_dims(self, handler):
         """Test permute that reorders all dimensions."""
         # permute(0, 2, 1, 3): [2, 32, 4, 16] -> [2, 4, 32, 16]
-        shapes = {
-            "Input": [2, 32, 4, 16],
-            "Output": [2, 4, 32, 16],
-        }
+        shapes = _ts([2, 32, 4, 16], [2, 4, 32, 16])
         result = handler.generate_einsum("permute", shapes)
         
         assert result.equation == "ABCD->ACBD", \
@@ -137,10 +125,7 @@ class TestTransposeShapeInference:
         """Test transpose with duplicate dimension sizes."""
         # [2, 32, 32, 16] -> [2, 32, 32, 16] (swap identical dims)
         # This is ambiguous, but should still produce valid output
-        shapes = {
-            "Input": [2, 32, 32, 16],
-            "Output": [2, 32, 32, 16],
-        }
+        shapes = _ts([2, 32, 32, 16], [2, 32, 32, 16])
         result = handler.generate_einsum("transpose", shapes)
         
         # Should be identity since shapes are the same
@@ -149,10 +134,7 @@ class TestTransposeShapeInference:
     
     def test_transpose_batch_head_swap(self, handler):
         """Test attention-style transpose: [B, S, H, D] -> [B, H, S, D]."""
-        shapes = {
-            "Input": [2, 32, 4, 16],  # [B, S, H, D]
-            "Output": [2, 4, 32, 16],  # [B, H, S, D]
-        }
+        shapes = _ts([2, 32, 4, 16], [2, 4, 32, 16])  # [B,S,H,D] -> [B,H,S,D]
         result = handler.generate_einsum("transpose", shapes)
         
         assert result.equation == "ABCD->ACBD", \
@@ -169,10 +151,7 @@ class TestReshapeOperations:
     def test_view_expand_dims(self, handler):
         """Test view that expands dimensions."""
         # [2, 32, 64] -> [2, 32, 4, 16]
-        shapes = {
-            "Input": [2, 32, 64],
-            "Output": [2, 32, 4, 16],
-        }
+        shapes = _ts([2, 32, 64], [2, 32, 4, 16])
         result = handler.generate_einsum("view", shapes)
         
         # Should use different labels for input/output
@@ -185,10 +164,7 @@ class TestReshapeOperations:
     def test_reshape_collapse_dims(self, handler):
         """Test reshape that collapses dimensions."""
         # [2, 32, 4, 16] -> [2, 32, 64]
-        shapes = {
-            "Input": [2, 32, 4, 16],
-            "Output": [2, 32, 64],
-        }
+        shapes = _ts([2, 32, 4, 16], [2, 32, 64])
         result = handler.generate_einsum("reshape", shapes)
         
         assert result.equation == "I0I1I2I3->O0O1O2", \
@@ -197,10 +173,7 @@ class TestReshapeOperations:
     def test_flatten(self, handler):
         """Test flatten operation."""
         # [2, 32, 64] -> [2, 2048]
-        shapes = {
-            "Input": [2, 32, 64],
-            "Output": [2, 2048],
-        }
+        shapes = _ts([2, 32, 64], [2, 2048])
         result = handler.generate_einsum("flatten", shapes)
         
         assert result.equation == "I0I1I2->O0O1", \
@@ -216,14 +189,14 @@ class TestEdgeCases:
     
     def test_missing_input_shape(self, handler):
         """Test error when Input shape is missing."""
-        shapes = {"Output": [2, 4, 32, 16]}
+        shapes = TensorShapes(inputs=[], outputs=[[2, 4, 32, 16]])
         
         with pytest.raises(ValueError, match="Missing Input shape"):
             handler.generate_einsum("transpose", shapes)
     
     def test_missing_output_shape_uses_input(self, handler):
         """Test that missing Output shape defaults to Input shape."""
-        shapes = {"Input": [2, 4, 32, 16]}
+        shapes = _ts([2, 4, 32, 16])
         result = handler.generate_einsum("contiguous", shapes)
         
         # Should be identity
@@ -231,10 +204,7 @@ class TestEdgeCases:
     
     def test_high_rank_tensor(self, handler):
         """Test with high-rank tensor (>4 dims)."""
-        shapes = {
-            "Input": [2, 3, 4, 5, 6, 7],
-            "Output": [2, 3, 4, 5, 7, 6],  # Swap last two dims
-        }
+        shapes = _ts([2, 3, 4, 5, 6, 7], [2, 3, 4, 5, 7, 6])  # swap last two
         result = handler.generate_einsum("transpose", shapes)
         
         assert result.equation == "ABCDEF->ABCDFE", \

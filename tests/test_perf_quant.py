@@ -359,3 +359,117 @@ class TestPerfSMCycles:
         """Perf output should include MAC_per_cycle_fp32_sm from arch."""
         _, perf = self._analyze_and_predict(tmp_path, ELEMENTWISE_MODEL_SOURCE)
         assert perf["arch"]["MAC_per_cycle_fp32_sm"] > 0
+
+
+class TestPerfPrecisions:
+    """Test that different FP precisions produce different perf results.
+
+    B200 has distinct throughputs for each precision:
+        fp32_sm  < tf32_tc  < fp16_tc = bf16_tc  < fp8_tc  < nvfp4_tc
+    And bytes_per_element: fp32=4, fp16=bf16=2, fp8=int8=1, nvfp4=0.5
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path):
+        self.tmp_path = tmp_path
+        einsum_dir = _run_pipeline_from_source(tmp_path, MATMUL_MODEL_SOURCE)
+        self.renamed = einsum_dir / "einsum_graph_renamed.yaml"
+
+        analysis_dir = tmp_path / "analysis"
+        analysis_dir.mkdir()
+        analyzer = EinsumGraphAnalyzer()
+        analyzer.analyze_graph(
+            str(self.renamed), str(analysis_dir),
+            precision="fp32", copy_graph=False,
+        )
+        self.analysis_path = analysis_dir / "analysis.yaml"
+
+    def _predict(self, precision):
+        perf_dir = self.tmp_path / f"perf_{precision}"
+        perf_dir.mkdir(exist_ok=True)
+        model = EinsumGraphPerfModel()
+        perf = model.predict(
+            str(self.analysis_path), str(perf_dir),
+            arch_config="B200", precision=precision,
+        )
+        assert perf is not None, f"Predict failed for precision={precision}"
+        return perf
+
+    def test_fp32_uses_sm_key(self):
+        """fp32 should fall back to fp32_tc (or fp32_sm) key."""
+        perf = self._predict("fp32")
+        assert "fp32" in perf["arch"]["mac_per_cycle_key"]
+
+    def test_fp16_uses_fp16_tc(self):
+        perf = self._predict("fp16")
+        assert perf["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_fp16_tc"
+
+    def test_bf16_uses_bf16_tc(self):
+        perf = self._predict("bf16")
+        assert perf["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_bf16_tc"
+
+    def test_fp16_and_bf16_same_throughput(self):
+        """FP16 and BF16 have identical tensor core throughput on B200."""
+        perf_fp16 = self._predict("fp16")
+        perf_bf16 = self._predict("bf16")
+        assert perf_fp16["arch"]["MAC_per_cycle"] == perf_bf16["arch"]["MAC_per_cycle"]
+
+    def test_fp8_higher_throughput_than_fp16(self):
+        perf_fp16 = self._predict("fp16")
+        perf_fp8 = self._predict("fp8")
+        assert perf_fp8["arch"]["MAC_per_cycle"] > perf_fp16["arch"]["MAC_per_cycle"]
+
+    def test_fp8_fewer_bytes_than_fp16(self):
+        perf_fp16 = self._predict("fp16")
+        perf_fp8 = self._predict("fp8")
+        assert perf_fp8["workload"]["bytes_per_element"] < perf_fp16["workload"]["bytes_per_element"]
+
+    def test_nvfp4_highest_throughput(self):
+        """NVFP4 should have highest MAC throughput of all precisions."""
+        perf_fp16 = self._predict("fp16")
+        perf_fp8 = self._predict("fp8")
+        perf_nvfp4 = self._predict("nvfp4")
+        assert perf_nvfp4["arch"]["MAC_per_cycle"] > perf_fp8["arch"]["MAC_per_cycle"]
+        assert perf_nvfp4["arch"]["MAC_per_cycle"] > perf_fp16["arch"]["MAC_per_cycle"]
+
+    def test_nvfp4_half_byte(self):
+        """NVFP4 uses 0.5 bytes per element."""
+        perf = self._predict("nvfp4")
+        assert perf["workload"]["bytes_per_element"] == 0.5
+
+    def test_fp32_four_bytes(self):
+        perf = self._predict("fp32")
+        assert perf["workload"]["bytes_per_element"] == 4
+
+    def test_fp16_two_bytes(self):
+        perf = self._predict("fp16")
+        assert perf["workload"]["bytes_per_element"] == 2
+
+    def test_fp8_one_byte(self):
+        perf = self._predict("fp8")
+        assert perf["workload"]["bytes_per_element"] == 1
+
+    def test_higher_precision_slower_runtime(self):
+        """fp32 should be slower than fp16 which should be slower than fp8."""
+        perf_fp32 = self._predict("fp32")
+        perf_fp16 = self._predict("fp16")
+        perf_fp8 = self._predict("fp8")
+        assert perf_fp32["fused"]["runtime_ms"] > perf_fp16["fused"]["runtime_ms"]
+        assert perf_fp16["fused"]["runtime_ms"] > perf_fp8["fused"]["runtime_ms"]
+
+    def test_memory_bytes_scale_with_precision(self):
+        """Memory bytes should scale with bytes_per_element."""
+        perf_fp32 = self._predict("fp32")
+        perf_fp16 = self._predict("fp16")
+        fp32_bytes = perf_fp32["fused"]["memory_bytes"]
+        fp16_bytes = perf_fp16["fused"]["memory_bytes"]
+        ratio = fp32_bytes / fp16_bytes
+        assert 1.9 < ratio < 2.1, f"fp32/fp16 memory ratio should be ~2, got {ratio}"
+
+    def test_all_precisions_produce_valid_output(self):
+        """All supported precisions should produce valid perf dicts."""
+        for prec in ["fp32", "fp16", "bf16", "fp8", "nvfp4"]:
+            perf = self._predict(prec)
+            assert perf["workload"]["total_macs"] > 0
+            assert perf["fused"]["total_cycles"] > 0
+            assert perf["fused"]["runtime_ms"] > 0

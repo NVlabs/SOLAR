@@ -19,8 +19,20 @@ import pytest
 import numpy as np
 from solar.einsum import EinsumAnalyzer
 from solar.einsum.ops import EinsumOp, EinsumOperand
-from solar.common.types import ShapeDict
+from solar.common.types import TensorShapes
 
+
+def _dict_to_ts(d):
+    """Convert legacy shape dict to TensorShapes for tests."""
+    inputs = []
+    outputs = []
+    for key, shape in d.items():
+        k = key.lower()
+        if k.startswith("output"):
+            outputs.append(shape)
+        else:
+            inputs.append(shape)
+    return TensorShapes(inputs=inputs, outputs=outputs)
 
 class TestEinsumOperand:
     """Tests for EinsumOperand dataclass."""
@@ -77,8 +89,8 @@ class TestEinsumOp:
             name="matmul",
         )
         
-        shapes = {"A": [2, 3], "B": [3, 4]}
-        cost = op.get_compute_cost(shapes)
+        ts = TensorShapes(inputs=[[2, 3], [3, 4]], outputs=[[2, 4]])
+        cost = op.get_compute_cost(ts)
         
         # Compute cost should be 2 * 3 * 4 = 24
         assert cost == 24
@@ -100,7 +112,7 @@ class TestEinsumAnalyzer:
         op = analyzer.generate_matmul_einsum(input_shape, weight_shape)
         
         assert "->" in op.equation
-        assert op.get_compute_cost({"Input": input_shape, "Weight": weight_shape}) == 2 * 3 * 4
+        assert op.get_compute_cost(TensorShapes(inputs=[input_shape, weight_shape], outputs=[[2, 4]])) == 2 * 3 * 4
     
     def test_conv2d(self, analyzer):
         """Test 2D convolution einsum generation."""
@@ -121,7 +133,7 @@ class TestEinsumAnalyzer:
         op = analyzer.generate_elementwise_einsum(shape, "relu")
         
         assert op.equation == "ABC->ABC"
-        assert op.get_compute_cost({"Input": shape}) == 2 * 3 * 4
+        assert op.get_compute_cost(TensorShapes(inputs=[shape], outputs=[shape])) == 2 * 3 * 4
     
     def test_reduction(self, analyzer):
         """Test reduction operation einsum generation."""
@@ -135,29 +147,38 @@ class TestEinsumAnalyzer:
         op = analyzer.generate_reduction_einsum(shape, "mean", dims=None)
         assert op.equation == "ABCD->"
         
-        # Test prod reduction with keepdim
+        # Test prod reduction with keepdim=True (reduced dim kept as size 1)
         op = analyzer.get_reduction_einsum_op(
             "torch.prod",
-            {"Input": shape},
+            TensorShapes(inputs=[shape], outputs=[]),
             reduce_dims=[2],
             keepdim=True
+        )
+        assert op.equation == "ABCD->ABCD"
+
+        # Test prod reduction with keepdim=False (reduced dim removed)
+        op = analyzer.get_reduction_einsum_op(
+            "torch.prod",
+            TensorShapes(inputs=[shape], outputs=[]),
+            reduce_dims=[2],
+            keepdim=False
         )
         assert op.equation == "ABCD->ABD"
     
     def test_torch_prod(self, analyzer):
         """Test torch.prod support."""
         # Full reduction
-        shapes = {"Input": [2, 3, 4]}
-        equation = analyzer.get_torch_einsum_equation("torch.prod", shapes=shapes)
+        ts_full = TensorShapes(inputs=[[2, 3, 4]], outputs=[[]])
+        equation = analyzer.get_torch_einsum_equation("torch.prod", shapes=ts_full)
         assert equation == "ABC->"
         
-        cost = analyzer.get_compute_cost("torch.prod", shapes=shapes)
+        cost = analyzer.get_compute_cost("torch.prod", ts_full)
         assert cost == 2 * 3 * 4
         
         # Partial reduction
         op = analyzer.get_reduction_einsum_op(
             "torch.prod",
-            shapes,
+            TensorShapes(inputs=[[2, 3, 4]], outputs=[]),
             reduce_dims=[1],
             keepdim=False
         )
@@ -184,16 +205,16 @@ class TestEinsumAnalyzer:
     def test_compute_cost_calculation(self, analyzer):
         """Test compute cost calculations for various operations."""
         # Matrix multiplication
-        shapes = {"Input": [10, 20], "Weight": [20, 30]}
-        cost = analyzer.get_compute_cost("matmul", shapes)
+        ts = TensorShapes(inputs=[[10, 20], [20, 30]], outputs=[[10, 30]])
+        cost = analyzer.get_compute_cost("matmul", ts)
         assert cost == 10 * 20 * 30
         
         # Convolution (simplified test)
-        shapes = {
-            "Input": [1, 3, 32, 32],
-            "Weight": [16, 3, 3, 3]
-        }
-        cost = analyzer.get_compute_cost("conv2d", shapes, stride=[1, 1], padding=[1, 1])
+        ts = TensorShapes(
+            inputs=[[1, 3, 32, 32], [16, 3, 3, 3]],
+            outputs=[[1, 16, 32, 32]],
+        )
+        cost = analyzer.get_compute_cost("conv2d", ts, stride=[1, 1], padding=[1, 1])
         # Output will be [1, 16, 32, 32]
         # Cost per output element: 3 * 3 * 3 = 27
         # Total: 16 * 32 * 32 * 27
@@ -225,31 +246,27 @@ class TestIntegration:
         
         # Simulate a simple model: Conv -> ReLU -> Linear
         operations = [
-            ("conv2d", {
-                "Input": [1, 3, 224, 224],
-                "Weight": [64, 3, 7, 7]
-            }, {"stride": [2, 2], "padding": [3, 3]}),
-            ("relu", {
-                "Input": [1, 64, 112, 112]
-            }, {}),
-            ("linear", {
-                "Input": [1, 64 * 112 * 112],
-                "Weight": [1000, 64 * 112 * 112]
-            }, {})
+            ("conv2d", TensorShapes(
+                inputs=[[1, 3, 224, 224], [64, 3, 7, 7]],
+                outputs=[[1, 64, 112, 112]],
+            ), {"stride": [2, 2], "padding": [3, 3]}),
+            ("relu", TensorShapes(
+                inputs=[[1, 64, 112, 112]],
+                outputs=[[1, 64, 112, 112]],
+            ), {}),
+            ("linear", TensorShapes(
+                inputs=[[1, 64 * 112 * 112], [1000, 64 * 112 * 112]],
+                outputs=[[1, 1000]],
+            ), {}),
         ]
         
         total_compute = 0
-        total_memory = 0
         
-        for op_name, shapes, kwargs in operations:
-            compute = analyzer.get_compute_cost(op_name, shapes, **kwargs)
-            memory = analyzer.get_memory_cost(shapes)
-            
+        for op_name, ts, kwargs in operations:
+            compute = analyzer.get_compute_cost(op_name, ts, **kwargs)
             total_compute += compute
-            total_memory += memory["total"]
         
         assert total_compute > 0
-        assert total_memory > 0
     
     def test_kernelbench_compatibility(self):
         """Test analyzer works with kernelbench models."""

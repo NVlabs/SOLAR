@@ -68,7 +68,7 @@ class TestTorchviewProcessor:
         
         assert isinstance(node_info, NodeInfo)
         assert node_info.node_id == "test_node"
-        assert node_info.node_type == "conv2d"
+        assert node_info.type == "conv2d"
     
     def test_infer_parameter_name(self):
         """Test parameter name inference."""

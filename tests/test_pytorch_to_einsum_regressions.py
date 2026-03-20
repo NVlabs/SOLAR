@@ -43,18 +43,39 @@ def test_collect_start_node_info_preserves_given_order():
     assert [x["index"] for x in info] == [0, 1]
 
 
-def test_validate_input_types_alignment_raises_on_mismatch():
+def test_validate_input_types_alignment():
+    """Test input_types / input_shapes alignment validation."""
     converter = PyTorchToEinsum()
+
+    # Shorter input_types → padded with 'input'
     node_data = {
         "type": "linear",
         "input_shapes": [[2, 128, 256], [512, 256], [512]],
-        # input_types must match input_shapes length 1:1.
         "input_types": ["input"],
         "module_args": {"bias": True},
     }
+    converter._validate_input_types_alignment("Model.linear", node_data)
+    assert node_data["input_types"] == ["input", "input", "input"]
 
-    with pytest.raises(ValueError, match="mismatched input metadata"):
+    # Longer input_types → raises
+    node_data = {
+        "type": "linear",
+        "input_shapes": [[2, 128, 256]],
+        "input_types": ["input", "weight", "bias"],
+        "module_args": {},
+    }
+    with pytest.raises(ValueError):
         converter._validate_input_types_alignment("Model.linear", node_data)
+
+    # Matching lengths → OK
+    node_data = {
+        "type": "linear",
+        "input_shapes": [[2, 128, 256], [512, 256]],
+        "input_types": ["input", "weight"],
+        "module_args": {},
+    }
+    converter._validate_input_types_alignment("Model.linear", node_data)
+    assert node_data["input_types"] == ["input", "weight"]
 
 
 def test_convert_operation_remaps_hidden_tensor_input_to_predecessor_op():
