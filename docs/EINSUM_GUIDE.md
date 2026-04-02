@@ -123,20 +123,6 @@ einsum_equation: BC(P+R),OCR->BOP
 einsum_equation: BC(P+T)(Q+R)(U+S),OCTRS->BOPQU
 ```
 
-#### Transposed Convolutions
-
-Transposed convolutions can be viewed as either:
-
-- **scatter**: each input element contributes to a window in the output (e.g., `out[p+r, q+s] += in[p, q] * w[r, s]`)
-- **gather**: each output element gathers from shifted input coordinates
-
-Solar uses the **gather** form so the output ranks stay as plain tokens (`P`, `Q`) and the sliding-window relationship appears in the input ranks via subtraction:
-
-```yaml
-# ConvTranspose2d (gather form): out[b,k,p,q] += inp[b,c,p-r,q-s] * weight[c,k,r,s]
-einsum_equation: BC(P-R)(Q-S),CKRS->BKPQ
-```
-
 ---
 
 ## Extended Einsum Operations
