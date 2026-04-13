@@ -634,10 +634,13 @@ class PyTorchToEinsum:
             # Filter to only include operation nodes
             valid_consumers = [c for c in consumers if c in op_ids]
             
+            output_dtypes = aux_data.get("output_dtypes") or []
+
             start_nodes_info.append({
                 "original_id": aux_id,
                 "index": idx,
                 "output_shapes": output_shapes,
+                "output_dtypes": output_dtypes,
                 "consumers": valid_consumers,
             })
             
@@ -1384,7 +1387,7 @@ class PyTorchToEinsum:
                 labels = string.ascii_uppercase[:dims]
                 equation = f"->{labels}"
             
-            result["layers"][start_id] = {
+            layer_dict: Dict[str, Any] = {
                 "type": "start",
                 "einsum_equation": equation,
                 "elementwise_op": "copy",
@@ -1402,6 +1405,16 @@ class PyTorchToEinsum:
                     "outputs": consumers,
                 },
             }
+
+            # Propagate dtype info for start nodes
+            output_dtypes = info.get("output_dtypes") or []
+            if output_dtypes:
+                layer_dict["tensor_dtypes"] = {
+                    "inputs": [],
+                    "outputs": output_dtypes,
+                }
+
+            result["layers"][start_id] = layer_dict
             
         return start_node_id_map
 
@@ -1600,6 +1613,16 @@ class PyTorchToEinsum:
             )
         ]
         
+        # Propagate dtype info from pytorch graph so downstream stages
+        # (graph_analyzer) can detect non-standard dtypes like torch.bool.
+        input_dtypes = list(node_data.get("input_dtypes") or [])
+        output_dtypes = list(node_data.get("output_dtypes") or [])
+        tensor_dtypes: Dict[str, Any] = {}
+        if input_dtypes:
+            tensor_dtypes["inputs"] = input_dtypes
+        if output_dtypes:
+            tensor_dtypes["outputs"] = output_dtypes
+
         result: Dict[str, Any] = {
             "type": node_type,
             "einsum_equation": equation,
@@ -1615,15 +1638,18 @@ class PyTorchToEinsum:
                 "outputs": output_connections,
             },
         }
-        
+
+        if tensor_dtypes:
+            result["tensor_dtypes"] = tensor_dtypes
+
         if additional_info:
             result["additional_info"] = additional_info
-        
+
         # Pass through raw_attributes from module_args if present
         raw_attributes = module_args.get("raw_attributes")
         if raw_attributes:
             result["raw_attributes"] = raw_attributes
-        
+
         return result
 
     def _build_tensor_names(

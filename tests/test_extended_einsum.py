@@ -164,13 +164,13 @@ class TestExtendedEinsumDefinition:
         assert einsum_op.is_real_einsum is False
     
     def test_relu_ops(self):
-        """Test relu has copy/none semantics."""
+        """Test relu has relu/none semantics (unary elementwise preserves op name)."""
         analyzer = EinsumAnalyzer()
         
         shapes = TensorShapes(inputs=[[32, 64]], outputs=[])
         einsum_op = analyzer.get_einsum_op("relu", shapes)
         
-        assert einsum_op.elementwise_op == "copy"
+        assert einsum_op.elementwise_op == "relu"
         assert einsum_op.reduction_op == "none"
         assert einsum_op.is_real_einsum is False
 
@@ -268,10 +268,10 @@ class TestMultiNodeExpansion:
         sub_op = analyzer.get_einsum_op("sub", TensorShapes(inputs=[[32, 64], [32, 1]], outputs=[]))
         assert sub_op.elementwise_op == "sub"
         
-        # Step 3: exp (unary)
+        # Step 3: exp (unary elementwise preserves op name)
         exp_shapes = TensorShapes(inputs=[[32, 64]], outputs=[])
         exp_op = analyzer.generate_elementwise_einsum([32, 64], "exp")
-        assert exp_op.elementwise_op == "copy"
+        assert exp_op.elementwise_op == "exp"
         assert exp_op.reduction_op == "none"
         
         # Step 4: sum reduction
@@ -359,9 +359,9 @@ class TestMultiNodeExpansion:
         """
         analyzer = EinsumAnalyzer()
         
-        # GELU as a single unary operation
+        # GELU as a single unary operation (preserves op name)
         gelu_op = analyzer.get_einsum_op("gelu", TensorShapes(inputs=[[32, 64]], outputs=[]))
-        assert gelu_op.elementwise_op == "copy"  # Treated as unary transform
+        assert gelu_op.elementwise_op == "gelu"
         assert gelu_op.reduction_op == "none"
 
 

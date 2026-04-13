@@ -24,10 +24,11 @@ The output `analysis.yaml` is intended to be hardware-independent and includes:
 - totals across the graph
 
 Memory Access Models (in elements, multiply by bytes_per_element for bytes):
-- unfused_elements: All tensor accesses (inputs + outputs) per op
+- unfused_elements: All tensor accesses (inputs + outputs) per op, summed
 - orojenesis_elements: Set to None (orojenesis runs not enabled)
-- fused_elements: Model I/O only (intermediate tensors excluded per op)
-- fused_prefetched_elements: Total model I/O across entire graph (single roofline)
+- fused_elements: Deduplicated external I/O (weights + model inputs/outputs),
+    same tensor read by multiple ops counted once. Equal to fused_prefetched.
+- fused_prefetched_elements: Same as fused_elements (deduplicated external I/O)
 
 Note: input_elements includes all inputs to an operation (including weights/biases).
 Weights are treated as inputs since they are just another operand to the computation.
@@ -126,18 +127,26 @@ class EinsumGraphAnalyzer:
 
         # Filter out "start" nodes - they represent model inputs, not computation
         # Keep track of start node IDs for reference
+        _BOOL_DTYPES = {"torch.bool", "bool"}
         start_node_ids: Set[str] = set()
+        bool_start_node_ids: Set[str] = set()
         layers_in: Dict[str, Any] = {}
-        
+
         for layer_id, layer in all_layers.items():
             op_type = str(layer.get("type", "")).lower()
             if op_type == "start":
                 start_node_ids.add(layer_id)
+                # Detect bool-typed start nodes from tensor_dtypes
+                out_dtypes = (layer.get("tensor_dtypes") or {}).get("outputs") or []
+                if out_dtypes and all(str(d) in _BOOL_DTYPES for d in out_dtypes):
+                    bool_start_node_ids.add(layer_id)
             else:
                 layers_in[layer_id] = layer
-        
+
         if self.debug:
             print(f"Debug: Filtered out {len(start_node_ids)} start nodes")
+            if bool_start_node_ids:
+                print(f"Debug: Found {len(bool_start_node_ids)} bool-typed start nodes: {bool_start_node_ids}")
             print(f"Debug: Analyzing {len(layers_in)} computation nodes")
 
         # Build tensor producer/consumer maps using tensor_names from the
@@ -148,12 +157,15 @@ class EinsumGraphAnalyzer:
         tensor_producers: Dict[str, str] = {}   # tensor_name -> producer_layer_id
         tensor_consumers: Dict[str, Set[str]] = {}  # tensor_name -> set of consumer_layer_ids
 
+        # Pass 1: gather all produced tensor names (order-independent).
         for layer_id, layer in layers_in.items():
             t_names = layer.get("tensor_names") or {}
-
             for oname in (t_names.get("outputs") or []):
                 tensor_producers[oname] = layer_id
 
+        # Pass 2: gather consumers for tensors produced somewhere in graph.
+        for layer_id, layer in layers_in.items():
+            t_names = layer.get("tensor_names") or {}
             for iname in (t_names.get("inputs") or []):
                 if iname in tensor_producers:
                     tensor_consumers.setdefault(iname, set()).add(layer_id)
@@ -169,13 +181,47 @@ class EinsumGraphAnalyzer:
             for t in sorted(intermediate_tensors)[:10]:
                 print(f"  - {t}")
 
+        # TEMPORARY FIX: Propagate bool-ness from start nodes through graph.
+        # A computation layer is "bool" if ALL its inputs come from bool
+        # sources (bool start nodes or other bool layers).
+        _bool_layers: Set[str] = set()
+        if bool_start_node_ids:
+            # Process layers in topological-ish order (inputs before outputs)
+            # by iterating until no more layers are added.
+            changed = True
+            while changed:
+                changed = False
+                for layer_id, layer in layers_in.items():
+                    if layer_id in _bool_layers:
+                        continue
+                    conns = layer.get("connections") or {}
+                    inp_ids = list(conns.get("inputs") or [])
+                    if not inp_ids:
+                        continue
+                    # All inputs must be bool (start or layer)
+                    if all(
+                        inp in bool_start_node_ids or inp in _bool_layers
+                        for inp in inp_ids
+                    ):
+                        _bool_layers.add(layer_id)
+                        changed = True
+
+            if self.debug and _bool_layers:
+                print(f"Debug: Skipping memory for {len(_bool_layers)} bool-derived layers: {sorted(_bool_layers)}")
+
         layers_out: Dict[str, Any] = {}
-        total_macs = 0
-        total_flops = 0
-        total_other_ops = 0
-        total_unfused_elems = 0
-        total_fused_elems = 0
-        total_intermediate_elems = 0
+        total_macs = 0          # tensor-core MACs (matmul, conv)
+        total_flops = 0         # 2 * total_macs
+        total_other_ops = 0     # CUDA-core elementwise/reduction ops
+        total_unfused_elems = 0       # Σ (all input + output elems) per op
+        total_intermediate_elems = 0  # Σ intermediate activation elems
+
+        # Deduplicated external (non-intermediate) tensor tracking for the
+        # fused / fused_prefetched model.  When the same external tensor
+        # (e.g. model input x) fans out to multiple ops, it is read from
+        # DRAM once.  We track by tensor_name → max element count.
+        unique_external_inputs: Dict[str, int] = {}
+        unique_external_outputs: Dict[str, int] = {}
 
         for layer_id, layer in layers_in.items():
             op_type = str(layer.get("type", "unknown"))
@@ -215,7 +261,6 @@ class EinsumGraphAnalyzer:
             #   have zero *compute* cost — bounded by memory bandwidth, not
             #   SM throughput.  Their memory cost is already captured by
             #   input_elems/output_elems; assigning them other_ops would
-            #   double-count as both memory AND compute.
             _ZERO_COMPUTE_OPS = {
                 # Embedding
                 "embedding", "embedding_bag",
@@ -259,29 +304,22 @@ class EinsumGraphAnalyzer:
             input_type_list = tensor_types.get("inputs") or []
             output_type_list = tensor_types.get("outputs") or []
 
-            # Per-tensor element counts and sizes
+            # ── Step 1: Compute per-tensor sizes from shapes ──
             input_sizes: List[int] = []
             output_sizes: List[int] = []
-            input_elems = 0
-            output_elems = 0
-
             for shp in input_shapes:
-                if isinstance(shp, list):
-                    e = _product(shp)
-                    input_sizes.append(int(e))
-                    input_elems += e
-            input_elems = int(input_elems)
-
+                input_sizes.append(_product(shp) if isinstance(shp, list) else 0)
             for shp in output_shapes:
-                if isinstance(shp, list):
-                    e = _product(shp)
-                    output_sizes.append(int(e))
-                    output_elems += e
-            output_elems = int(output_elems)
+                output_sizes.append(_product(shp) if isinstance(shp, list) else 0)
 
-            # View/reshape ops produce zero-copy aliases — they never
-            # materialize data to DRAM.  The downstream consumer accounts
-            # for the actual read, so these ops contribute 0 memory.
+            # memory_reads[i]  = DRAM read elements for input tensor i
+            # memory_writes[i] = DRAM write elements for output tensor i
+            # Initialised to raw tensor sizes; special-case ops override below.
+            memory_reads: List[int] = list(input_sizes)
+            memory_writes: List[int] = list(output_sizes)
+
+            # ── Step 2: Override memory_reads/writes for special-case ops ──
+
             _ZERO_COPY_VIEW_OPS = {
                 "expand", "expand_as",
                 "view", "reshape", "contiguous",
@@ -291,92 +329,142 @@ class EinsumGraphAnalyzer:
                 # chunk/split return views into the source tensor
                 "chunk", "split", "tensor_split",
             }
-            # Slicing/selection ops return a view into the source tensor.
-            # The actual memory read is the output slice size, not the
-            # full source.  Set input = output size, output = 0 so the
-            # downstream consumer accounts for reading the slice.
             _SLICE_VIEW_OPS = {
                 "__getitem__", "narrow", "slice", "select",
             }
-            # Scatter/index-write ops (__setitem__, scatter, index_copy)
-            # write a slice into a large target tensor.  Memory cost is
-            # the values being written, not the full target.  The smallest
-            # input shape is typically the values/indices; use that as
-            # the write cost and set output to the same (in-place update).
             _SCATTER_OPS = {
                 "__setitem__", "scatter", "scatter_",
                 "index_copy", "index_copy_",
                 "index_put", "index_put_",
             }
-            if op_type in _ZERO_COPY_VIEW_OPS:
-                input_elems = 0
-                output_elems = 0
+
+            # For embedding (table lookup), only the gathered rows are read
+            # from the weight matrix, not the entire vocabulary table.
+            # Input shapes are [indices_shape, weight_shape] where weight is
+            # [vocab_size, embedding_dim].  The actual DRAM read is just the
+            # rows selected by indices — which equals the output shape
+            # [batch, seq, embedding_dim].  Use min(input, output) to handle
+            # both small token counts (gathered rows << full table) and large
+            # token counts (most/all rows accessed, full table is the bound).
+            if op_type in ("embedding", "embedding_bag"):
+                total_output = sum(output_sizes)
+                gathered = min(sum(input_sizes), total_output)
+                memory_reads = [0] * len(input_sizes)
+                if input_sizes:
+                    memory_reads[-1] = gathered
+                memory_writes = [0] * len(output_sizes)
+                other_ops = 0
+
+            # TEMPORARY FIX: Skip memory for bool-typed tensors.
+            # Bool tensors (masks, attention patterns) are 1 byte each but
+            # SOLAR uses a global bytes_per_element (2 for fp16). Rather than
+            # counting them at the wrong byte width, zero them out — masks are
+            # negligible compared to compute/activation tensors and should not
+            # dominate the SOL estimate.
+            if layer_id in _bool_layers:
+                memory_reads = [0] * len(input_sizes)
+                memory_writes = [0] * len(output_sizes)
+
+            # View/reshape ops produce zero-copy aliases — they never
+            # materialize data to DRAM.  The downstream consumer accounts
+            # for the actual read, so these ops contribute 0 memory.
+            elif op_type in _ZERO_COPY_VIEW_OPS:
+                memory_reads = [0] * len(input_sizes)
+                memory_writes = [0] * len(output_sizes)
+                other_ops = 0
+
+            # Slicing/selection ops return a view into the source tensor.
+            # The actual memory read is the output slice size, not the
+            # full source.  Set read = output size so the downstream
+            # consumer accounts for reading the slice.
             elif op_type in _SLICE_VIEW_OPS:
-                input_elems = output_elems
-                output_elems = 0
+                out_total = sum(output_sizes)
+                memory_reads = [out_total] if input_sizes else []
+                memory_reads += [0] * max(0, len(input_sizes) - 1)
+                memory_writes = [0] * len(output_sizes)
+                other_ops = 0
+
+            # Scatter/index-write ops (__setitem__, scatter, index_copy)
+            # write a slice into a large target tensor.  Memory cost is
+            # the values being written, not the full target.  The smallest
+            # input shape is typically the values/indices; use that as
+            # the write cost and set output to the same (in-place update).
             elif op_type in _SCATTER_OPS:
-                # Scatter inputs are typically [target, indices, source] or
-                # [target, source].  The write size is the source/values
-                # tensor — exclude the largest (target) and take the max
-                # of the remaining (to skip tiny index tensors).
                 if len(input_sizes) >= 2:
-                    without_target = sorted(input_sizes)[:-1]
-                    slice_elems = max(without_target)
+                    slice_elems = max(sorted(input_sizes)[:-1])
                 elif input_sizes:
                     slice_elems = min(input_sizes)
                 elif output_sizes:
                     slice_elems = min(output_sizes)
                 else:
                     slice_elems = 0
-                input_elems = 0
-                output_elems = slice_elems
+                memory_reads = [0] * len(input_sizes)
+                memory_writes = [slice_elems] if output_sizes else []
+                memory_writes += [0] * max(0, len(output_sizes) - 1)
+                other_ops = 0
 
-            # Unfused elements = all inputs + outputs (no fusion)
-            unfused_elems = int(input_elems + output_elems)
+            # ── Step 3: Derive totals from corrected per-tensor counts ──
+            input_elems = int(sum(memory_reads))
+            output_elems = int(sum(memory_writes))
+            unfused_elems = input_elems + output_elems
 
-            # Per-input-tensor classification using tensor_types from the
-            # einsum graph.  Weight/bias tensors (type="weight") have no
-            # producer node in the graph and always require DRAM access.
-            # Only activation inputs (type="input") flowing between
-            # graph-internal ops are intermediate (fusable).
+            # ── Step 4: Classify inputs as external vs graph-internal ──
+            # Uses memory_reads (already corrected) so no re-scanning needed.
+            # Classify each input tensor:
+            #   - "weight"        → always external (DRAM read every time)
+            #   - graph-internal  → intermediate activation (fusable, skip in fused model)
+            #   - other           → external model input (DRAM read)
             #
-            # When input_elems was overridden to 0 (zero-copy/scatter ops),
-            # skip classification — all input memory is already accounted for.
+            # graph-internal = not a weight AND produced by another op in the graph.
+            # When input_elems was zeroed (zero-copy/scatter ops), skip classification.        
             input_name_list = tensor_names.get("inputs") or []
-            graph_internal_input_elems = 0
-            external_input_elems = 0
+            graph_internal_input_elems = 0   # intermediate activations from other ops
+            external_input_elems = 0         # weights + model-level inputs (always DRAM)
 
-            if input_elems > 0:
-                for i, shp in enumerate(input_shapes):
-                    if not isinstance(shp, list):
-                        continue
-                    elems = _product(shp)
-                    itype = input_type_list[i] if i < len(input_type_list) else "weight"
-                    iname = input_name_list[i] if i < len(input_name_list) else ""
-                    if itype == "weight":
-                        external_input_elems += elems
-                    elif iname in tensor_producers:
-                        graph_internal_input_elems += elems
-                    else:
-                        external_input_elems += elems
-            else:
-                external_input_elems = input_elems
+            for i, mem_read in enumerate(memory_reads):
+                if mem_read <= 0:
+                    continue
+                itype = input_type_list[i] if i < len(input_type_list) else "weight"
+                iname = input_name_list[i] if i < len(input_name_list) else ""
+                is_graph_internal = (itype != "weight" and iname in tensor_producers)
+
+                if is_graph_internal:
+                    graph_internal_input_elems += mem_read
+                else:
+                    external_input_elems += mem_read
+                    if iname:
+                        unique_external_inputs[iname] = max(
+                            unique_external_inputs.get(iname, 0), mem_read
+                        )
 
             intermediate_input_elems = int(graph_internal_input_elems)
             model_input_elems = int(external_input_elems)
             input_is_intermediate = graph_internal_input_elems > 0
 
+            # Classify outputs: intermediate if consumed by another op, else model output.
             output_name_list = tensor_names.get("outputs") or []
             output_is_intermediate = any(
                 oname in tensor_consumers for oname in output_name_list
             )
 
+            # Intermediate output elems: written to cache (fused) not DRAM
             intermediate_output_elems = output_elems if output_is_intermediate else 0
+            # Total intermediate elems for this layer (inputs + outputs)
             layer_intermediate_elems = intermediate_input_elems + intermediate_output_elems
 
+            # Model output elems: final graph outputs that must go to DRAM
             model_output_elems = output_elems if not output_is_intermediate else 0
+            # Per-op model I/O: external inputs + model outputs (no intermediates)
             model_io_elems = model_input_elems + model_output_elems
 
+            # Track unique external outputs for deduplication.
+            if not output_is_intermediate:
+                for oname in output_name_list:
+                    unique_external_outputs[oname] = max(
+                        unique_external_outputs.get(oname, 0), int(output_elems)
+                    )
+
+            # Per-op fused elements: only non-intermediate DRAM traffic
             fused_elems = int(model_io_elems)
 
             layers_out[layer_id] = {
@@ -397,6 +485,10 @@ class EinsumGraphAnalyzer:
                     "inputs": input_sizes,
                     "outputs": output_sizes,
                 },
+                "memory_elements": {
+                    "inputs": memory_reads,
+                    "outputs": memory_writes,
+                },
                 "tensor_types": {
                     "inputs": list(input_type_list),
                     "outputs": list(output_type_list),
@@ -414,18 +506,24 @@ class EinsumGraphAnalyzer:
             total_other_ops += other_ops
             total_flops += flops
             total_unfused_elems += unfused_elems
-            total_fused_elems += fused_elems
             total_intermediate_elems += layer_intermediate_elems
 
-        # Calculate fused_prefetched_elements: total model I/O across entire graph
-        # This is the memory footprint when all intermediate tensors are perfectly fused
-        # Note: input_elements already includes weights, so model_io_elements captures
-        # all non-intermediate memory accesses
+        # Deduplicated graph-level external I/O: when the same tensor
+        # (e.g. model input x) fans out to multiple ops, count it once.
+        # Used for both fused and fused_prefetched totals.
+        total_fused_prefetched_elems = int(
+            sum(unique_external_inputs.values())
+            + sum(unique_external_outputs.values())
+        )
+        # fused_elements == fused_prefetched_elements (same dedup logic)
+        total_fused_elems = total_fused_prefetched_elems
+
+        # model_io_elements: raw per-op sum (may double-count shared inputs).
+        # Kept for diagnostic / per-layer inspection.
         total_model_io_elems = sum(
             layer.get("model_io_elements", 0)
             for layer in layers_out.values()
         )
-        total_fused_prefetched_elems = int(total_model_io_elems)
 
         analysis: Dict[str, Any] = {
             "layers": layers_out,

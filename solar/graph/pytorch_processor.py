@@ -102,12 +102,12 @@ class PyTorchProcessor:
                 pass
 
             # Load and process model
-            model, inputs = self._load_model(file_path)
+            model, inputs, module = self._load_model(file_path)
             if model is None:
                 return False
-            
+
             # Generate torchview graph (pass output_path for saving visualization)
-            graph = self._generate_torchview_graph(model, inputs, str(output_path))
+            graph = self._generate_torchview_graph(model, inputs, str(output_path), module=module)
             if graph is None:
                 return False
             
@@ -116,7 +116,13 @@ class PyTorchProcessor:
             self.torchview_processor.process_graph(
                 graph, str(output_path), kernel_name, original_model=model
             )
-            
+
+            # Patch input tensor dtypes into pytorch_graph.yaml.
+            # The torchview tracer loses non-float dtypes (e.g. torch.bool)
+            # because the fallback infers dtype from model parameters.
+            # We fix this by reading the actual dtypes from get_inputs().
+            self._patch_input_dtypes(output_path, inputs)
+
             # Clean up
             self._cleanup(model, inputs, graph)
             
@@ -291,9 +297,9 @@ class PyTorchProcessor:
             return (), {}
     
     def _load_model(self,
-                   file_path: str) -> Tuple[Optional[nn.Module], Optional[Any]]:
+                   file_path: str) -> Tuple[Optional[nn.Module], Optional[Any], Optional[Any]]:
         """Load a model from a Python file.
-        
+
         Supports both 'Model' and 'ReferenceModel' class names.
         Uses launch_reference_implementation to infer how to call the model.
         Falls back to inferring init args from module globals.
@@ -311,7 +317,7 @@ class PyTorchProcessor:
             model_class, class_name = self._get_model_class(module)
             if model_class is None:
                 print(f"Warning: No Model or ReferenceModel class found in {file_path}")
-                return None, None
+                return None, None, None
             
             if self.config.debug:
                 print(f"  Found model class: {class_name}")
@@ -319,7 +325,7 @@ class PyTorchProcessor:
             # Check for get_inputs
             if not hasattr(module, 'get_inputs'):
                 print(f"Warning: No get_inputs function found in {file_path}")
-                return None, None
+                return None, None, None
             
             # Create model instance - try multiple strategies
             model = None
@@ -358,36 +364,93 @@ class PyTorchProcessor:
             
             if model is None:
                 print(f"Error: Could not instantiate model class {class_name} in {file_path}")
-                return None, None
+                return None, None, None
             
-            # Get inputs
-            inputs = module.get_inputs()
-            
+            # Get inputs.  Try to allocate on meta device first to avoid
+            # OOM on large workloads.  Fall back to CPU if meta fails
+            # (some get_inputs use ops incompatible with meta device).
+            inputs = None
+
+            # Strategy 1: SolBench v3 model with custom _ref_get_inputs
+            if inputs is None and hasattr(module, '_ref_get_inputs'):
+                try:
+                    import re as _re
+                    src = Path(file_path).read_text()
+                    axes_match = _re.search(r"_axes\s*=\s*(\{[^}]+\})", src)
+                    if axes_match:
+                        _axes = eval(axes_match.group(1))  # noqa: S307
+                        inp_dict = module._ref_get_inputs(_axes, torch.device("meta"))
+                        order_match = _re.search(r"_param_order\s*=\s*(\[[^\]]+\])", src)
+                        if order_match:
+                            _param_order = eval(order_match.group(1))  # noqa: S307
+                            inputs = [inp_dict[k] for k in _param_order if k in inp_dict]
+                        if self.config.debug:
+                            print("  Allocated inputs on meta device (via _ref_get_inputs)")
+                except Exception:
+                    inputs = None
+
+            # Strategy 2: Monkey-patch torch.randn/zeros/ones/empty to allocate
+            # on meta device, then call get_inputs() normally.
+            if inputs is None:
+                try:
+                    _orig_randn = torch.randn
+                    _orig_zeros = torch.zeros
+                    _orig_ones = torch.ones
+                    _orig_empty = torch.empty
+
+                    def _meta_factory(orig_fn):
+                        def wrapper(*args, **kwargs):
+                            kwargs.pop("device", None)
+                            return orig_fn(*args, device="meta", **kwargs)
+                        return wrapper
+
+                    torch.randn = _meta_factory(_orig_randn)
+                    torch.zeros = _meta_factory(_orig_zeros)
+                    torch.ones = _meta_factory(_orig_ones)
+                    torch.empty = _meta_factory(_orig_empty)
+                    try:
+                        inputs = module.get_inputs()
+                        if self.config.debug:
+                            print("  Allocated inputs on meta device (via patched factories)")
+                    finally:
+                        torch.randn = _orig_randn
+                        torch.zeros = _orig_zeros
+                        torch.ones = _orig_ones
+                        torch.empty = _orig_empty
+                except Exception:
+                    inputs = None
+
+            # Strategy 3: Fall back to normal CPU allocation
+            if inputs is None:
+                inputs = module.get_inputs()
+
             # Store the inferred call pattern for later use
             self._model_caller = self._infer_model_call_from_launch(module, model, inputs)
-            
-            return model, inputs
-            
+
+            return model, inputs, module
+
         except Exception as e:
             print(f"Error loading model from {file_path}: {e}")
             if self.config.debug:
                 import traceback
                 traceback.print_exc()
-            return None, None
+            return None, None, None
     
     def _generate_torchview_graph(
         self,
         model: nn.Module,
         inputs: Any,
         output_dir: Optional[str] = None,
+        module: Any = None,
     ) -> Optional[Any]:
         """Generate a torchview computation graph.
-        
+
         Args:
             model: PyTorch model.
-            inputs: Model inputs.
+            inputs: Model inputs (may be on meta device).
             output_dir: Directory to save graph visualization (if save_graph enabled).
-            
+            module: Original loaded module (for re-generating CPU inputs on fallback).
+
         Returns:
             Computation graph or None if failed.
         """
@@ -403,9 +466,15 @@ class PyTorchProcessor:
                 if device == "meta" and self._is_rnn_model(model):
                     continue
 
-                # Move inputs to the target device to avoid allocating
-                # large tensors on CPU when only shapes are needed (meta).
-                device_inputs = self._move_inputs_to_device(inputs, device)
+                # For CPU fallback: if inputs are on meta device, we must
+                # re-generate real CPU inputs (meta tensors have no data,
+                # causing garbage values for .item(), indexing, etc.).
+                if device == "cpu" and self._inputs_on_meta(inputs) and module is not None:
+                    if self.config.debug:
+                        print("  Re-generating CPU inputs via get_inputs()")
+                    device_inputs = module.get_inputs()
+                else:
+                    device_inputs = self._move_inputs_to_device(inputs, device)
 
                 # Generate graph (don't let torchview save - we'll do it ourselves)
                 graph = torchview.draw_graph(
@@ -421,16 +490,16 @@ class PyTorchProcessor:
                     strict=False,
                     collect_attributes=True,  # Capture function/module args
                 )
-                
+
                 if self.config.debug:
                     print(f"✅ Generated graph using {device} device")
-                
+
                 # Save graph visualization if requested
                 if self.config.save_graph and output_dir:
                     self._save_torchview_graph(graph, output_dir)
-                
+
                 return graph
-                
+
             except (NotImplementedError, RuntimeError) as e:
                 if device == "meta":
                     if self.config.debug:
@@ -442,8 +511,25 @@ class PyTorchProcessor:
                 if device == "meta":
                     continue
                 raise
-        
+
         return None
+
+    @staticmethod
+    def _inputs_on_meta(inputs: Any) -> bool:
+        """Check if any input tensor is on meta device."""
+        if isinstance(inputs, torch.Tensor):
+            return inputs.device.type == "meta"
+        if isinstance(inputs, (list, tuple)):
+            return any(
+                isinstance(x, torch.Tensor) and x.device.type == "meta"
+                for x in inputs
+            )
+        if isinstance(inputs, dict):
+            return any(
+                isinstance(v, torch.Tensor) and v.device.type == "meta"
+                for v in inputs.values()
+            )
+        return False
 
     @staticmethod
     def _move_inputs_to_device(inputs: Any, device: str) -> Any:
@@ -459,6 +545,9 @@ class PyTorchProcessor:
             if isinstance(obj, torch.Tensor):
                 if device == "meta":
                     return torch.empty(obj.shape, dtype=obj.dtype, device="meta")
+                # Handle meta->cpu: can't .to() a meta tensor, recreate instead
+                if obj.device.type == "meta" and device != "meta":
+                    return torch.empty(obj.shape, dtype=obj.dtype, device=device)
                 return obj.to(device)
             if isinstance(obj, (list, tuple)):
                 moved = [_move(x) for x in obj]
@@ -517,9 +606,67 @@ class PyTorchProcessor:
         
         return False
     
+    def _patch_input_dtypes(self, output_path: Path, inputs: Any) -> None:
+        """Patch actual input tensor dtypes into pytorch_graph.yaml.
+
+        The torchview tracer falls back to model-parameter dtypes for tensor
+        nodes, losing non-float dtypes (e.g. ``torch.bool``).  This method
+        reads the actual dtypes from the ``get_inputs()`` return value and
+        overwrites the corresponding ``auxiliary-tensor`` / ``input-tensor``
+        nodes in the saved graph.
+        """
+        import yaml
+        graph_path = output_path / "pytorch_graph.yaml"
+        if not graph_path.exists():
+            return
+
+        # Collect actual dtypes from inputs
+        actual_dtypes: list[str] = []
+        if isinstance(inputs, (list, tuple)):
+            for inp in inputs:
+                if isinstance(inp, torch.Tensor):
+                    actual_dtypes.append(str(inp.dtype))
+        elif isinstance(inputs, dict):
+            for inp in inputs.values():
+                if isinstance(inp, torch.Tensor):
+                    actual_dtypes.append(str(inp.dtype))
+
+        if not actual_dtypes:
+            return
+
+        try:
+            with open(graph_path) as f:
+                graph = yaml.safe_load(f) or {}
+        except Exception:
+            return
+
+        layers = graph.get("layers", {})
+        # Find auxiliary-tensor / input-tensor nodes (model inputs) in order
+        input_nodes = [
+            (nid, node) for nid, node in layers.items()
+            if str(node.get("type", "")).lower() in ("auxiliary-tensor", "input-tensor")
+        ]
+
+        changed = False
+        for idx, (nid, node) in enumerate(input_nodes):
+            if idx >= len(actual_dtypes):
+                break
+            actual = actual_dtypes[idx]
+            existing = node.get("output_dtypes", [])
+            if existing != [actual]:
+                node["output_dtypes"] = [actual]
+                node["input_dtypes"] = [actual]
+                changed = True
+
+        if changed:
+            from solar.common.utils import NoAliasDumper
+            with open(graph_path, "w") as f:
+                yaml.dump(graph, f, Dumper=NoAliasDumper, sort_keys=False,
+                          default_flow_style=False)
+
     def _cleanup(self, *objects: Any) -> None:
         """Clean up objects and run garbage collection.
-        
+
         Args:
             *objects: Objects to delete.
         """

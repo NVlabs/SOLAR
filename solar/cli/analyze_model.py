@@ -82,8 +82,7 @@ def main() -> None:
     print(f"  Layers: {total.get('num_layers', 0)}")
     print(f"  MACs: {total.get('macs', 0)}")
     print(f"  FLOPs: {total.get('flops', 0)}")
-    print(f"  Orojenesis bytes: {total.get('orojenesis_bytes', 0)}")
-    print(f"  Fused bytes: {total.get('fused_bytes', 0)}")
+    print(f"  Memory Elements: {total.get('fused_elements', 0)}")
     print(f"\n📝 Files saved to {output_dir}:")
     for p in sorted(output_dir.iterdir()):
         if p.is_file():
