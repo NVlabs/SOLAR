@@ -77,10 +77,50 @@ class MatmulHandler(EinsumOpHandler):
             EinsumOp for the matmul operation.
         """
         # Handle different matmul cases based on actual tensor shapes
+        # PyTorch matmul with 1D operands:
+        # - [K] x [K, N] -> [N]       (vector-matrix)
+        # - [M, K] x [K] -> [M]       (matrix-vector)
+        # - [K] x [K] -> []           (dot product)
         input_ndim = len(input_shape)
         other_ndim = len(other_shape)
-        
-        if input_ndim == 2 and other_ndim == 2:
+
+        if input_ndim == 1 and other_ndim == 1:
+            # Dot product: [K] x [K] -> scalar
+            operands = [
+                EinsumOperand("Input", ["K"], is_output=False),
+                EinsumOperand("Weight", ["K"], is_output=False),
+                EinsumOperand("Output", [], is_output=True),
+            ]
+            equation = "K,K->"
+        elif input_ndim == 1 and other_ndim == 2:
+            # Vector-matrix: [K] x [K, N] -> [N]
+            operands = [
+                EinsumOperand("Input", ["K"], is_output=False),
+                EinsumOperand("Weight", ["K", "N"], is_output=False),
+                EinsumOperand("Output", ["N"], is_output=True),
+            ]
+            equation = "K,KN->N"
+        elif input_ndim == 2 and other_ndim == 1:
+            # Matrix-vector: [M, K] x [K] -> [M]
+            operands = [
+                EinsumOperand("Input", ["M", "K"], is_output=False),
+                EinsumOperand("Weight", ["K"], is_output=False),
+                EinsumOperand("Output", ["M"], is_output=True),
+            ]
+            equation = "MK,K->M"
+        elif input_ndim == 1 and other_ndim > 2:
+            # Vector with batched matrix: [K] x [B..., K, N] -> [B..., N]
+            batch_dims = other_ndim - 2
+            batch_letters = [f"B{i}" for i in range(batch_dims)]
+            dims_b = batch_letters + ["K", "N"]
+            dims_out = batch_letters + ["N"]
+            operands = [
+                EinsumOperand("Input", ["K"], is_output=False),
+                EinsumOperand("Weight", dims_b, is_output=False),
+                EinsumOperand("Output", dims_out, is_output=True),
+            ]
+            equation = f"K,{''.join(dims_b)}->{''.join(dims_out)}"
+        elif input_ndim == 2 and other_ndim == 2:
             # Standard 2D matmul: [M, K] x [K, N] -> [M, N]
             operands = [
                 EinsumOperand("Input", ["M", "K"], is_output=False),

@@ -120,11 +120,15 @@ class EinsumGraphPerfModel:
         total = analysis.get("total") or {}
         metadata = analysis.get("metadata") or {}
         
-        # Get bytes_per_element: quant override > metadata > default
+        # Get bytes_per_element: quant override > precision flag > metadata > default
+        # The precision flag takes priority over analysis metadata because the user
+        # may run perf with a different precision than the analysis was generated with.
         if quant_bpe is not None:
             bytes_per_element = quant_bpe
+        elif precision in BYTES_PER_ELEMENT:
+            bytes_per_element = BYTES_PER_ELEMENT[precision]
         else:
-            bytes_per_element = float(metadata.get("bytes_per_element", BYTES_PER_ELEMENT.get(precision, 4)))
+            bytes_per_element = float(metadata.get("bytes_per_element", 4))
         
         total_macs = float(total.get("macs", 0))
         total_flops = float(total.get("flops", 0))
@@ -199,10 +203,15 @@ class EinsumGraphPerfModel:
 
         # Tensor-core cycles (matmul/conv MACs)
         compute_tc_cycles = total_macs / mac_per_cycle if mac_per_cycle > 0 else 0.0
-        # SM cycles (elementwise / reduction ops that run on CUDA cores)
+        # SM cycles (elementwise / reduction ops that run on CUDA cores).
+        # NOTE: Disabled for SOL computation.  Elementwise/reshape ops are
+        # memory-bound in practice — their cost is already captured by
+        # fused_memory_cycles.  Including SM cycles here would double-count
+        # and inflate SOL by 10-34,000x for elementwise-heavy kernels.
+        # SM cycle stats are still reported for informational purposes.
         compute_sm_cycles = total_other_ops / sm_per_cycle if sm_per_cycle > 0 else 0.0
-        # Overall compute bottleneck: whichever pipeline is slower
-        compute_cycles = max(compute_tc_cycles, compute_sm_cycles)
+        # SOL compute = tensor-core cycles only
+        compute_cycles = compute_tc_cycles
         
         # Memory cycles for each model (using bytes)
         unfused_mem_cycles = total_orojenesis_bytes / dram_bw if dram_bw > 0 else 0.0

@@ -308,7 +308,9 @@ class TestPerfSMCycles:
 
     def test_elementwise_only_sm_cycles_nonzero(self, tmp_path):
         """Elementwise-only model: other_ops > 0, macs == 0.
-        compute_sm_cycles should be > 0 and drive compute_cycles."""
+        compute_sm_cycles > 0 (informational), but compute_cycles = tc_cycles
+        because elementwise ops are memory-bound and already captured by
+        memory cycles in the roofline model."""
         analysis, perf = self._analyze_and_predict(tmp_path, ELEMENTWISE_MODEL_SOURCE)
 
         assert analysis["total"]["macs"] == 0
@@ -316,7 +318,7 @@ class TestPerfSMCycles:
 
         assert perf["unfused"]["compute_tc_cycles"] == 0
         assert perf["unfused"]["compute_sm_cycles"] > 0
-        assert perf["unfused"]["compute_cycles"] == perf["unfused"]["compute_sm_cycles"]
+        assert perf["unfused"]["compute_cycles"] == perf["unfused"]["compute_tc_cycles"]
 
     def test_elementwise_only_total_other_ops_in_workload(self, tmp_path):
         """Perf output should include total_other_ops."""

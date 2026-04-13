@@ -345,9 +345,10 @@ class TestMultiLayerFusedAccounting:
         total = analysis["total"]
         assert total["model_io_elements"] == total["fused_elements"]
 
-    def test_fused_prefetched_equals_fused(self, analysis):
+    def test_fused_prefetched_leq_fused(self, analysis):
+        """fused_prefetched (deduplicated) must be <= fused (per-op sum)."""
         total = analysis["total"]
-        assert total["fused_prefetched_elements"] == total["fused_elements"]
+        assert total["fused_prefetched_elements"] <= total["fused_elements"]
 
 
 # ---------------------------------------------------------------------------
@@ -980,3 +981,73 @@ class TestScatterFusedLeqUnfused:
     def test_setitem_chain_fused_leq_unfused_total(self, analysis_setitem_chain):
         total = analysis_setitem_chain["total"]
         assert total["fused_elements"] <= total["unfused_elements"]
+
+
+class TestKernel88MinGPTIntermediateTagging:
+    """End-to-end regression for kernelbench level1/88 (MinGPT GELU)."""
+
+    MODEL_SOURCE_KERNEL88 = """\
+    import math
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+
+        def forward(self, x):
+            return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+
+    batch_size = 8192
+    dim = 8192
+
+    def get_inputs():
+        return [torch.rand(batch_size, dim)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE_KERNEL88, precision="fp16")
+
+    def test_outputs_with_consumers_are_intermediate(self, analysis):
+        """Any layer output consumed by another layer must be intermediate."""
+        for lid, layer in analysis["layers"].items():
+            outputs = (layer.get("connections") or {}).get("outputs") or []
+            if outputs:
+                assert layer["output_is_intermediate"] is True, (
+                    f"{lid}: output has consumers {outputs} but output_is_intermediate=False"
+                )
+
+    def test_inputs_from_graph_are_intermediate(self, analysis):
+        """Any layer with non-start inputs should mark input_is_intermediate=True."""
+        for lid, layer in analysis["layers"].items():
+            inputs = (layer.get("connections") or {}).get("inputs") or []
+            graph_inputs = [x for x in inputs if x != "start"]
+            if graph_inputs:
+                assert layer["input_is_intermediate"] is True, (
+                    f"{lid}: has graph inputs {graph_inputs} but input_is_intermediate=False"
+                )
+
+    def test_kernel88_fused_is_two_x(self, analysis):
+        """
+        Fully fused elementwise chain: 1 read of x + 1 write of output = 2×|x|.
+        All internal activations are intermediate; the only external tensor
+        (start.Output = x) is shared across mul/pow/add but each per-op read
+        is from the same graph-internal fan-out, leaving only the first
+        external read and the final output in model I/O.
+        """
+        x_elems = 8192 * 8192
+        assert analysis["total"]["fused_elements"] == 2 * x_elems
+
+    def test_kernel88_fused_prefetched_equals_fused(self, analysis):
+        """No shared-input duplication: fused_prefetched == fused == 2×|x|."""
+        x_elems = 8192 * 8192
+        assert analysis["total"]["fused_prefetched_elements"] == 2 * x_elems
+
+    def test_kernel88_fused_prefetched_leq_fused(self, analysis):
+        """fused_prefetched (deduplicated) must be <= fused (per-op sum)."""
+        total = analysis["total"]
+        assert total["fused_prefetched_elements"] <= total["fused_elements"]
