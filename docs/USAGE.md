@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # SOLAR Usage
 
 This page contains the more detailed “how to use SOLAR” material that’s intentionally kept out of the top-level [`README.md`](../README.md).

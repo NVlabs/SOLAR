@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for zero-compute op classification in graph_analyzer.
 
 Verifies that view ops, memory-only ops, and type-conversion ops

@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Einsum Graph Checker Guide
 
 This guide explains how to use the `einsum_graph_check.py` utility to validate einsum graph consistency.

@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Einsum Equation Convention Guide
 
 This guide explains the einsum equation conventions used in the Solar codebase for representing tensor operations.

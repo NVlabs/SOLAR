@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Solar YAML Format Reference
 
 This document defines the exact dictionary schema for every YAML file produced by the Solar pipeline. All stages **must** follow these schemas; any code that emits or reads these files should reference this document.

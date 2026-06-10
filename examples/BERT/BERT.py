@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Standalone BERT-like transformer model for Solar examples.
 
 This file is intentionally self-contained and follows the kernelbench-style API:

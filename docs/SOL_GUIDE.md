@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # SOL (Speed-of-Light) Performance Models Guide
 
 This guide explains the three roofline-based performance models used in Solar for predicting DNN execution time.

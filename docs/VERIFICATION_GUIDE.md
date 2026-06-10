@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # Einsum Verification Guide
 
 This guide explains how to verify that generated einsum expressions produce correct results when compared to the original PyTorch implementations.
