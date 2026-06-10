@@ -262,6 +262,13 @@ solar/
 - **LLM Agent** (optional): Dynamic handler generation for unknown operations
 - **Benchmark Processors**: Specialized handling for kernelbench file structures
 
+## Active Contributors
+
+- [hqjennynv](https://github.com/hqjennynv)
+- [sdamani-nvidia](https://github.com/sdamani-nvidia)
+- [askiad](https://github.com/askiad)
+- [LemonAndRabbit](https://github.com/LemonAndRabbit)
+
 ## Contributing
 
 - Follow Google's Python Style Guide
