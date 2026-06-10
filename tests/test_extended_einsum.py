@@ -25,6 +25,7 @@ import pytest
 from solar.einsum import EinsumAnalyzer
 from solar.einsum.ops import EinsumOp, EinsumOperand
 from solar.common.types import TensorShapes
+from equation_utils import normalize_equation
 
 
 class TestExtendedEinsumDefinition:
@@ -186,7 +187,7 @@ class TestBinaryElementwiseEinsum:
             [32, 64], [32, 64], "add"
         )
         
-        assert einsum_op.equation == "AB,AB->AB"
+        assert normalize_equation(einsum_op.equation) == "AB,AB->AB"
         assert einsum_op.name == "add"
         assert len(einsum_op.input_operands) == 2
         assert len(einsum_op.output_operands) == 1
@@ -200,7 +201,7 @@ class TestBinaryElementwiseEinsum:
             [32, 64], [1, 64], "add"
         )
         
-        assert "AB,AB->AB" == einsum_op.equation
+        assert normalize_equation(einsum_op.equation) == "AB,AB->AB"
         assert einsum_op.elementwise_op == "add"
     
     def test_mul_same_shape(self):
@@ -211,7 +212,7 @@ class TestBinaryElementwiseEinsum:
             [8, 16, 32], [8, 16, 32], "mul"
         )
         
-        assert einsum_op.equation == "ABC,ABC->ABC"
+        assert normalize_equation(einsum_op.equation) == "ABC,ABC->ABC"
         assert einsum_op.elementwise_op == "mul"
         assert einsum_op.reduction_op == "none"
     
@@ -223,7 +224,7 @@ class TestBinaryElementwiseEinsum:
             [16, 32], [16, 32], "sub"
         )
         
-        assert einsum_op.equation == "AB,AB->AB"
+        assert normalize_equation(einsum_op.equation) == "AB,AB->AB"
         assert einsum_op.elementwise_op == "sub"
     
     def test_div_same_shape(self):
@@ -234,7 +235,7 @@ class TestBinaryElementwiseEinsum:
             [64, 128], [64, 128], "div"
         )
         
-        assert einsum_op.equation == "AB,AB->AB"
+        assert normalize_equation(einsum_op.equation) == "AB,AB->AB"
         assert einsum_op.elementwise_op == "div"
 
 
@@ -403,7 +404,7 @@ class TestEinsumOpYamlSerialization:
         }
         
         assert output["type"] == "matmul"
-        assert output["einsum_equation"] == "MK,KN->MN"
+        assert normalize_equation(output["einsum_equation"]) == "AB,BC->AC"
         assert output["elementwise_op"] == "mul"
         assert output["reduction_op"] == "add"
         assert output["is_real_einsum"] is True

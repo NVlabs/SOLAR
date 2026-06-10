@@ -719,6 +719,16 @@ class PyTorchToEinsum:
                 # Remap: original node_id outputs now come from add_node_id
                 node_id_remap[node_id] = add_node_id
             
+            # Check if this is a group-wise conv that needs reshape expansion
+            elif self._should_expand_groupwise_conv(node_data):
+                subgraph_layers, final_node_id, input_mapping = self._expand_groupwise_conv(
+                    node_id, node_data, op_graph, start_nodes_info, start_node_id_map
+                )
+                for sub_id, sub_layer in subgraph_layers.items():
+                    result["layers"][sub_id] = sub_layer
+                node_id_remap[node_id] = final_node_id
+                expanded_input_map[node_id] = input_mapping
+            
             # Check if this is SDPA that should be expanded
             elif self._should_expand_sdpa(node_data):
                 subgraph_layers, final_node_id, input_mapping = self._expand_sdpa(
@@ -981,6 +991,236 @@ class PyTorchToEinsum:
             return True
 
         return False
+
+    def _should_expand_groupwise_conv(self, node_data: Dict[str, Any]) -> bool:
+        """Check if this is a group-wise convolution that needs reshape expansion."""
+        node_type = str(node_data.get("type", "")).lower()
+        if node_type not in ("conv1d", "conv2d"):
+            return False
+        module_args = node_data.get("module_args") or {}
+        groups = int(module_args.get("groups", 1))
+        if groups <= 1:
+            return False
+        in_channels = int(module_args.get("in_channels", 0))
+        out_channels = int(module_args.get("out_channels", 0))
+        # Depthwise: groups == in_channels == out_channels → handled by conv handler
+        if groups == in_channels and groups == out_channels:
+            return False
+        return True
+
+    def _expand_groupwise_conv(
+        self,
+        node_id: str,
+        node_data: Dict[str, Any],
+        op_graph: "nx.DiGraph",
+        start_nodes_info: List[Dict[str, Any]],
+        start_node_id_map: Dict[str, str],
+    ) -> Tuple[Dict[str, Dict[str, Any]], str, Dict[int, str]]:
+        """Expand a group-wise conv into reshape_input + reshape_weight + conv + reshape_output.
+
+        Returns:
+            (subgraph_layers, final_node_id, input_mapping)
+        """
+        module_args = node_data.get("module_args") or {}
+        groups = int(module_args.get("groups", 1))
+        input_shapes = node_data.get("input_shapes") or []
+        output_shapes = node_data.get("output_shapes") or []
+        input_dtypes = node_data.get("input_dtypes") or []
+        output_dtypes = node_data.get("output_dtypes") or []
+        node_type = str(node_data.get("type", "conv2d")).lower()
+        is_2d = node_type == "conv2d"
+
+        # Original shapes: Input [B, C_in, ...], Weight [O_total, C_per_group, ...], Output [B, O_total, ...]
+        input_shape = input_shapes[0] if len(input_shapes) > 0 else []
+        weight_shape = input_shapes[1] if len(input_shapes) > 1 else []
+        output_shape = output_shapes[0] if output_shapes else []
+
+        B = input_shape[0]
+        C_in = input_shape[1]
+        O_total = weight_shape[0] if weight_shape else output_shape[1]
+        C_per_group = weight_shape[1] if weight_shape else C_in // groups
+        I = C_in // groups  # == C_per_group
+        O_pg = O_total // groups
+
+        if is_2d:
+            H, W = input_shape[2], input_shape[3]
+            KH, KW = weight_shape[2], weight_shape[3]
+            H_out, W_out = output_shape[2], output_shape[3]
+            reshaped_input = [B, groups, I, H, W]
+            reshaped_weight = [groups, O_pg, I, KH, KW]
+            reshaped_output = [B, groups, O_pg, H_out, W_out]
+            reshape_in_eq = "ABCD->AE0E1CD"
+            reshape_wt_eq = "ABCD->E0E1BCD"
+            reshape_out_eq = "ABCDE->AF0DE"
+        else:
+            L = input_shape[2]
+            KL = weight_shape[2]
+            L_out = output_shape[2]
+            reshaped_input = [B, groups, I, L]
+            reshaped_weight = [groups, O_pg, I, KL]
+            reshaped_output = [B, groups, O_pg, L_out]
+            reshape_in_eq = "ABC->ADE0C"
+            reshape_wt_eq = "ABC->DE0BC"
+            reshape_out_eq = "ABCD->AE0D"
+
+        # Build input connections
+        node_connections = (node_data.get("connections") or {}).get("inputs") or []
+        input_connections = list(node_connections)
+        for pred in op_graph.predecessors(node_id):
+            if pred not in input_connections:
+                input_connections.append(pred)
+        for info in start_nodes_info:
+            if node_id in info.get("consumers", []):
+                start_id = start_node_id_map.get(info["original_id"])
+                if start_id and start_id not in input_connections:
+                    input_connections.append(start_id)
+        output_connections = list(op_graph.successors(node_id))
+        if not output_connections:
+            raw_outs = list((node_data.get("connections") or {}).get("outputs") or [])
+            output_connections = [c for c in raw_outs if c in op_graph.nodes]
+
+        # Separate activation vs weight connections
+        input_types = node_data.get("input_types") or []
+        activation_conn = None
+        weight_conn = None
+        for idx, conn in enumerate(input_connections):
+            itype = input_types[idx] if idx < len(input_types) else "input"
+            if str(itype).lower() == "weight" or "parameter-tensor" in conn:
+                if weight_conn is None:
+                    weight_conn = conn
+            elif activation_conn is None:
+                activation_conn = conn
+        if activation_conn is None and input_connections:
+            activation_conn = input_connections[0]
+        if weight_conn is None and len(input_connections) > 1:
+            weight_conn = input_connections[1]
+
+        # Node IDs
+        reshape_in_id = f"{node_id}.reshape_input"
+        conv_id = f"{node_id}.groupwise_conv"
+        reshape_out_id = f"{node_id}.reshape_output"
+
+        dtype_str = input_dtypes[0] if input_dtypes else "torch.float32"
+
+        # Weight tensor name from the source node (no reshape layer needed —
+        # the conv records the logically reshaped weight shape directly).
+        weight_tensor_name = f"{weight_conn}.Output" if weight_conn else f"{conv_id}.Weight"
+
+        # --- Reshape Input layer ---
+        reshape_in_layer = {
+            "type": "view",
+            "einsum_equation": reshape_in_eq,
+            "elementwise_op": "copy",
+            "reduction_op": "none",
+            "is_real_einsum": False,
+            "is_einsum_supportable": True,
+            "tensor_names": {
+                "inputs": [f"{activation_conn}.Output" if activation_conn else f"{reshape_in_id}.Input"],
+                "outputs": [f"{reshape_in_id}.Output"],
+            },
+            "tensor_types": {
+                "inputs": ["input"],
+                "outputs": ["output"],
+            },
+            "tensor_shapes": {
+                "inputs": [list(input_shape)],
+                "outputs": [reshaped_input],
+            },
+            "connections": {
+                "inputs": [activation_conn] if activation_conn else [],
+                "outputs": [conv_id],
+            },
+        }
+
+        # --- Group-wise Conv Einsum layer ---
+        # The weight shape is recorded as [G, O_pg, I, KH, KW] (logically
+        # reshaped from [O_total, C_pg, KH, KW]) so the einsum equation
+        # resolves all rank dimensions correctly.  No separate reshape_weight
+        # layer is needed — the view is implicit.
+        stride = list(module_args.get("stride", [1, 1] if is_2d else [1]))
+        padding = list(module_args.get("padding", [0, 0] if is_2d else [0]))
+        dilation = list(module_args.get("dilation", [1, 1] if is_2d else [1]))
+
+        conv_ts = TensorShapes(
+            inputs=[reshaped_input, reshaped_weight],
+            outputs=[reshaped_output],
+        )
+        try:
+            einsum_op = self._einsum_analyzer.get_einsum_op(
+                node_type, conv_ts,
+                module_args=module_args,
+                stride=stride, padding=padding, dilation=dilation,
+            )
+            conv_equation = einsum_op.equation
+        except Exception:
+            conv_equation = "BGI(P+R)(Q+S),GOIRS->BGOPQ" if is_2d else "BGI(P+R),GOIR->BGOP"
+
+        conv_layer = {
+            "type": node_type,
+            "einsum_equation": conv_equation,
+            "elementwise_op": "mul",
+            "reduction_op": "add",
+            "is_real_einsum": True,
+            "is_einsum_supportable": True,
+            "tensor_names": {
+                "inputs": [f"{reshape_in_id}.Output", weight_tensor_name],
+                "outputs": [f"{conv_id}.Output"],
+            },
+            "tensor_types": {
+                "inputs": ["input", "weight"],
+                "outputs": ["output"],
+            },
+            "tensor_shapes": {
+                "inputs": [reshaped_input, reshaped_weight],
+                "outputs": [reshaped_output],
+            },
+            "connections": {
+                "inputs": [reshape_in_id, weight_conn] if weight_conn else [reshape_in_id],
+                "outputs": [reshape_out_id],
+            },
+        }
+
+        # --- Reshape Output layer ---
+        reshape_out_layer = {
+            "type": "view",
+            "einsum_equation": reshape_out_eq,
+            "elementwise_op": "copy",
+            "reduction_op": "none",
+            "is_real_einsum": False,
+            "is_einsum_supportable": True,
+            "tensor_names": {
+                "inputs": [f"{conv_id}.Output"],
+                "outputs": [f"{reshape_out_id}.Output"],
+            },
+            "tensor_types": {
+                "inputs": ["input"],
+                "outputs": ["output"],
+            },
+            "tensor_shapes": {
+                "inputs": [reshaped_output],
+                "outputs": [list(output_shape)],
+            },
+            "connections": {
+                "inputs": [conv_id],
+                "outputs": output_connections,
+            },
+        }
+
+        subgraph = {
+            reshape_in_id: reshape_in_layer,
+            conv_id: conv_layer,
+            reshape_out_id: reshape_out_layer,
+        }
+
+        # Input mapping: tells the connection fixer which subgraph node consumes
+        # which original input index
+        input_mapping = {}
+        if activation_conn:
+            input_mapping[0] = reshape_in_id
+        if weight_conn:
+            input_mapping[1] = conv_id
+
+        return subgraph, reshape_out_id, input_mapping
 
     def _validate_input_types_alignment(self, node_id: str, node_data: Dict[str, Any]) -> None:
         """Ensure input_types aligns 1:1 with input_shapes for op nodes.

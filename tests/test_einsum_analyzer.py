@@ -20,6 +20,7 @@ import numpy as np
 from solar.einsum import EinsumAnalyzer
 from solar.einsum.ops import EinsumOp, EinsumOperand
 from solar.common.types import TensorShapes
+from equation_utils import normalize_equation
 
 
 def _dict_to_ts(d):
@@ -132,7 +133,7 @@ class TestEinsumAnalyzer:
         
         op = analyzer.generate_elementwise_einsum(shape, "relu")
         
-        assert op.equation == "ABC->ABC"
+        assert normalize_equation(op.equation) == "ABC->ABC"
         assert op.get_compute_cost(TensorShapes(inputs=[shape], outputs=[shape])) == 2 * 3 * 4
     
     def test_reduction(self, analyzer):
@@ -141,11 +142,11 @@ class TestEinsumAnalyzer:
         
         # Test sum reduction along dim 1
         op = analyzer.generate_reduction_einsum(shape, "sum", dims=[1])
-        assert op.equation == "ABCD->ACD"
+        assert normalize_equation(op.equation) == "ABCD->ACD"
         
         # Test mean reduction all dims
         op = analyzer.generate_reduction_einsum(shape, "mean", dims=None)
-        assert op.equation == "ABCD->"
+        assert normalize_equation(op.equation) == "ABCD->"
         
         # Test prod reduction with keepdim=True (reduced dim kept as size 1)
         op = analyzer.get_reduction_einsum_op(
@@ -154,7 +155,7 @@ class TestEinsumAnalyzer:
             reduce_dims=[2],
             keepdim=True
         )
-        assert op.equation == "ABCD->ABCD"
+        assert normalize_equation(op.equation) == "ABCD->ABCD"
 
         # Test prod reduction with keepdim=False (reduced dim removed)
         op = analyzer.get_reduction_einsum_op(
@@ -163,14 +164,14 @@ class TestEinsumAnalyzer:
             reduce_dims=[2],
             keepdim=False
         )
-        assert op.equation == "ABCD->ABD"
+        assert normalize_equation(op.equation) == "ABCD->ABD"
     
     def test_torch_prod(self, analyzer):
         """Test torch.prod support."""
         # Full reduction
         ts_full = TensorShapes(inputs=[[2, 3, 4]], outputs=[[]])
         equation = analyzer.get_torch_einsum_equation("torch.prod", shapes=ts_full)
-        assert equation == "ABC->"
+        assert normalize_equation(equation) == "ABC->"
         
         cost = analyzer.get_compute_cost("torch.prod", ts_full)
         assert cost == 2 * 3 * 4
@@ -182,7 +183,7 @@ class TestEinsumAnalyzer:
             reduce_dims=[1],
             keepdim=False
         )
-        assert op.equation == "ABC->AC"
+        assert normalize_equation(op.equation) == "ABC->AC"
     
     def test_get_operation_from_name(self, analyzer):
         """Test operation name mapping."""

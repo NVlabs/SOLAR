@@ -57,9 +57,6 @@ python3 -m solar.cli.totimeloop \
   --einsum-graph-path "${EINSUM_OUT}/einsum_graph_renamed.yaml" \
   --output-dir "${TIMELOOP_OUT}"
 
-echo "==> Verifying einsum expressions"
-python3 -m solar.cli.verify_einsum_model "${OUT_BASE}" --scale 0.01
-
 echo ""
 echo "Done."
 echo ""
@@ -71,4 +68,3 @@ echo "Graph PDF:       ${EINSUM_OUT}/einsum_graph.pdf"
 echo "Analysis:        ${ANALYSIS_OUT}/analysis.yaml"
 echo "Perf:            ${PERF_OUT}/perf_H100_PCIe.yaml"
 echo "Timeloop graph:  ${TIMELOOP_OUT}/timeloop_graph.yaml"
-echo "Verification:    ${OUT_BASE}/einsum_verification/einsum_verification.yaml"

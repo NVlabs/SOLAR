@@ -52,9 +52,14 @@ class Conv1dHandler(EinsumOpHandler):
         stride = tuple(kwargs.get("stride", (1,)))
         padding = tuple(kwargs.get("padding", (0,)))
         dilation = tuple(kwargs.get("dilation", (1,)))
+        module_args = kwargs.get("module_args", {})
+        groups = int(module_args.get("groups", 1)) if module_args else 1
+        in_channels = int(module_args.get("in_channels", input_shape[1])) if module_args else input_shape[1]
+        out_channels = int(module_args.get("out_channels", weight_shape[0])) if module_args else weight_shape[0]
         
         return self._generate_conv1d_einsum(
-            input_shape, weight_shape, stride, padding, dilation
+            input_shape, weight_shape, stride, padding, dilation,
+            groups, in_channels, out_channels,
         )
     
     def _generate_conv1d_einsum(
@@ -63,40 +68,39 @@ class Conv1dHandler(EinsumOpHandler):
         weight_shape: TensorShape,
         stride: Tuple[int] = (1,),
         padding: Tuple[int] = (0,),
-        dilation: Tuple[int] = (1,)
+        dilation: Tuple[int] = (1,),
+        groups: int = 1,
+        in_channels: int = 0,
+        out_channels: int = 0,
     ) -> EinsumOp:
         """Generate einsum for 1D convolution.
 
-        For standard conv: BC(P+R),OCR->BOP (reduces over C and R)
-        For depthwise conv (weight C_per_group=1): BO(P+R),O1R->BOP
-          (no cross-channel reduction, each channel is independent)
-
-        Depthwise is detected when weight_shape[1] == 1 and O == C,
-        meaning groups=C (each channel has its own filter).
+        Three cases based on groups vs in_channels/out_channels:
+        - Standard (groups==1): BC(P+R),OCR->BOP
+        - Depthwise (groups==in_channels==out_channels): BO(P+R),OCR->BOP
+        - Group-wise (otherwise): BGI(P+R),GOIR->BGOP  (expects reshaped tensors)
         """
-        B, C, L = input_shape
-        O, C_per_group, KL = weight_shape
-
-        L_out = (L + 2 * padding[0] - dilation[0] * (KL - 1) - 1) // stride[0] + 1
-
-        if C_per_group == 1 and O == C:
-            # Depthwise convolution: groups=C, each channel independent
-            # MACs = B * O * L_out * KL (no cross-channel reduction)
-            operands = [
-                EinsumOperand("Input", ["B", "O", "P+R"], is_output=False),
-                EinsumOperand("Weight", ["O", "1", "R"], is_output=False),
-                EinsumOperand("Output", ["B", "O", "P"], is_output=True),
-            ]
-            equation = "BO(P+R),O1R->BOP"
-        else:
-            # Standard convolution: reduces over C and R
-            # MACs = B * O * L_out * C * KL
+        if groups == 1:
             operands = [
                 EinsumOperand("Input", ["B", "C", "P+R"], is_output=False),
                 EinsumOperand("Weight", ["O", "C", "R"], is_output=False),
                 EinsumOperand("Output", ["B", "O", "P"], is_output=True),
             ]
             equation = "BC(P+R),OCR->BOP"
+        elif groups == in_channels and groups == out_channels:
+            operands = [
+                EinsumOperand("Input", ["B", "O", "P+R"], is_output=False),
+                EinsumOperand("Weight", ["O", "C", "R"], is_output=False),
+                EinsumOperand("Output", ["B", "O", "P"], is_output=True),
+            ]
+            equation = "BO(P+R),OCR->BOP"
+        else:
+            operands = [
+                EinsumOperand("Input", ["B", "G", "I", "P+R"], is_output=False),
+                EinsumOperand("Weight", ["G", "O", "I", "R"], is_output=False),
+                EinsumOperand("Output", ["B", "G", "O", "P"], is_output=True),
+            ]
+            equation = "BGI(P+R),GOIR->BGOP"
 
         return EinsumOp(
             operands=operands,
@@ -128,9 +132,14 @@ class Conv2dHandler(EinsumOpHandler):
         stride = tuple(kwargs.get("stride", (1, 1)))
         padding = tuple(kwargs.get("padding", (0, 0)))
         dilation = tuple(kwargs.get("dilation", (1, 1)))
+        module_args = kwargs.get("module_args", {})
+        groups = int(module_args.get("groups", 1)) if module_args else 1
+        in_channels = int(module_args.get("in_channels", input_shape[1])) if module_args else input_shape[1]
+        out_channels = int(module_args.get("out_channels", weight_shape[0])) if module_args else weight_shape[0]
         
         return self._generate_conv2d_einsum(
-            input_shape, weight_shape, stride, padding, dilation
+            input_shape, weight_shape, stride, padding, dilation,
+            groups, in_channels, out_channels,
         )
     
     def _generate_conv2d_einsum(
@@ -139,50 +148,39 @@ class Conv2dHandler(EinsumOpHandler):
         weight_shape: TensorShape,
         stride: Tuple[int, int] = (1, 1),
         padding: Tuple[int, int] = (0, 0),
-        dilation: Tuple[int, int] = (1, 1)
+        dilation: Tuple[int, int] = (1, 1),
+        groups: int = 1,
+        in_channels: int = 0,
+        out_channels: int = 0,
     ) -> EinsumOp:
         """Generate einsum for 2D convolution.
-        
-        Uses sliding window format: BC(P+R)(Q+S),OCRS->BOPQ
-        where P,Q are output spatial positions and R,S are kernel positions.
-        The input spatial dimensions are expressed as (P+R) and (Q+S) to show
-        the sliding window relationship that can be flattened into loops.
-        
-        This maps directly to the nested loop structure:
-            for b in B:
-                for o in O:
-                    for p in P:
-                        for q in Q:
-                            for c in C:
-                                for r in R:
-                                    for s in S:
-                                        out[b,o,p,q] += in[b,c,p+r,q+s] * w[o,c,r,s]
+
+        Three cases based on groups vs in_channels/out_channels:
+        - Standard (groups==1): BC(P+R)(Q+S),OCRS->BOPQ
+        - Depthwise (groups==in_channels==out_channels): BO(P+R)(Q+S),OCRS->BOPQ
+        - Group-wise (otherwise): BGI(P+R)(Q+S),GOIRS->BGOPQ  (expects reshaped tensors)
         """
-        B, C, H, W = input_shape
-        O, C_per_group, KH, KW = weight_shape
-
-        H_out = (H + 2 * padding[0] - dilation[0] * (KH - 1) - 1) // stride[0] + 1
-        W_out = (W + 2 * padding[1] - dilation[1] * (KW - 1) - 1) // stride[1] + 1
-
-        if C_per_group == 1 and O == C:
-            # Depthwise conv2d: groups=C, each channel independent
-            # MACs = B * O * H_out * W_out * KH * KW
-            operands = [
-                EinsumOperand("Input", ["B", "O", "P+R", "Q+S"], is_output=False),
-                EinsumOperand("Weight", ["O", "1", "R", "S"], is_output=False),
-                EinsumOperand("Output", ["B", "O", "P", "Q"], is_output=True),
-            ]
-            equation = "BO(P+R)(Q+S),O1RS->BOPQ"
-        else:
-            # Standard or group-wise conv2d
-            # The weight C dimension is C_per_group (= C/groups).
-            # MACs = B * O * H_out * W_out * C_per_group * KH * KW
+        if groups == 1:
             operands = [
                 EinsumOperand("Input", ["B", "C", "P+R", "Q+S"], is_output=False),
                 EinsumOperand("Weight", ["O", "C", "R", "S"], is_output=False),
                 EinsumOperand("Output", ["B", "O", "P", "Q"], is_output=True),
             ]
             equation = "BC(P+R)(Q+S),OCRS->BOPQ"
+        elif groups == in_channels and groups == out_channels:
+            operands = [
+                EinsumOperand("Input", ["B", "O", "P+R", "Q+S"], is_output=False),
+                EinsumOperand("Weight", ["O", "C", "R", "S"], is_output=False),
+                EinsumOperand("Output", ["B", "O", "P", "Q"], is_output=True),
+            ]
+            equation = "BO(P+R)(Q+S),OCRS->BOPQ"
+        else:
+            operands = [
+                EinsumOperand("Input", ["B", "G", "I", "P+R", "Q+S"], is_output=False),
+                EinsumOperand("Weight", ["G", "O", "I", "R", "S"], is_output=False),
+                EinsumOperand("Output", ["B", "G", "O", "P", "Q"], is_output=True),
+            ]
+            equation = "BGI(P+R)(Q+S),GOIRS->BGOPQ"
 
         return EinsumOp(
             operands=operands,

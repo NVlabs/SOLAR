@@ -62,6 +62,97 @@ def _product(shape: List[int]) -> int:
     return int(out)
 
 
+def _compute_macs_from_equation(
+    equation: str,
+    input_shapes: List[List[int]],
+    output_shapes: List[List[int]],
+) -> int:
+    """Compute MACs directly from an einsum equation and tensor shapes.
+
+    Parses all unique rank tokens from the equation, resolves each to a
+    concrete dimension size using the shapes, and returns the product.
+
+    For ``BGI(P+R)(Q+S),GOIRS->BGOPQ`` with matching shapes this gives
+    B*G*I*P*R*Q*S*O*I = 75,497,472 for the grouped-conv example.
+    """
+    if not equation or "->" not in equation:
+        return 0
+
+    lhs, rhs = equation.split("->", 1)
+    operand_strs = lhs.split(",")
+
+    def _tokenize(s: str) -> List[str]:
+        """Split an operand string into dimension tokens.
+
+        ``BGI(P+R)(Q+S)`` -> ``['B','G','I','P+R','Q+S']``
+        ``OCRS``          -> ``['O','C','R','S']``
+        """
+        tokens: List[str] = []
+        i = 0
+        while i < len(s):
+            if s[i] == '(':
+                j = s.index(')', i)
+                tokens.append(s[i + 1 : j])
+                i = j + 1
+            elif s[i].isalpha():
+                tok = s[i]
+                i += 1
+                while i < len(s) and (s[i].isdigit()):
+                    tok += s[i]
+                    i += 1
+                tokens.append(tok)
+            else:
+                i += 1
+        return tokens
+
+    def _atoms(tok: str) -> List[str]:
+        return [a.strip() for a in tok.replace('-', '+').split('+') if a.strip()]
+
+    # Tokenize each operand and the output.
+    input_token_lists = [_tokenize(op) for op in operand_strs]
+    output_tokens = _tokenize(rhs)
+
+    # Collect all unique atoms.
+    all_atoms: Dict[str, Optional[int]] = {}
+    for toks in input_token_lists:
+        for tok in toks:
+            for a in _atoms(tok):
+                if a not in all_atoms:
+                    all_atoms[a] = None
+    for tok in output_tokens:
+        for a in _atoms(tok):
+            if a not in all_atoms:
+                all_atoms[a] = None
+
+    # Resolve sizes: compound dims (P+R) are skipped in the first pass;
+    # their atoms are resolved from single-token dims in other operands or
+    # the output.
+    def _resolve(token_lists, shapes):
+        for idx, toks in enumerate(token_lists):
+            if idx >= len(shapes):
+                break
+            shape = shapes[idx]
+            dim_off = 0
+            for tok in toks:
+                atoms = _atoms(tok)
+                if len(atoms) == 1 and dim_off < len(shape):
+                    atom = atoms[0]
+                    if all_atoms.get(atom) is None:
+                        all_atoms[atom] = int(shape[dim_off])
+                dim_off += 1
+
+    # Resolve from inputs first (catches kernel dims like R, S).
+    _resolve(input_token_lists, input_shapes)
+    # Then from output (catches spatial dims like P, Q).
+    _resolve([output_tokens], output_shapes)
+
+    total = 1
+    for v in all_atoms.values():
+        if v is not None and v > 0:
+            total *= v
+    return int(total)
+
+
 class EinsumGraphAnalyzer:
     """Analyze `einsum_graph.yaml` and write `analysis.yaml`."""
 
@@ -154,6 +245,23 @@ class EinsumGraphAnalyzer:
         # AND consumed by another op.
         all_layer_ids: Set[str] = set(layers_in.keys())
 
+        # Identify zero-copy view layers.  These are transparent for memory
+        # accounting: they don't read/write DRAM.  The fused model must
+        # "see through" them when deciding whether a tensor is intermediate
+        # or external.
+        _TRANSPARENT_OPS = {
+            "expand", "expand_as",
+            "view", "reshape", "contiguous",
+            "transpose", "permute", "t",
+            "unsqueeze", "squeeze", "flatten",
+            "unfold", "unflatten",
+            "chunk", "split", "tensor_split",
+        }
+        transparent_layer_ids: Set[str] = set()
+        for layer_id, layer in layers_in.items():
+            if str(layer.get("type", "")).lower() in _TRANSPARENT_OPS:
+                transparent_layer_ids.add(layer_id)
+
         tensor_producers: Dict[str, str] = {}   # tensor_name -> producer_layer_id
         tensor_consumers: Dict[str, Set[str]] = {}  # tensor_name -> set of consumer_layer_ids
 
@@ -175,11 +283,52 @@ class EinsumGraphAnalyzer:
         for tensor_name in tensor_producers:
             if tensor_name in tensor_consumers and len(tensor_consumers[tensor_name]) > 0:
                 intermediate_tensors.add(tensor_name)
-        
+
+        def _trace_source_through_views(layer_id: str) -> str:
+            """Trace backward through transparent view layers to the real source.
+
+            Returns the first non-transparent predecessor layer ID, or a start
+            node ID if the chain originates outside the graph.  Returns the
+            original layer_id if it is not transparent itself.
+            """
+            visited: Set[str] = set()
+            current = layer_id
+            while current in transparent_layer_ids and current not in visited:
+                visited.add(current)
+                conns = (layers_in[current].get("connections") or {}).get("inputs") or []
+                if not conns:
+                    break
+                current = conns[0]
+            return current
+
+        def _has_real_consumer(layer_id: str) -> bool:
+            """Check if a layer's output ultimately reaches a non-transparent consumer.
+
+            Follows the output connection chain through transparent views.
+            Returns True if any non-view layer consumes the data (directly or
+            transitively), False if the chain ends without a real consumer.
+            """
+            visited: Set[str] = set()
+            queue = [layer_id]
+            while queue:
+                lid = queue.pop(0)
+                if lid in visited:
+                    continue
+                visited.add(lid)
+                conns = (layers_in.get(lid, {}).get("connections") or {}).get("outputs") or []
+                for out_id in conns:
+                    if out_id in transparent_layer_ids:
+                        queue.append(out_id)
+                    elif out_id in all_layer_ids:
+                        return True
+            return False
+
         if self.debug:
             print(f"Debug: Found {len(intermediate_tensors)} intermediate tensors")
             for t in sorted(intermediate_tensors)[:10]:
                 print(f"  - {t}")
+            if transparent_layer_ids:
+                print(f"Debug: {len(transparent_layer_ids)} transparent view layers")
 
         # TEMPORARY FIX: Propagate bool-ness from start nodes through graph.
         # A computation layer is "bool" if ALL its inputs come from bool
@@ -245,10 +394,17 @@ class EinsumGraphAnalyzer:
             )
 
             ops_cost = 0
-            try:
-                ops_cost = int(self.einsum_analyzer.get_compute_cost(op_type, ts))
-            except Exception:
-                ops_cost = 0
+            if is_real_einsum and equation:
+                ops_cost = _compute_macs_from_equation(
+                    equation,
+                    tensor_shapes.get("inputs", []),
+                    tensor_shapes.get("outputs", []),
+                )
+            else:
+                try:
+                    ops_cost = int(self.einsum_analyzer.get_compute_cost(op_type, ts))
+                except Exception:
+                    ops_cost = 0
 
             # Zero-compute operations: no ALU work, only pointer/metadata
             # manipulation or pure memory copies.
@@ -415,8 +571,10 @@ class EinsumGraphAnalyzer:
             #   - graph-internal  → intermediate activation (fusable, skip in fused model)
             #   - other           → external model input (DRAM read)
             #
-            # graph-internal = not a weight AND produced by another op in the graph.
-            # When input_elems was zeroed (zero-copy/scatter ops), skip classification.        
+            # graph-internal = not a weight AND produced by a non-view op in the graph.
+            # Transparent views are "see-through": if the producer is a view,
+            # trace backward to find the real source.  If the source is a start
+            # node (outside the graph), the tensor is external.
             input_name_list = tensor_names.get("inputs") or []
             graph_internal_input_elems = 0   # intermediate activations from other ops
             external_input_elems = 0         # weights + model-level inputs (always DRAM)
@@ -426,7 +584,15 @@ class EinsumGraphAnalyzer:
                     continue
                 itype = input_type_list[i] if i < len(input_type_list) else "weight"
                 iname = input_name_list[i] if i < len(input_name_list) else ""
-                is_graph_internal = (itype != "weight" and iname in tensor_producers)
+
+                if itype == "weight":
+                    is_graph_internal = False
+                elif iname in tensor_producers:
+                    producer_id = tensor_producers[iname]
+                    source_id = _trace_source_through_views(producer_id)
+                    is_graph_internal = source_id in all_layer_ids and source_id not in transparent_layer_ids
+                else:
+                    is_graph_internal = False
 
                 if is_graph_internal:
                     graph_internal_input_elems += mem_read
@@ -441,11 +607,21 @@ class EinsumGraphAnalyzer:
             model_input_elems = int(external_input_elems)
             input_is_intermediate = graph_internal_input_elems > 0
 
-            # Classify outputs: intermediate if consumed by another op, else model output.
+            # Classify outputs: intermediate if consumed by a real (non-view) op.
+            # If the only consumers are transparent views that themselves have
+            # no real consumers, this is a final model output.
             output_name_list = tensor_names.get("outputs") or []
-            output_is_intermediate = any(
-                oname in tensor_consumers for oname in output_name_list
-            )
+            output_is_intermediate = False
+            for oname in output_name_list:
+                for consumer_id in (tensor_consumers.get(oname) or set()):
+                    if consumer_id not in transparent_layer_ids:
+                        output_is_intermediate = True
+                        break
+                    if _has_real_consumer(consumer_id):
+                        output_is_intermediate = True
+                        break
+                if output_is_intermediate:
+                    break
 
             # Intermediate output elems: written to cache (fused) not DRAM
             intermediate_output_elems = output_elems if output_is_intermediate else 0
