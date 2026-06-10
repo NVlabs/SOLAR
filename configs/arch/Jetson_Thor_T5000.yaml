@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Jetson_Thor_T5000"
+# Jetson AGX Thor: Blackwell GPU, 2560 CUDA cores, 96 Gen5 Tensor Cores, 1.57 GHz
+DRAM_capacity: 137438953472  # 128GB LPDDR5X
+DRAM_byte_per_cycle: 173.9  # 273 GB/s at 1.57 GHz
+freq_GHz: 1.57  # GPU base/boost (Jetson AGX Thor)
+# AI perf from Jetson Thor/T5000 spec: 517 Dense FP8 | Sparse FP16; 1035 Dense FP4 | Sparse FP8; 2070 Sparse FP4
+MAC_per_cycle_int8_tc: 329299   # Sparse INT8 1035 TFLOPS → dense ~2x FP8; 658598 @ 1.57 GHz
+# 15 FP32 TFLOPS is SM (CUDA core) FP32; Thor has no separate published FP32 tensor-core number
+MAC_per_cycle_fp32_sm: 9554  # 15 FP32 TFLOPS (SM only) @ 1.57 GHz
+# TF32 runs on tensor cores; no pub spec for Thor — TC TF32 is half of FP16 throughput
+MAC_per_cycle_tf32_tc: 82325   # half of FP16 TC (164649/2) @ 1.57 GHz
+MAC_per_cycle_fp16_tc: 164649   # 258.5 TFLOPS dense FP16 (half of 517 Sparse FP16) @ 1.57 GHz
+MAC_per_cycle_bf16_tc: 164649   # same as FP16
+MAC_per_cycle_fp8_tc: 329299   # 517 Dense FP8 TFLOPS @ 1.57 GHz
+MAC_per_cycle_nvfp4_tc: 659236  # 1035 Dense FP4 TFLOPS @ 1.57 GHz (2070 Sparse)

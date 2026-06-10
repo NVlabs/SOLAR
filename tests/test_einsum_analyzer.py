@@ -209,6 +209,11 @@ class TestEinsumAnalyzer:
         ts = TensorShapes(inputs=[[10, 20], [20, 30]], outputs=[[10, 30]])
         cost = analyzer.get_compute_cost("matmul", ts)
         assert cost == 10 * 20 * 30
+
+        # Serialized equations may use multi-character batch ranks.
+        ts = TensorShapes(inputs=[[5, 10, 20], [20, 30]], outputs=[[5, 10, 30]])
+        cost = analyzer.get_compute_cost("matmul", ts, equation="B0MK,KN->B0MN")
+        assert cost == 5 * 10 * 20 * 30
         
         # Convolution (simplified test)
         ts = TensorShapes(

@@ -108,25 +108,30 @@ class TestPyTorchProcessor:
         assert output_dir.exists()
         assert (output_dir / "pytorch_graph.yaml").exists()
     
+    @patch('solar.graph.pytorch_processor._check_torchview_parameter_support')
     @patch('torchview.draw_graph')
-    def test_generate_torchview_graph(self, mock_draw_graph):
+    def test_generate_torchview_graph(self, mock_draw_graph, _mock_check):
         """Test torchview graph generation."""
         processor = PyTorchProcessor()
-        
+
         # Create mock model and inputs
         mock_model = Mock()
         mock_model.to_empty = Mock(return_value=mock_model)
         mock_model.eval = Mock()
-        
+
         mock_inputs = [Mock()]
-        
+
         # Mock torchview return
         mock_graph = Mock()
         mock_draw_graph.return_value = mock_graph
-        
+
+        # Mock internal helpers so the meta-device path succeeds
+        processor._move_inputs_to_device = Mock(return_value=mock_inputs)
+        processor._is_rnn_model = Mock(return_value=False)
+
         # Generate graph
         result = processor._generate_torchview_graph(mock_model, mock_inputs)
-        
+
         assert result is mock_graph
         mock_draw_graph.assert_called_once()
     

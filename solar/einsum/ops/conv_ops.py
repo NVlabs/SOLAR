@@ -193,9 +193,9 @@ class Conv2dHandler(EinsumOpHandler):
 
 class Conv3dHandler(EinsumOpHandler):
     """Handler for 3D convolution."""
-    
+
     supported_ops = ["conv3d"]
-    
+
     def generate_einsum(
         self,
         op_name: str,
@@ -205,18 +205,18 @@ class Conv3dHandler(EinsumOpHandler):
         """Generate einsum for 3D convolution."""
         input_shape = tensor_shapes.inputs[0]
         weight_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
-        
+
         if input_shape is None or weight_shape is None:
             raise ValueError(f"Missing Input/Weight shapes for {op_name}")
-        
+
         stride = tuple(kwargs.get("stride", (1, 1, 1)))
         padding = tuple(kwargs.get("padding", (0, 0, 0)))
         dilation = tuple(kwargs.get("dilation", (1, 1, 1)))
-        
+
         return self._generate_conv3d_einsum(
             input_shape, weight_shape, stride, padding, dilation
         )
-    
+
     def _generate_conv3d_einsum(
         self,
         input_shape: TensorShape,
@@ -226,7 +226,7 @@ class Conv3dHandler(EinsumOpHandler):
         dilation: Tuple[int, int, int] = (1, 1, 1)
     ) -> EinsumOp:
         """Generate einsum for 3D convolution.
-        
+
         Uses sliding window format: BC(P+T)(Q+R)(U+S),OCTRS->BOPQU
         where P,Q,U are output spatial positions and T,R,S are kernel positions.
         The input spatial dimensions are expressed as (P+T), (Q+R), (U+S) to show
@@ -234,11 +234,11 @@ class Conv3dHandler(EinsumOpHandler):
         """
         B, C, D, H, W = input_shape
         O, _, KD, KH, KW = weight_shape
-        
+
         D_out = (D + 2 * padding[0] - dilation[0] * (KD - 1) - 1) // stride[0] + 1
         H_out = (H + 2 * padding[1] - dilation[1] * (KH - 1) - 1) // stride[1] + 1
         W_out = (W + 2 * padding[2] - dilation[2] * (KW - 1) - 1) // stride[2] + 1
-        
+
         # Sliding window format: Input[B,C,P+T,Q+R,U+S] * Weight[O,C,T,R,S] -> Output[B,O,P,Q,U]
         # P,Q,U are output positions, T,R,S are kernel positions
         operands = [
@@ -246,13 +246,13 @@ class Conv3dHandler(EinsumOpHandler):
             EinsumOperand("Weight", ["O", "C", "T", "R", "S"], is_output=False),
             EinsumOperand("Output", ["B", "O", "P", "Q", "U"], is_output=True),
         ]
-        
+
         # Sliding window einsum: BC(P+T)(Q+R)(U+S),OCTRS->BOPQU
         equation = "BC(P+T)(Q+R)(U+S),OCTRS->BOPQU"
-        
+
         return EinsumOp(
-            operands=operands, 
-            equation=equation, 
+            operands=operands,
+            equation=equation,
             name="conv3d",
             elementwise_op="mul",
             reduction_op="add",
@@ -261,9 +261,9 @@ class Conv3dHandler(EinsumOpHandler):
 
 class ConvTranspose1dHandler(EinsumOpHandler):
     """Handler for 1D transposed convolution."""
-    
+
     supported_ops = ["convtranspose1d", "conv_transpose1d"]
-    
+
     def generate_einsum(
         self,
         op_name: str,
@@ -273,39 +273,43 @@ class ConvTranspose1dHandler(EinsumOpHandler):
         """Generate einsum for 1D transposed convolution."""
         input_shape = tensor_shapes.inputs[0]
         weight_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
-        
+
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")
-        
+
         # Generate placeholder weight if missing
         if weight_shape is None:
             c_in = input_shape[1] if len(input_shape) >= 2 else 64
             weight_shape = [c_in, c_in, 3]
-        
+
         return self._generate_convtranspose1d_einsum(input_shape, weight_shape)
-    
+
     def _generate_convtranspose1d_einsum(
         self,
         input_shape: TensorShape,
-        weight_shape: TensorShape
+        weight_shape: TensorShape,
     ) -> EinsumOp:
         """Generate einsum for 1D transposed convolution.
-        
-        Uses sliding window format: BC(P-R),CKR->BKP
-        For transposed conv, output position P maps to input position (P-R).
+
+        Equation: ``BCP,CKR->BK(P+R)``. MAC count = B·C·K·P·R, matching
+        ``num_input_elements × out_channels × kernel`` — the same compute
+        budget as PyTorch's ConvTranspose1d implementation.
+
+        Grouped variant (groups > 1): the AF graph builder's union-find
+        canonicalization naturally handles the C_out vs C_out/groups
+        distinction by giving them separate canonical ranks.
         """
-        # Sliding window format for transposed conv
         operands = [
-            EinsumOperand("Input", ["B", "C", "P-R"], is_output=False),
+            EinsumOperand("Input", ["B", "C", "P"], is_output=False),
             EinsumOperand("Weight", ["C", "K", "R"], is_output=False),
-            EinsumOperand("Output", ["B", "K", "P"], is_output=True),
+            EinsumOperand("Output", ["B", "K", "P+R"], is_output=True),
         ]
-        
-        equation = "BC(P-R),CKR->BKP"
-        
+
+        equation = "BCP,CKR->BK(P+R)"
+
         return EinsumOp(
-            operands=operands, 
-            equation=equation, 
+            operands=operands,
+            equation=equation,
             name="convtranspose1d",
             elementwise_op="mul",
             reduction_op="add",
@@ -314,9 +318,9 @@ class ConvTranspose1dHandler(EinsumOpHandler):
 
 class ConvTranspose2dHandler(EinsumOpHandler):
     """Handler for 2D transposed convolution."""
-    
+
     supported_ops = ["convtranspose2d", "conv_transpose2d"]
-    
+
     def generate_einsum(
         self,
         op_name: str,
@@ -326,39 +330,41 @@ class ConvTranspose2dHandler(EinsumOpHandler):
         """Generate einsum for 2D transposed convolution."""
         input_shape = tensor_shapes.inputs[0]
         weight_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
-        
+
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")
-        
+
         # Generate placeholder weight if missing
         if weight_shape is None:
             c_in = input_shape[1] if len(input_shape) >= 2 else 64
             weight_shape = [c_in, c_in, 3, 3]
-        
+
         return self._generate_convtranspose2d_einsum(input_shape, weight_shape)
-    
+
     def _generate_convtranspose2d_einsum(
         self,
         input_shape: TensorShape,
-        weight_shape: TensorShape
+        weight_shape: TensorShape,
     ) -> EinsumOp:
         """Generate einsum for 2D transposed convolution.
-        
-        Uses sliding window format: BC(P-R)(Q-S),CKRS->BKPQ
-        For transposed conv, output positions P,Q map to input positions (P-R),(Q-S).
+
+        Equation: ``BCPQ,CKRS->BK(P+R)(Q+S)``. MAC count = B·C·K·P·Q·R·S,
+        matching ``num_input_elements × out_channels × kernel² ``.
+
+        Grouped variant (groups > 1): handled in the AF graph builder's
+        union-find canonicalization.
         """
-        # Sliding window format for transposed conv
         operands = [
-            EinsumOperand("Input", ["B", "C", "P-R", "Q-S"], is_output=False),
+            EinsumOperand("Input", ["B", "C", "P", "Q"], is_output=False),
             EinsumOperand("Weight", ["C", "K", "R", "S"], is_output=False),
-            EinsumOperand("Output", ["B", "K", "P", "Q"], is_output=True),
+            EinsumOperand("Output", ["B", "K", "P+R", "Q+S"], is_output=True),
         ]
-        
-        equation = "BC(P-R)(Q-S),CKRS->BKPQ"
-        
+
+        equation = "BCPQ,CKRS->BK(P+R)(Q+S)"
+
         return EinsumOp(
-            operands=operands, 
-            equation=equation, 
+            operands=operands,
+            equation=equation,
             name="convtranspose2d",
             elementwise_op="mul",
             reduction_op="add",
@@ -367,9 +373,9 @@ class ConvTranspose2dHandler(EinsumOpHandler):
 
 class ConvTranspose3dHandler(EinsumOpHandler):
     """Handler for 3D transposed convolution."""
-    
+
     supported_ops = ["convtranspose3d", "conv_transpose3d"]
-    
+
     def generate_einsum(
         self,
         op_name: str,
@@ -379,39 +385,41 @@ class ConvTranspose3dHandler(EinsumOpHandler):
         """Generate einsum for 3D transposed convolution."""
         input_shape = tensor_shapes.inputs[0]
         weight_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
-        
+
         if input_shape is None:
             raise ValueError(f"Missing Input shape for {op_name}")
-        
+
         # Generate placeholder weight if missing
         if weight_shape is None:
             c_in = input_shape[1] if len(input_shape) >= 2 else 64
             weight_shape = [c_in, c_in, 3, 3, 3]
-        
+
         return self._generate_convtranspose3d_einsum(input_shape, weight_shape)
-    
+
     def _generate_convtranspose3d_einsum(
         self,
         input_shape: TensorShape,
-        weight_shape: TensorShape
+        weight_shape: TensorShape,
     ) -> EinsumOp:
         """Generate einsum for 3D transposed convolution.
-        
-        Uses sliding window format: BC(P-T)(Q-R)(U-S),CKTRS->BKPQU
-        For transposed conv, output positions P,Q,U map to input positions (P-T),(Q-R),(U-S).
+
+        Equation: ``BCPQU,CKTRS->BK(P+T)(Q+R)(U+S)``. MAC count =
+        B·C·K·P·Q·U·T·R·S.
+
+        Grouped variant (groups > 1): handled in the AF graph builder's
+        union-find canonicalization.
         """
-        # Sliding window format for transposed conv
         operands = [
-            EinsumOperand("Input", ["B", "C", "P-T", "Q-R", "U-S"], is_output=False),
+            EinsumOperand("Input", ["B", "C", "P", "Q", "U"], is_output=False),
             EinsumOperand("Weight", ["C", "K", "T", "R", "S"], is_output=False),
-            EinsumOperand("Output", ["B", "K", "P", "Q", "U"], is_output=True),
+            EinsumOperand("Output", ["B", "K", "P+T", "Q+R", "U+S"], is_output=True),
         ]
-        
-        equation = "BC(P-T)(Q-R)(U-S),CKTRS->BKPQU"
-        
+
+        equation = "BCPQU,CKTRS->BK(P+T)(Q+R)(U+S)"
+
         return EinsumOp(
-            operands=operands, 
-            equation=equation, 
+            operands=operands,
+            equation=equation,
             name="convtranspose3d",
             elementwise_op="mul",
             reduction_op="add",
@@ -436,4 +444,3 @@ __all__ = [
     "ConvTranspose2dHandler",
     "ConvTranspose3dHandler",
 ]
-

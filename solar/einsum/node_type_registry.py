@@ -326,11 +326,11 @@ class DefaultNodeExpansionStrategy(NodeExpansionStrategy):
         if node_type in self.never_expand:
             return False
         
-        # Always-expand types are considered complex by default. Expansion may still
-        # fail later if no handler/agent is available, but it's useful to mark them
-        # as candidates here.
         if node_type in self.always_expand:
-            return True
+            handler = self.registry.get_handler(node_type)
+            if handler and handler.can_expand():
+                return True
+            return False
         
         # Check if it starts with "reduction_" (composite operations)
         if node_type.startswith("reduction_"):

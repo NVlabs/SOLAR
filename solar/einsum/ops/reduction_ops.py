@@ -84,8 +84,18 @@ class ReductionHandler(EinsumOpHandler):
         if op_type in {"amax", "amin"}:
             op_type = op_type[1:]  # amax -> max, amin -> min
         
+        # Pass the observed output shape so the handler can distinguish the
+        # binary elementwise overloads of min/max (`torch.min(x, other)`),
+        # which torchview labels as "min"/"max" but whose output rank matches
+        # the input, from the genuine reduce-all case. Without this, dims=None
+        # would unconditionally collapse to a scalar — see kbl_l2/{83,93}.
+        out_shape = (
+            tensor_shapes.outputs[0]
+            if tensor_shapes.num_outputs > 0
+            else None
+        )
         return self._generate_reduction_einsum(
-            input_shape, op_type, dims, keepdim
+            input_shape, op_type, dims, keepdim, output_shape=out_shape
         )
     
     def _generate_reduction_einsum(
@@ -93,7 +103,8 @@ class ReductionHandler(EinsumOpHandler):
         shape: TensorShape,
         op_type: str = "sum",
         dims: Optional[List[int]] = None,
-        keepdim: bool = False
+        keepdim: bool = False,
+        output_shape: Optional[TensorShape] = None,
     ) -> EinsumOp:
         """Generate einsum for reduction operations.
         
@@ -125,10 +136,21 @@ class ReductionHandler(EinsumOpHandler):
                 normalized_dims.append(d)
             dims = normalized_dims
         
-        # Determine output labels based on reduction dims and keepdim
+        # Determine output labels based on reduction dims and keepdim.
+        # When dims is None we'd normally reduce over all axes, but the
+        # binary elementwise overloads of min/max (`torch.min(x, other)`)
+        # also reach this handler with dims=None. Disambiguate via the
+        # observed output rank when available: if the output has the same
+        # rank as the input, treat as elementwise (output_labels = input).
         if dims is None:
-            # Reduce all dimensions
-            if keepdim:
+            if (
+                output_shape is not None
+                and len(output_shape) == ndims
+                and op_type in {"min", "max"}
+            ):
+                # Binary elementwise min/max: rank-preserving, no reduction.
+                output_labels = input_labels.copy()
+            elif keepdim:
                 # Keep all dims but they become size 1
                 output_labels = input_labels.copy()
             else:
@@ -179,13 +201,28 @@ class ReductionHandler(EinsumOpHandler):
             "nanmean": "add",
         }
         
+        # Binary elementwise overload of min/max keeps the input rank — no
+        # axis is collapsed, so there's no reduction. Mark it as a plain
+        # elementwise op.
+        is_binary_elementwise = (
+            dims is None
+            and op_type in {"min", "max"}
+            and len(output_labels) == ndims
+        )
+        if is_binary_elementwise:
+            elementwise_op = op_type
+            reduction_op = "none"
+        else:
+            elementwise_op = "copy"
+            reduction_op = reduction_op_map.get(op_type, "add")
+
         return EinsumOp(
-            operands=operands, 
-            equation=equation, 
+            operands=operands,
+            equation=equation,
             name=op_type,
             is_real_einsum=False,
-            elementwise_op="copy",
-            reduction_op=reduction_op_map.get(op_type, "add"),
+            elementwise_op=elementwise_op,
+            reduction_op=reduction_op,
         )
 
 

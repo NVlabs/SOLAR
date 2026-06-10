@@ -257,6 +257,8 @@ class EinsumGraphVisualizer:
             node_type = node_data.get("type", "").lower()
             if node_type == "start":
                 fillcolor = "lightgreen"
+            elif node_type == "parameter-tensor":
+                fillcolor = "lightsalmon"
             elif node_data.get("is_real_einsum", False):
                 fillcolor = "lightyellow"
             else:
@@ -335,6 +337,8 @@ class EinsumGraphVisualizer:
             node_type = node_data.get("type", "").lower()
             if node_type == "start":
                 node_colors.append("lightgreen")
+            elif node_type == "parameter-tensor":
+                node_colors.append("lightsalmon")
             elif node_data.get("is_real_einsum", False):
                 node_colors.append("lightyellow")
             else:

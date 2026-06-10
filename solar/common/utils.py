@@ -577,3 +577,25 @@ def load_einsum_graph_to_networkx(layers: Dict[str, Any]) -> Any:
                 graph.add_edge(layer_id, output_id)
     
     return graph
+
+
+# AccelForge yaml dumping with flow style
+class FlowDict(dict): pass
+class FlowList(list): pass
+class LocalDumper(NoAliasDumper): pass
+LocalDumper.add_representer(FlowDict, lambda d, x: d.represent_mapping("tag:yaml.org,2002:map", x, flow_style=True))
+LocalDumper.add_representer(FlowList, lambda d, x: d.represent_sequence("tag:yaml.org,2002:seq", x, flow_style=True))
+def flowify(x):
+    if isinstance(x, dict):
+        out = {}
+        for k, v in x.items():
+            if k == "projection":
+                out[k] = FlowDict(v) if isinstance(v, dict) else FlowList(v) if isinstance(v, list) else v
+            elif k == "tensor_accesses" and isinstance(v, list):
+                out[k] = [FlowDict(flowify(t)) if isinstance(t, dict) else flowify(t) for t in v]
+            else:
+                out[k] = flowify(v)
+        return out
+    if isinstance(x, list):
+        return [flowify(v) for v in x]
+    return x

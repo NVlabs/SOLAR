@@ -34,7 +34,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TORCHVIEW_REPO="https://github.com/mert-kurttutan/torchview.git"
 TORCHVIEW_COMMIT="edbe1fa"
 TORCHVIEW_DIR="${REPO_ROOT}/torchview"
-PATCH_FILE="${SCRIPT_DIR}/patches/torchview-parameter-tensors.patch"
+PATCH_FILES=(
+    "${SCRIPT_DIR}/patches/torchview-parameter-tensors.patch"
+    "${SCRIPT_DIR}/patches/torchview-collect-attributes.patch"
+)
 
 SKIP_TORCH=false
 
@@ -82,20 +85,21 @@ else
     git checkout "${TORCHVIEW_COMMIT}"
 fi
 
-# Apply patch
-if [[ -f "${PATCH_FILE}" ]]; then
-    echo "  Applying Solar patch..."
-    # Check if patch is already applied
-    if git apply --check "${PATCH_FILE}" 2>/dev/null; then
-        git apply "${PATCH_FILE}"
-        echo "  Patch applied successfully."
+# Apply patches
+for PATCH_FILE in "${PATCH_FILES[@]}"; do
+    patch_name=$(basename "${PATCH_FILE}")
+    if [[ -f "${PATCH_FILE}" ]]; then
+        echo "  Applying patch: ${patch_name}..."
+        if git apply --check "${PATCH_FILE}" 2>/dev/null; then
+            git apply "${PATCH_FILE}"
+            echo "  ${patch_name} applied successfully."
+        else
+            echo "  ${patch_name} already applied or conflicts detected, skipping."
+        fi
     else
-        echo "  Patch already applied or conflicts detected, skipping."
+        echo "  Warning: Patch file not found: ${PATCH_FILE}"
     fi
-else
-    echo "  Warning: Patch file not found: ${PATCH_FILE}"
-    echo "  torchview will be installed without parameter tensor support."
-fi
+done
 
 # Step 2: Install torchview from source
 echo ""
@@ -121,7 +125,7 @@ fi
 echo ""
 echo "=== Installation complete ==="
 echo ""
-echo "Torchview: ${TORCHVIEW_DIR} (commit ${TORCHVIEW_COMMIT} + Solar patch)"
+echo "Torchview: ${TORCHVIEW_DIR} (commit ${TORCHVIEW_COMMIT} + ${#PATCH_FILES[@]} patches)"
 echo "Solar:     ${SCRIPT_DIR}"
 echo ""
 echo "To verify:"

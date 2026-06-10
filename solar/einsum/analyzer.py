@@ -24,7 +24,11 @@ import string
 from typing import Any, Dict, List, Optional, Tuple
 
 from solar.common.types import TensorShape, TensorShapes
-from solar.einsum.ops.base import EinsumOp, EinsumOperand
+from solar.einsum.ops.base import (
+    EinsumOp,
+    EinsumOperand,
+    compute_cost_from_equation,
+)
 from solar.einsum.ops.registry import get_global_registry, EinsumOpRegistry
 
 
@@ -57,6 +61,7 @@ class EinsumAnalyzer:
         Returns:
             Number of operations required.
         """
+        equation = kwargs.pop("equation", None)
         ts = TensorShapes(inputs=list(shapes.inputs), outputs=list(shapes.outputs))
 
         op_norm = self._get_operation_from_name(op_name)
@@ -67,6 +72,9 @@ class EinsumAnalyzer:
                 out_shape = self._infer_conv_output_shape(op_norm, input_shape, weight_shape, **kwargs)
                 if out_shape:
                     ts = TensorShapes(inputs=ts.inputs, outputs=[out_shape])
+
+        if equation:
+            return compute_cost_from_equation(str(equation), ts)
 
         einsum_op = self.get_einsum_op(op_name, ts, **kwargs)
         return einsum_op.get_compute_cost(ts)
@@ -113,27 +121,56 @@ class EinsumAnalyzer:
         # Fallback: if we have input shapes, treat as generic elementwise
         input_shape = ts.inputs[0] if ts.inputs else None
         if input_shape is not None:
-            dims = len(input_shape)
-            labels = string.ascii_uppercase[:dims]
-            
+            output_shape = ts.outputs[0] if ts.outputs else None
+
+            # Factory ops that take an explicit `size` arg (e.g. new_full,
+            # new_zeros, new_ones, new_empty) produce a tensor whose shape is
+            # given by the size argument, not by `self`'s shape. The generic
+            # "Input == Output labels" path leaks `self`'s ranks into the
+            # output operand, which downstream causes AF rank-list conflicts
+            # (the same TensorName ends up with different rank counts in
+            # different einsums). For these ops — and any other unhandled op
+            # whose output rank differs from the input rank — emit Output
+            # labels distinct from Input, sized to the actual output_shape.
+            in_dims = len(input_shape)
+            out_dims = (
+                len(output_shape)
+                if output_shape is not None
+                else in_dims
+            )
+
+            in_labels = string.ascii_uppercase[:in_dims]
+
+            if output_shape is not None and out_dims != in_dims:
+                # Distinct output labels so the AF graph rename doesn't
+                # propagate Input's predecessor ranks into Output.
+                out_labels = "".join(
+                    f"O{i}" for i in range(out_dims)
+                )
+                in_operand = list(in_labels)
+                out_operand = [f"O{i}" for i in range(out_dims)]
+                equation = f"{in_labels}->{out_labels}"
+            else:
+                out_operand = list(in_labels)
+                in_operand = list(in_labels)
+                equation = f"{in_labels}->{in_labels}"
+
             operands = [
-                EinsumOperand("Input", list(labels), is_output=False),
-                EinsumOperand("Output", list(labels), is_output=True),
+                EinsumOperand("Input", in_operand, is_output=False),
+                EinsumOperand("Output", out_operand, is_output=True),
             ]
-            
-            equation = f"{labels}->{labels}"
-            
+
             return EinsumOp(
-                operands=operands, 
-                equation=equation, 
+                operands=operands,
+                equation=equation,
                 name=op_norm,
                 is_real_einsum=False,
                 elementwise_op="copy",
                 reduction_op="none",
             )
-        
+
         raise ValueError(f"Unsupported operation: {op_name}")
-    
+
     def _get_operation_from_name(self, op_name: str) -> str:
         """Normalize an operation name to a canonical operation key."""
         op = op_name.lower()
@@ -485,4 +522,3 @@ class EinsumAnalyzer:
 
 
 __all__ = ["EinsumAnalyzer"]
-

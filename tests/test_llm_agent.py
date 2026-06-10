@@ -308,20 +308,25 @@ class TestDefaultNodeExpansionStrategy:
         registry = NodeTypeRegistry()
         return DefaultNodeExpansionStrategy(registry)
     
-    def test_should_expand_complex_ops(self, strategy):
-        """Test expansion decision for complex operations."""
-        # Attention should be expanded
-        node_data = {"type": "attention"}
-        assert strategy.should_expand("node1", node_data) is True
-        
-        # Multi-head attention should be expanded
+    def test_always_expand_types_need_handler(self, strategy):
+        """Types in always_expand return False without a registered handler."""
         node_data = {"type": "multi_head_attention"}
-        assert strategy.should_expand("node2", node_data) is True
-        
-        # LSTM should be expanded
+        assert strategy.should_expand("node1", node_data) is False
+
         node_data = {"type": "lstm"}
-        assert strategy.should_expand("node3", node_data) is True
-    
+        assert strategy.should_expand("node2", node_data) is False
+
+    def test_always_expand_types_with_handler(self, strategy):
+        """Types in always_expand return True when a handler is registered."""
+        from unittest.mock import Mock
+        for op_type in ("multi_head_attention", "lstm", "scaled_dot_product_attention"):
+            handler = Mock()
+            handler.can_expand.return_value = True
+            strategy.registry.register(op_type, handler)
+
+            node_data = {"type": op_type}
+            assert strategy.should_expand(f"node_{op_type}", node_data) is True
+
     def test_should_not_expand_basic_ops(self, strategy):
         """Test expansion decision for basic operations."""
         # Conv2d should not be expanded

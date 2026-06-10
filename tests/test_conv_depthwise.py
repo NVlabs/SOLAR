@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from solar.common.types import TensorShapes
+from solar.einsum import EinsumAnalyzer
 from solar.einsum.ops.conv_ops import Conv1dHandler, Conv2dHandler
 from equation_utils import normalize_equation
 
@@ -96,6 +97,17 @@ class TestConv2dGroupwise:
             module_args={"groups": G, "in_channels": G*I, "out_channels": G*O_pg})
         assert normalize_equation(result.equation) == "ABC(D+E)(F+G),BHCEG->ABHDF"
         cost = result.get_compute_cost(ts)
+        assert cost == B * G * O_pg * H_out * W_out * I * KH * KW
+
+    def test_groupwise_conv2d_analyzer_equation_macs(self):
+        analyzer = EinsumAnalyzer()
+        G, I, O_pg, B = 4, 32, 64, 1
+        H, W, KH, KW, H_out, W_out = 32, 32, 3, 3, 32, 32
+        ts = TensorShapes(
+            inputs=[[B,G,I,H,W],[G,O_pg,I,KH,KW]],
+            outputs=[[B,G,O_pg,H_out,W_out]])
+        cost = analyzer.get_compute_cost(
+            "conv2d", ts, equation="BGI(P+R)(Q+S),GOIRS->BGOPQ")
         assert cost == B * G * O_pg * H_out * W_out * I * KH * KW
 
 def run_tests():

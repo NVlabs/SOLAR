@@ -305,17 +305,17 @@ class TensorManipulationHandler(EinsumOpHandler):
                 start_match = i + 1
             else:
                 break
-        
+
         # Match from the end
         end_match = 0
         for j in range(1, min(in_dims, out_dims) + 1):
             in_idx = in_dims - j
             out_idx = out_dims - j
-            
+
             # Don't overlap with start matches
             if out_idx < start_match or in_idx < start_match:
                 break
-                
+
             if input_shape[in_idx] == output_shape[out_idx]:
                 if in_labels[in_idx] not in used_in_labels:
                     out_labels[out_idx] = in_labels[in_idx]

@@ -142,6 +142,14 @@ def main() -> None:
         except Exception as e:
             print(f"⚠️  Failed to save graph visualization: {e}")
 
+        af_renamed_graph_path = output_dir / "einsum_graph_af_renamed.yaml"
+        af_pdf_path = output_dir / "einsum_graph_renamed.pdf"
+        try:
+            visualizer.save_graph_pdf(af_renamed_graph_path, af_pdf_path)
+            print(f"📊 AF graph visualization saved: {af_pdf_path}")
+        except Exception as e:
+            print(f"⚠️  Failed to save AF graph visualization: {e}")
+
     print(f"\n📝 Files saved to {output_dir}:")
     for p in sorted(output_dir.iterdir()):
         if p.is_file():

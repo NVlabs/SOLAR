@@ -1,0 +1,42 @@
+Fix collect_attributes propagation for FunctionNode attribute capture.
+
+When input_data is provided to draw_graph() (rather than input_size),
+get_recorder_tensor was called without collect_attributes, so all input
+TensorNodes had collect_attributes=False. This prevented stringify_attributes
+from ever being called on FunctionNodes, meaning dim/keepdim args for
+reduction ops (mean, sum, logsumexp, etc.) were never captured.
+
+Two fixes:
+1. torchview.py: Pass collect_attributes through lambda to get_recorder_tensor
+   when processing input_data and kwargs.
+2. recorder_tensor.py: Add collect_attributes to attach_kwargs in
+   __torch_function__ so the flag propagates through function node outputs.
+
+diff --git a/src/torchview/torchview.py b/src/torchview/torchview.py
+index 1234567..abcdefg 100644
+--- a/src/torchview/torchview.py
++++ b/src/torchview/torchview.py
+@@ -284,9 +284,9 @@ def process_input(
+     x = None
+     correct_input_size = []
+-    kwargs_recorder_tensor = traverse_data(kwargs, get_recorder_tensor, type)
++    kwargs_recorder_tensor = traverse_data(kwargs, lambda t: get_recorder_tensor(t, collect_attributes), type)
+     if input_data is not None:
+         x = set_device(input_data, device)
+-        x = traverse_data(x, get_recorder_tensor, type)
++        x = traverse_data(x, lambda t: get_recorder_tensor(t, collect_attributes), type)
+         if isinstance(x, RecorderTensor):
+             x = [x]
+diff --git a/src/torchview/recorder_tensor.py b/src/torchview/recorder_tensor.py
+index 1234567..abcdefg 100644
+--- a/src/torchview/recorder_tensor.py
++++ b/src/torchview/recorder_tensor.py
+@@ -316,6 +316,7 @@ class RecorderTensor(torch.Tensor):
+         attach_kwargs = {
+             'parents': cur_node, 'depth': cur_depth, "context": input_context,
+             'is_aux': False, 'parent_hierarchy': {cur_depth: cur_node},
+-            'name': 'output-tensor' if cur_depth == 0 else 'hidden-tensor'
++            'name': 'output-tensor' if cur_depth == 0 else 'hidden-tensor',
++            'collect_attributes': collect_attributes,
+         }
+         traverse_data_inplace(out, attach_node(attach_kwargs))

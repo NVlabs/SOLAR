@@ -793,6 +793,26 @@ class TorchviewProcessor:
                     if isinstance(arg, (list, tuple)) and all(isinstance(d, int) for d in arg):
                         result['target_shape'] = list(arg)
                         break
+
+            elif node_name in ('mean', 'sum', 'logsumexp', 'prod', 'amax', 'amin',
+                               'any', 'all', 'norm', 'std', 'var'):
+                # Reduction ops: func(input, dim, keepdim=False)
+                # scalar_args may contain dim as int or list of ints
+                if kwargs_dict:
+                    if 'dim' in kwargs_dict:
+                        dim_val = kwargs_dict['dim']
+                        result['dim'] = [dim_val] if isinstance(dim_val, int) else list(dim_val)
+                    if 'keepdim' in kwargs_dict:
+                        result['keepdim'] = kwargs_dict['keepdim']
+                # dim can also be a positional arg
+                if 'dim' not in result:
+                    for arg in scalar_args:
+                        if isinstance(arg, int):
+                            result['dim'] = [arg]
+                            break
+                        elif isinstance(arg, (list, tuple)) and all(isinstance(d, int) for d in arg):
+                            result['dim'] = list(arg)
+                            break
                         
         except Exception as e:
             if self.debug:
@@ -800,50 +820,74 @@ class TorchviewProcessor:
         
         return result
     
+    @staticmethod
+    def _replace_balanced_calls(text: str, func_name: str, replacement: str) -> str:
+        """Replace func_name(...) using balanced parenthesis matching."""
+        result = []
+        i = 0
+        tag = func_name + "("
+        while i < len(text):
+            if text[i:i + len(tag)] == tag:
+                depth = 1
+                j = i + len(tag)
+                while j < len(text) and depth > 0:
+                    if text[j] == "(":
+                        depth += 1
+                    elif text[j] == ")":
+                        depth -= 1
+                    j += 1
+                result.append(replacement)
+                i = j
+            else:
+                result.append(text[i])
+                i += 1
+        return "".join(result)
+
     def _eval_attributes_string(
         self,
         attributes: str,
     ) -> Tuple[Optional[List[Any]], Optional[Dict[str, Any]]]:
         """Safely evaluate torchview attributes string.
-        
-        Replaces Tensor(...) with a placeholder dict and evaluates the string.
-        
+
+        Replaces Tensor(...) and slice(...) with placeholders, quotes bare
+        keyword dict keys, then evaluates the string.
+
         Args:
             attributes: Stringified attributes from torchview.
-            
+
         Returns:
             Tuple of (args_list, kwargs_dict) or (None, None) on failure.
         """
         import re
-        
+
         try:
-            # Replace Tensor(shape=(...), dtype=...) with a placeholder dict
-            # Pattern matches: Tensor(shape=(1, 2, 3), dtype=torch.float32)
-            def replace_tensor(match: re.Match) -> str:
-                return "{'tensor_placeholder': True}"
-            
-            # Replace all Tensor(...) occurrences
-            # Handle nested parentheses by matching Tensor( then everything until matching )
             processed = attributes
-            
-            # Simple approach: replace Tensor(...) patterns
-            # This regex handles nested parens by being greedy within the Tensor() call
-            tensor_pattern = r'Tensor\([^)]*(?:\([^)]*\)[^)]*)*\)'
-            processed = re.sub(tensor_pattern, "{'tensor_placeholder': True}", processed)
-            
-            # Replace torch.dtype references
+
+            processed = self._replace_balanced_calls(
+                processed, "Tensor", "{'tensor_placeholder': True}"
+            )
+            processed = self._replace_balanced_calls(
+                processed, "slice", "None"
+            )
+
             processed = re.sub(r'torch\.\w+', 'None', processed)
-            
-            # Now safely evaluate
+            processed = processed.replace("Ellipsis", "None")
+            processed = processed.replace("...", "None")
+
+            # Quote bare keyword keys: {tensor: v, a: v} -> {"tensor": v, "a": v}
+            processed = re.sub(
+                r'(?<=[{,])\s*([a-zA-Z_]\w*)\s*:', r' "\1":', processed
+            )
+
             parsed = eval(processed, {"__builtins__": {}}, {})
-            
+
             if isinstance(parsed, (list, tuple)) and len(parsed) >= 2:
                 args_list = parsed[0] if isinstance(parsed[0], (list, tuple)) else []
                 kwargs_dict = parsed[1] if isinstance(parsed[1], dict) else {}
                 return list(args_list), kwargs_dict
-            
+
             return None, None
-            
+
         except Exception as e:
             if self.debug:
                 print(f"Warning: Failed to eval attributes: {e}")

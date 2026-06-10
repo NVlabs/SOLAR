@@ -489,6 +489,80 @@ class TestAttentionModel:
                 f"Should have at least 2 matmul nodes, got {len(matmul_nodes)}"
 
 
+class ReductionModel(nn.Module):
+    """Model with reduction ops (mean, logsumexp, sum) to test attribute capture."""
+
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Conv2d(3, 16, kernel_size=3, padding=1)
+        self.bias = nn.Parameter(torch.randn(16, 1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv(x)
+        x = torch.mean(x, dim=[2, 3], keepdim=True)
+        x = x + self.bias
+        x = torch.logsumexp(x, dim=1, keepdim=True)
+        x = torch.sum(x, dim=[2, 3])
+        return x
+
+
+@pytest.mark.skipif(not TORCHVIEW_AVAILABLE, reason="torchview not installed")
+class TestReductionAttributes:
+    """Test that reduction ops capture dim/keepdim via collect_attributes."""
+
+    def _get_pytorch_graph(self, processor):
+        """Run the full pipeline and return the pytorch graph dict."""
+        from solar.graph.pytorch_processor import _patch_torchview_collect_attributes
+
+        model = ReductionModel()
+        x = torch.randn(2, 3, 8, 8)
+
+        with _patch_torchview_collect_attributes():
+            graph = draw_graph(
+                model, input_data=x, expand_nested=True,
+                depth=float('inf'), hide_module_functions=False,
+                hide_inner_tensors=False, roll=False,
+                collect_attributes=True,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nodes = processor.process_graph(graph, tmpdir, "test_model", model)
+            # Build a dict keyed by function_name for easy lookup
+            fn_nodes = {}
+            for n in nodes:
+                fn_name = n.module_args.get("function_name", "")
+                if fn_name:
+                    fn_nodes[fn_name] = n
+            return fn_nodes
+
+    def test_mean_has_dim_and_keepdim(self, processor):
+        fn_nodes = self._get_pytorch_graph(processor)
+        assert "mean" in fn_nodes, "Should find mean FunctionNode"
+        args = fn_nodes["mean"].module_args
+        assert "raw_attributes" in args, "mean should have raw_attributes"
+        assert "dim" in args, f"mean should have dim, got: {args}"
+        assert args["dim"] == [2, 3], f"mean dim should be [2,3], got: {args['dim']}"
+        assert args.get("keepdim") is True, f"mean keepdim should be True, got: {args.get('keepdim')}"
+
+    def test_logsumexp_has_dim_and_keepdim(self, processor):
+        fn_nodes = self._get_pytorch_graph(processor)
+        assert "logsumexp" in fn_nodes, "Should find logsumexp FunctionNode"
+        args = fn_nodes["logsumexp"].module_args
+        assert "raw_attributes" in args, "logsumexp should have raw_attributes"
+        assert "dim" in args, f"logsumexp should have dim, got: {args}"
+        assert args["dim"] == [1], f"logsumexp dim should be [1], got: {args['dim']}"
+        assert args.get("keepdim") is True, f"logsumexp keepdim should be True, got: {args.get('keepdim')}"
+
+    def test_sum_has_dim_no_keepdim(self, processor):
+        fn_nodes = self._get_pytorch_graph(processor)
+        assert "sum" in fn_nodes, "Should find sum FunctionNode"
+        args = fn_nodes["sum"].module_args
+        assert "raw_attributes" in args, "sum should have raw_attributes"
+        assert "dim" in args, f"sum should have dim, got: {args}"
+        assert args["dim"] == [2, 3], f"sum dim should be [2,3], got: {args['dim']}"
+        assert args.get("keepdim") is not True, "sum should not have keepdim=True"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

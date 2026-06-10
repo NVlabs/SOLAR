@@ -23,6 +23,7 @@ launch_reference_implementation to infer how to call the model.
 """
 
 import ast
+import contextlib
 import gc
 import inspect
 from pathlib import Path
@@ -41,18 +42,171 @@ from solar.common.utils import (
 from solar.graph.torchview_processor import TorchviewProcessor
 
 
+@contextlib.contextmanager
+def _patch_torchview_collect_attributes():
+    """Monkey-patch torchview to propagate collect_attributes correctly.
+
+    torchview has two bugs that prevent collect_attributes from working
+    when input_data is provided (rather than input_size):
+
+    1. process_input() calls get_recorder_tensor without collect_attributes,
+       so initial TensorNodes always have collect_attributes=False.
+    2. RecorderTensor.__torch_function__() omits collect_attributes from
+       attach_kwargs for output TensorNodes, breaking propagation through
+       chained function calls.
+
+    See patches/torchview-collect-attributes.patch for the equivalent
+    source-level fix.
+    """
+    import torchview.torchview as tv_mod
+    import torchview.recorder_tensor as rt_mod
+
+    orig_process_input = tv_mod.process_input
+    orig_torch_function = rt_mod.RecorderTensor.__torch_function__
+
+    def _patched_process_input(input_data, input_size, kwargs, device,
+                               dtypes=None, collect_attributes=False):
+        from torchview.torchview import (
+            set_device, traverse_data, get_recorder_tensor,
+            get_correct_input_sizes, get_input_tensor,
+            RecorderTensor, reduce_data_info, collect_tensor_node,
+        )
+        from torchview.recorder_tensor import NodeContainer
+        from torchview.computation_node import TensorNode
+
+        x = None
+        correct_input_size = []
+        kwargs_recorder_tensor = traverse_data(
+            kwargs, lambda t: get_recorder_tensor(t, collect_attributes), type
+        )
+        if input_data is not None:
+            x = set_device(input_data, device)
+            x = traverse_data(
+                x, lambda t: get_recorder_tensor(t, collect_attributes), type
+            )
+            if isinstance(x, RecorderTensor):
+                x = [x]
+
+        if input_size is not None:
+            if dtypes is None:
+                dtypes = [torch.float] * len(input_size)
+            correct_input_size = get_correct_input_sizes(input_size)
+            x = get_input_tensor(correct_input_size, dtypes, device,
+                                 collect_attributes)
+
+        input_data_node: NodeContainer[TensorNode] = (
+            reduce_data_info(
+                [x, kwargs_recorder_tensor], collect_tensor_node,
+                NodeContainer()
+            )
+        )
+        return x, kwargs_recorder_tensor, input_data_node
+
+    @classmethod  # type: ignore[misc]
+    def _patched_torch_function(cls, func, types, args=(), kwargs=None):
+        # Call the original, then fix collect_attributes on output nodes
+        out = orig_torch_function.__func__(cls, func, types, args, kwargs)
+
+        # After the original runs, find the FunctionNode it just created and
+        # propagate collect_attributes to its output TensorNodes.
+        # The original already reads collect_attributes from input recorder
+        # nodes and uses it for stringify_attributes — but forgets to put it
+        # in attach_kwargs for the output TensorNode.
+        if kwargs is None:
+            kwargs = {}
+
+        from torchview.recorder_tensor import (
+            RecorderTensor, reduce_data_info, collect_tensor_node,
+        )
+        from torchview.computation_node import TensorNode, NodeContainer
+
+        recorder_nodes: NodeContainer[TensorNode] = (
+            reduce_data_info([args, kwargs], collect_tensor_node,
+                             NodeContainer())
+        )
+        if not recorder_nodes:
+            return out
+
+        collect_attributes = next(iter(recorder_nodes)).collect_attributes
+
+        # Propagate to output TensorNodes
+        output_nodes: NodeContainer[TensorNode] = (
+            reduce_data_info(out, collect_tensor_node, NodeContainer())
+        )
+        for node in output_nodes:
+            node.collect_attributes = collect_attributes
+
+        return out
+
+    tv_mod.process_input = _patched_process_input
+    rt_mod.RecorderTensor.__torch_function__ = _patched_torch_function
+
+    try:
+        yield
+    finally:
+        tv_mod.process_input = orig_process_input
+        rt_mod.RecorderTensor.__torch_function__ = orig_torch_function
+
+
+def _check_torchview_parameter_support() -> None:
+    """Verify that torchview generates parameter-tensor nodes for nn.Linear.
+
+    The Solar pipeline requires a patched version of torchview that exposes
+    weight/bias tensors as ``parameter-tensor`` TensorNodes.  If the installed
+    torchview lacks this support, raise an error directing the user to the
+    install scripts.
+    """
+    probe_model = nn.Linear(4, 4, bias=True)
+    probe_input = [torch.randn(1, 4)]
+    try:
+        graph = torchview.draw_graph(
+            probe_model,
+            input_data=probe_input,
+            device="meta",
+            save_graph=False,
+            expand_nested=True,
+            depth=float("inf"),
+            hide_module_functions=False,
+            hide_inner_tensors=False,
+            roll=False,
+            strict=False,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "torchview probe failed — cannot verify parameter-tensor support.\n"
+            "SOLAR depends on a patched torchview to extract weight/bias tensor\n"
+            "nodes (parameter-tensor). Please follow solar/install.sh or\n"
+            "solar/install_uv.sh to install and patch torchview.\n"
+            "The patch can be found at: solar/patches/torchview-parameter-tensors.patch"
+        ) from exc
+
+    for edge in graph.edge_list:
+        for node in edge:
+            if getattr(node, "name", "") == "parameter-tensor":
+                return
+
+    raise RuntimeError(
+        "Installed torchview does not generate parameter-tensor nodes.\n"
+        "SOLAR depends on a patched torchview to extract weight/bias tensor\n"
+        "nodes (parameter-tensor). Please follow solar/install.sh or\n"
+        "solar/install_uv.sh to install and patch torchview.\n"
+        "The patch can be found at: solar/patches/torchview-parameter-tensors.patch"
+    )
+
+
 class PyTorchProcessor:
     """Process PyTorch model into a saved torch graph."""
-    
+
     def __init__(self, config: Optional[ProcessingConfig] = None):
         """Initialize the PyTorchProcessor.
-        
+
         Args:
             config: Processing configuration. If None, uses defaults.
         """
         self.config = config or ProcessingConfig()
         self.torchview_processor = TorchviewProcessor(debug=self.config.debug)
         self._setup_environment()
+        _check_torchview_parameter_support()
     
     def _setup_environment(self) -> None:
         """Set up safe execution environment."""
@@ -296,6 +450,56 @@ class PyTorchProcessor:
                 print(f"    Error inferring init args: {e}")
             return (), {}
     
+    def _create_model_instance(self, module: Any) -> Optional[nn.Module]:
+        """Create a fresh model instance from a loaded module.
+
+        Tries get_init_inputs(), no-arg constructor, and inferred args.
+
+        Args:
+            module: Loaded Python module containing a Model/ReferenceModel class.
+
+        Returns:
+            Model instance or None if all strategies fail.
+        """
+        model_class, class_name = self._get_model_class(module)
+        if model_class is None:
+            return None
+
+        # Strategy 1: Use get_init_inputs() if available
+        if hasattr(module, 'get_init_inputs'):
+            try:
+                init_inputs = module.get_init_inputs()
+                model = model_class(*init_inputs) if init_inputs else model_class()
+                if self.config.debug:
+                    print(f"  Created model using get_init_inputs()")
+                return model
+            except Exception as e:
+                if self.config.debug:
+                    print(f"  get_init_inputs() failed: {e}")
+
+        # Strategy 2: Try no-arg constructor
+        try:
+            model = model_class()
+            if self.config.debug:
+                print(f"  Created model using no-arg constructor")
+            return model
+        except TypeError:
+            pass
+
+        # Strategy 3: Infer init args from module globals
+        args, kwargs = self._infer_init_args_from_module(module, model_class)
+        if args or kwargs:
+            try:
+                model = model_class(*args, **kwargs)
+                if self.config.debug:
+                    print(f"  Created model using inferred args: {args}")
+                return model
+            except Exception as e:
+                if self.config.debug:
+                    print(f"  Inferred args failed: {e}")
+
+        return None
+
     def _load_model(self,
                    file_path: str) -> Tuple[Optional[nn.Module], Optional[Any], Optional[Any]]:
         """Load a model from a Python file.
@@ -303,65 +507,31 @@ class PyTorchProcessor:
         Supports both 'Model' and 'ReferenceModel' class names.
         Uses launch_reference_implementation to infer how to call the model.
         Falls back to inferring init args from module globals.
-        
+
         Args:
             file_path: Path to the model file.
-            
+
         Returns:
             Tuple of (model, inputs) or (None, None) if failed.
         """
         try:
             module = load_module_from_file(file_path)
-            
+
             # Get model class (Model or ReferenceModel)
             model_class, class_name = self._get_model_class(module)
             if model_class is None:
                 print(f"Warning: No Model or ReferenceModel class found in {file_path}")
                 return None, None, None
-            
+
             if self.config.debug:
                 print(f"  Found model class: {class_name}")
-            
+
             # Check for get_inputs
             if not hasattr(module, 'get_inputs'):
                 print(f"Warning: No get_inputs function found in {file_path}")
                 return None, None, None
-            
-            # Create model instance - try multiple strategies
-            model = None
-            
-            # Strategy 1: Use get_init_inputs() if available
-            if hasattr(module, 'get_init_inputs'):
-                try:
-                    init_inputs = module.get_init_inputs()
-                    model = model_class(*init_inputs) if init_inputs else model_class()
-                    if self.config.debug:
-                        print(f"  Created model using get_init_inputs()")
-                except Exception as e:
-                    if self.config.debug:
-                        print(f"  get_init_inputs() failed: {e}")
-            
-            # Strategy 2: Try no-arg constructor
-            if model is None:
-                try:
-                    model = model_class()
-                    if self.config.debug:
-                        print(f"  Created model using no-arg constructor")
-                except TypeError:
-                    pass  # Needs arguments
-            
-            # Strategy 3: Infer init args from module globals
-            if model is None:
-                args, kwargs = self._infer_init_args_from_module(module, model_class)
-                if args or kwargs:
-                    try:
-                        model = model_class(*args, **kwargs)
-                        if self.config.debug:
-                            print(f"  Created model using inferred args: {args}")
-                    except Exception as e:
-                        if self.config.debug:
-                            print(f"  Inferred args failed: {e}")
-            
+
+            model = self._create_model_instance(module)
             if model is None:
                 print(f"Error: Could not instantiate model class {class_name} in {file_path}")
                 return None, None, None
@@ -454,65 +624,88 @@ class PyTorchProcessor:
         Returns:
             Computation graph or None if failed.
         """
-        devices_to_try = ["meta", "cpu"]
+        # Try meta device first (zero memory), fall back to CPU.
+        # Meta attempt uses to_empty() which destroys the model in-place,
+        # so CPU fallback re-creates the model from the module.
+        try:
+            meta_model = model.to_empty(device="meta")
+            meta_model.eval()
 
-        for device in devices_to_try:
-            try:
-                # Prepare model
-                model = model.to_empty(device=device)
-                model.eval()
+            if self._is_rnn_model(meta_model):
+                raise RuntimeError("RNN models not supported on meta device")
 
-                # Check for RNN-like models that need CPU
-                if device == "meta" and self._is_rnn_model(model):
-                    continue
+            meta_inputs = self._move_inputs_to_device(inputs, "meta")
 
-                # For CPU fallback: if inputs are on meta device, we must
-                # re-generate real CPU inputs (meta tensors have no data,
-                # causing garbage values for .item(), indexing, etc.).
-                if device == "cpu" and self._inputs_on_meta(inputs) and module is not None:
-                    if self.config.debug:
-                        print("  Re-generating CPU inputs via get_inputs()")
-                    device_inputs = module.get_inputs()
-                else:
-                    device_inputs = self._move_inputs_to_device(inputs, device)
-
-                # Generate graph (don't let torchview save - we'll do it ourselves)
+            with _patch_torchview_collect_attributes():
                 graph = torchview.draw_graph(
-                    model,
-                    input_data=device_inputs,
-                    device=device,
-                    save_graph=False,  # We handle saving separately
+                    meta_model,
+                    input_data=meta_inputs,
+                    device="meta",
+                    save_graph=False,
                     expand_nested=True,
                     depth=float('inf'),
                     hide_module_functions=False,
                     hide_inner_tensors=False,
                     roll=False,
                     strict=False,
-                    collect_attributes=True,  # Capture function/module args
+                    collect_attributes=True,
                 )
 
-                if self.config.debug:
-                    print(f"✅ Generated graph using {device} device")
+            if self.config.debug:
+                print(f"✅ Generated graph using meta device")
 
-                # Save graph visualization if requested
-                if self.config.save_graph and output_dir:
-                    self._save_torchview_graph(graph, output_dir)
+            if self.config.save_graph and output_dir:
+                self._save_torchview_graph(graph, output_dir)
 
-                return graph
+            return graph
 
-            except (NotImplementedError, RuntimeError) as e:
-                if device == "meta":
-                    if self.config.debug:
-                        print(f"⚠️ Meta device failed: {e}")
-                    continue
-                else:
-                    raise
-            except Exception as e:
-                if device == "meta":
-                    continue
-                raise
+        except Exception as e:
+            if self.config.debug:
+                print(f"⚠️ Meta device failed: {e}")
 
-        return None
+        # CPU fallback: re-create model from module to get a pristine instance
+        # (to_empty destroyed non-persistent buffers like position_ids).
+        if module is None:
+            return None
+
+        if self.config.debug:
+            print("  Falling back to CPU: re-creating model from module")
+
+        try:
+            cpu_model = self._create_model_instance(module)
+            if cpu_model is None:
+                return None
+            cpu_model.eval()
+
+            cpu_inputs = module.get_inputs()
+
+            with _patch_torchview_collect_attributes():
+                graph = torchview.draw_graph(
+                    cpu_model,
+                    input_data=cpu_inputs,
+                    device="cpu",
+                    save_graph=False,
+                    expand_nested=True,
+                    depth=float('inf'),
+                    hide_module_functions=False,
+                    hide_inner_tensors=False,
+                    roll=False,
+                    strict=False,
+                    collect_attributes=True,
+                )
+
+            if self.config.debug:
+                print(f"✅ Generated graph using cpu device")
+
+            if self.config.save_graph and output_dir:
+                self._save_torchview_graph(graph, output_dir)
+
+            return graph
+
+        except Exception as e:
+            if self.config.debug:
+                print(f"⚠️ CPU device failed: {e}")
+            raise
 
     @staticmethod
     def _inputs_on_meta(inputs: Any) -> bool:
@@ -558,9 +751,11 @@ class PyTorchProcessor:
 
         return _move(inputs)
 
+    _MAX_RENDER_EDGES = 20000
+
     def _save_torchview_graph(self, graph: Any, output_dir: str) -> None:
         """Save torchview graph visualization to the output directory.
-        
+
         Args:
             graph: Torchview graph object.
             output_dir: Directory to save the graph visualization.
@@ -568,17 +763,26 @@ class PyTorchProcessor:
         try:
             output_path = Path(output_dir)
             graph_filename = output_path / "torchview_graph"
-            
+
             # torchview's visual_graph is a graphviz.Digraph object
             if hasattr(graph, 'visual_graph'):
-                # Render to PDF (default) and PNG
+                edge_count = len(getattr(graph, 'edge_list', []))
+                if edge_count > self._MAX_RENDER_EDGES:
+                    graph.visual_graph.save(filename=str(graph_filename) + ".gv")
+                    if self.config.debug:
+                        print(
+                            f"⚠️ Graph has {edge_count} edges (>{self._MAX_RENDER_EDGES}); "
+                            f"saved DOT file only (PDF rendering would be very slow)"
+                        )
+                    return
+
                 graph.visual_graph.render(
                     filename=str(graph_filename),
                     format='pdf',
-                    cleanup=True,  # Remove the intermediate .gv file
+                    cleanup=True,
                 )
                 if self.config.debug:
-                    print(f"📊 Saved torchview graph: {graph_filename}.pdf")
+                    print(f"Saved torchview graph: {graph_filename}.pdf")
             else:
                 if self.config.debug:
                     print("⚠️ Graph object does not have visual_graph attribute")

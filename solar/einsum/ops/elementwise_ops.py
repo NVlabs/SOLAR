@@ -169,16 +169,16 @@ class BinaryElementwiseHandler(EinsumOpHandler):
         Returns:
             EinsumOp for the binary elementwise operation.
         """
-        if not input_shape or not input_1_shape:
-            raise ValueError(f"Input shapes cannot be empty for {op_type}")
-        
+        # A 0-dim (scalar) operand is allowed: it broadcasts against the other
+        # operand and is read once (empty label list -> empty projection). This
+        # is the `x / x.norm()` case where the divisor is a scalar reduction.
         # Handle broadcasting: compute output shape
         max_dims = max(len(input_shape), len(input_1_shape))
-        
+
         # Pad shorter shape with 1s at the front (broadcasting aligns from right)
         padded_input = [1] * (max_dims - len(input_shape)) + list(input_shape)
         padded_input_1 = [1] * (max_dims - len(input_1_shape)) + list(input_1_shape)
-        
+
         # Compute broadcast output shape
         output_shape = []
         for d1, d2 in zip(padded_input, padded_input_1):
@@ -188,14 +188,15 @@ class BinaryElementwiseHandler(EinsumOpHandler):
                 raise ValueError(
                     f"Incompatible shapes for broadcasting: {input_shape} and {input_1_shape}"
                 )
-        
+
         # Generate dimension labels for output (full rank)
         output_labels = list(string.ascii_uppercase[:max_dims])
-        
-        # Build dimension labels for each input based on actual rank
-        # Align from the right (broadcasting semantics)
-        input_labels = output_labels[-(len(input_shape)):] if input_shape else []
-        input_1_labels = output_labels[-(len(input_1_shape)):] if input_1_shape else []
+
+        # Right-aligned labels per operand. Use ``max_dims - len`` rather than
+        # ``-len`` so a 0-rank scalar yields ``[]`` (empty), not the whole list
+        # (``output_labels[-0:]`` is the entire list, a latent bug for scalars).
+        input_labels = output_labels[max_dims - len(input_shape):]
+        input_1_labels = output_labels[max_dims - len(input_1_shape):]
         
         equation = f"{''.join(input_labels)},{''.join(input_1_labels)}->{''.join(output_labels)}"
         

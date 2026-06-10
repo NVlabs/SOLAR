@@ -77,7 +77,7 @@ class EinsumOp:
     elementwise_op: str = "mul"  # 'mul', 'add', 'sub', 'div', 'max', 'min', 'copy'
     reduction_op: str = "add"    # 'add', 'max', 'min', 'mul', 'none'
     is_einsum_supportable: bool = True  # Can this op be expressed with extended einsum?
-    
+
     @property
     def input_operands(self) -> List[EinsumOperand]:
         """Get input operands."""
@@ -97,56 +97,7 @@ class EinsumOp:
         
         Total cost = product of all unique resolved rank dimension sizes.
         """
-        all_ranks: Dict[str, Optional[int]] = {}
-
-        # Pass 1: mark compound rank atoms (e.g. P+R, Q+S) as unresolved.
-        # This preserves the intent that P/Q come from output shapes while
-        # R/S can still be resolved from concrete single-token dims (often input 1).
-        for i, op in enumerate(self.input_operands):
-            if i >= tensor_shapes.num_inputs:
-                break
-            for dim in op.dims:
-                atoms = _parse_dim_atoms(dim)
-                if len(atoms) > 1:
-                    for atom in atoms:
-                        if atom not in all_ranks:
-                            all_ranks[atom] = None
-
-        # Pass 2: resolve concrete (single-token) dims from inputs.
-        # For conv2d BC(P+R)(Q+S),OCRS->BOPQ this resolves R/S from input 1 (OCRS).
-        for i, op in enumerate(self.input_operands):
-            if i >= tensor_shapes.num_inputs:
-                break
-            shape = tensor_shapes.inputs[i]
-            dim_offset = 0
-            for dim in op.dims:
-                atoms = _parse_dim_atoms(dim)
-                if len(atoms) == 1:
-                    atom = atoms[0]
-                    if (atom not in all_ranks or all_ranks[atom] is None) and dim_offset < len(shape):
-                        all_ranks[atom] = int(shape[dim_offset])
-                dim_offset += 1
-
-        # Pass 3: resolve remaining ranks from outputs.
-        # For conv2d this fills P/Q from output shape.
-        for i, op in enumerate(self.output_operands):
-            if i >= tensor_shapes.num_outputs:
-                break
-            shape = tensor_shapes.outputs[i]
-            dim_offset = 0
-            for dim in op.dims:
-                atoms = _parse_dim_atoms(dim)
-                for atom in atoms:
-                    if atom not in all_ranks or all_ranks[atom] is None:
-                        if dim_offset < len(shape):
-                            all_ranks[atom] = int(shape[dim_offset])
-                dim_offset += 1
-        
-        total_ops = 1
-        for v in all_ranks.values():
-            if v is not None:
-                total_ops *= v
-        return int(total_ops)
+        return compute_cost_from_equation(self.equation, tensor_shapes)
     
     def to_torch_einsum(self, tensor_names: Optional[List[str]] = None) -> str:
         """Convert to torch.einsum format."""
@@ -173,6 +124,77 @@ def _parse_dim_atoms(dim: str) -> List[str]:
     'P+R0' -> ['P', 'R0']
     """
     return [d.strip() for d in re.split(r'[+\-]', dim) if d.strip()]
+
+
+def _parse_equation_operand(operand: str) -> List[str]:
+    """Parse one einsum operand into rank tokens.
+
+    Supports single-letter ranks with optional digits and parenthesized
+    compound ranks, e.g. ``BGI(P+R)`` -> ``["B", "G", "I", "P+R"]``.
+    """
+    tokens: List[str] = []
+    i = 0
+    while i < len(operand):
+        if operand[i] == "(":
+            j = operand.index(")", i)
+            tokens.append(operand[i + 1 : j])
+            i = j + 1
+        elif operand[i].isalpha():
+            token = operand[i]
+            i += 1
+            while i < len(operand) and operand[i].isdigit():
+                token += operand[i]
+                i += 1
+            tokens.append(token)
+        else:
+            i += 1
+    return tokens
+
+
+def compute_cost_from_equation(equation: str, tensor_shapes: TensorShapes) -> int:
+    """Calculate compute cost from an einsum equation and tensor shapes.
+
+    The cost model is the product of every unique rank used by the equation.
+    Compound ranks like ``P+R`` are split into atoms; kernel atoms such as
+    ``R`` are resolved from concrete input operands, and output-position atoms
+    such as ``P`` are resolved from the output shapes.
+    """
+    if not equation or "->" not in equation:
+        return 0
+
+    lhs, rhs = equation.split("->", 1)
+    input_tokens = [_parse_equation_operand(operand) for operand in lhs.split(",")]
+    output_tokens = _parse_equation_operand(rhs)
+
+    all_ranks: Dict[str, Optional[int]] = {}
+    for tokens in input_tokens:
+        for token in tokens:
+            for atom in _parse_dim_atoms(token):
+                all_ranks.setdefault(atom, None)
+    for token in output_tokens:
+        for atom in _parse_dim_atoms(token):
+            all_ranks.setdefault(atom, None)
+
+    def _resolve(tokens_by_operand: List[List[str]], shapes: List[TensorShape]) -> None:
+        for idx, tokens in enumerate(tokens_by_operand):
+            if idx >= len(shapes):
+                break
+            shape = shapes[idx]
+            for dim_offset, token in enumerate(tokens):
+                atoms = _parse_dim_atoms(token)
+                if len(atoms) == 1 and dim_offset < len(shape):
+                    atom = atoms[0]
+                    if all_ranks.get(atom) is None:
+                        all_ranks[atom] = int(shape[dim_offset])
+
+    _resolve(input_tokens, tensor_shapes.inputs)
+    _resolve([output_tokens], tensor_shapes.outputs)
+
+    total_ops = 1
+    for value in all_ranks.values():
+        if value is not None and value > 0:
+            total_ops *= value
+    return int(total_ops)
 
 
 class EinsumOpHandler(ABC):
@@ -339,6 +361,57 @@ class EinsumOpHandler(ABC):
             is_einsum_supportable=einsum_op.is_einsum_supportable,
         )
 
+@dataclass
+class AFOperand:
+    """One tensor access in AccelForge (AF) einsum YAML.
 
-__all__ = ["EinsumOperand", "EinsumOp", "EinsumOpHandler"]
+    - dims_lowercase: Labels in the current (renamed) einsum equation. The projection
+      targets AccelForge uses for this access.
+    - dims_uppercase: Optional parallel list of labels from the input graph node's
+      tensor notation. If None, don't do renaming and use the dims_lowercase list as is.
+    """
+    name: str
+    dims_lowercase: List[str]
+    dims_uppercase: Optional[List[str]] = None
+    is_output: bool = False
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict to finally dump to AF yaml."""
+        operand = dict()
+        operand['name'] = self.name
+        operand['projection'] = (
+            [d.lower() for d in self.dims_lowercase]
+            if self.dims_uppercase is None
+            else {d.upper(): pr.lower() for d, pr in zip(self.dims_uppercase, self.dims_lowercase)}
+        )
+        if self.is_output:
+            operand['output'] = True
+        return operand
+
+@dataclass
+class AFOp:
+    """Represents an operation in AccelForge (AF) einsum format.
+
+    - tensor_accesses: List of tensor accesses.
+    - is_copy_operation: Used to copy input tensors into memory.
+    """
+    name: str
+    tensor_accesses: List[AFOperand]
+    is_copy_operation: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict to finally dump to AF yaml."""
+        op_dict = dict()
+        op_dict['name'] = self.name
+        if self.is_copy_operation:
+            op_dict['is_copy_operation'] = True
+        op_dict['tensor_accesses'] = [operand.to_dict() for operand in self.tensor_accesses]
+        return op_dict
+
+
+__all__ = [
+    "EinsumOperand",
+    "EinsumOp",
+    "EinsumOpHandler",
+    "compute_cost_from_equation",
+]

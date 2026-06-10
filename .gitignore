@@ -136,6 +136,15 @@ solar_handlers_cache/
 solar_outputs/
 examples/*/output/
 
+# Generated output & results (avoid pull conflicts with locally-generated files)
+output_*/
+
 # Temporary test files
 test_output/
+
+# Lock files
+uv.lock
+
+# Environment config
+env.sh
 

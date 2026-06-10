@@ -2,6 +2,8 @@
 
 This guide explains the three roofline-based performance models used in Solar for predicting DNN execution time.
 
+See also: [SOL_CONCURRENCY_AND_PDL.md](./SOL_CONCURRENCY_AND_PDL.md) for analysis of multi-stream and PDL implications.
+
 ## Overview
 
 Solar computes three SOL (Speed-of-Light) performance estimates based on the roofline model. Each model makes different assumptions about memory access patterns:

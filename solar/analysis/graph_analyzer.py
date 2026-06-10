@@ -62,97 +62,6 @@ def _product(shape: List[int]) -> int:
     return int(out)
 
 
-def _compute_macs_from_equation(
-    equation: str,
-    input_shapes: List[List[int]],
-    output_shapes: List[List[int]],
-) -> int:
-    """Compute MACs directly from an einsum equation and tensor shapes.
-
-    Parses all unique rank tokens from the equation, resolves each to a
-    concrete dimension size using the shapes, and returns the product.
-
-    For ``BGI(P+R)(Q+S),GOIRS->BGOPQ`` with matching shapes this gives
-    B*G*I*P*R*Q*S*O*I = 75,497,472 for the grouped-conv example.
-    """
-    if not equation or "->" not in equation:
-        return 0
-
-    lhs, rhs = equation.split("->", 1)
-    operand_strs = lhs.split(",")
-
-    def _tokenize(s: str) -> List[str]:
-        """Split an operand string into dimension tokens.
-
-        ``BGI(P+R)(Q+S)`` -> ``['B','G','I','P+R','Q+S']``
-        ``OCRS``          -> ``['O','C','R','S']``
-        """
-        tokens: List[str] = []
-        i = 0
-        while i < len(s):
-            if s[i] == '(':
-                j = s.index(')', i)
-                tokens.append(s[i + 1 : j])
-                i = j + 1
-            elif s[i].isalpha():
-                tok = s[i]
-                i += 1
-                while i < len(s) and (s[i].isdigit()):
-                    tok += s[i]
-                    i += 1
-                tokens.append(tok)
-            else:
-                i += 1
-        return tokens
-
-    def _atoms(tok: str) -> List[str]:
-        return [a.strip() for a in tok.replace('-', '+').split('+') if a.strip()]
-
-    # Tokenize each operand and the output.
-    input_token_lists = [_tokenize(op) for op in operand_strs]
-    output_tokens = _tokenize(rhs)
-
-    # Collect all unique atoms.
-    all_atoms: Dict[str, Optional[int]] = {}
-    for toks in input_token_lists:
-        for tok in toks:
-            for a in _atoms(tok):
-                if a not in all_atoms:
-                    all_atoms[a] = None
-    for tok in output_tokens:
-        for a in _atoms(tok):
-            if a not in all_atoms:
-                all_atoms[a] = None
-
-    # Resolve sizes: compound dims (P+R) are skipped in the first pass;
-    # their atoms are resolved from single-token dims in other operands or
-    # the output.
-    def _resolve(token_lists, shapes):
-        for idx, toks in enumerate(token_lists):
-            if idx >= len(shapes):
-                break
-            shape = shapes[idx]
-            dim_off = 0
-            for tok in toks:
-                atoms = _atoms(tok)
-                if len(atoms) == 1 and dim_off < len(shape):
-                    atom = atoms[0]
-                    if all_atoms.get(atom) is None:
-                        all_atoms[atom] = int(shape[dim_off])
-                dim_off += 1
-
-    # Resolve from inputs first (catches kernel dims like R, S).
-    _resolve(input_token_lists, input_shapes)
-    # Then from output (catches spatial dims like P, Q).
-    _resolve([output_tokens], output_shapes)
-
-    total = 1
-    for v in all_atoms.values():
-        if v is not None and v > 0:
-            total *= v
-    return int(total)
-
-
 class EinsumGraphAnalyzer:
     """Analyze `einsum_graph.yaml` and write `analysis.yaml`."""
 
@@ -181,6 +90,12 @@ class EinsumGraphAnalyzer:
             Analysis dict, or None on failure.
         """
         src = Path(einsum_graph_path)
+        # Stage 2.5 fallback: prefer einsum_graph_reordered.yaml if present in the same dir
+        reordered = src.parent / "einsum_graph_reordered.yaml"
+        if src.name == "einsum_graph.yaml" and reordered.exists():
+            if self.debug:
+                print(f"Debug: using reordered graph {reordered}")
+            src = reordered
         out_dir = ensure_directory(output_dir)
 
         if not src.exists():
@@ -245,10 +160,9 @@ class EinsumGraphAnalyzer:
         # AND consumed by another op.
         all_layer_ids: Set[str] = set(layers_in.keys())
 
-        # Identify zero-copy view layers.  These are transparent for memory
-        # accounting: they don't read/write DRAM.  The fused model must
-        # "see through" them when deciding whether a tensor is intermediate
-        # or external.
+        # Zero-copy view layers are transparent for memory accounting.  The
+        # fused model should see through them when deciding whether a tensor is
+        # graph-internal or external.
         _TRANSPARENT_OPS = {
             "expand", "expand_as",
             "view", "reshape", "contiguous",
@@ -285,12 +199,7 @@ class EinsumGraphAnalyzer:
                 intermediate_tensors.add(tensor_name)
 
         def _trace_source_through_views(layer_id: str) -> str:
-            """Trace backward through transparent view layers to the real source.
-
-            Returns the first non-transparent predecessor layer ID, or a start
-            node ID if the chain originates outside the graph.  Returns the
-            original layer_id if it is not transparent itself.
-            """
+            """Trace backward through transparent view layers to the real source."""
             visited: Set[str] = set()
             current = layer_id
             while current in transparent_layer_ids and current not in visited:
@@ -302,12 +211,7 @@ class EinsumGraphAnalyzer:
             return current
 
         def _has_real_consumer(layer_id: str) -> bool:
-            """Check if a layer's output ultimately reaches a non-transparent consumer.
-
-            Follows the output connection chain through transparent views.
-            Returns True if any non-view layer consumes the data (directly or
-            transitively), False if the chain ends without a real consumer.
-            """
+            """Return true if output reaches a non-transparent graph layer."""
             visited: Set[str] = set()
             queue = [layer_id]
             while queue:
@@ -358,6 +262,28 @@ class EinsumGraphAnalyzer:
             if self.debug and _bool_layers:
                 print(f"Debug: Skipping memory for {len(_bool_layers)} bool-derived layers: {sorted(_bool_layers)}")
 
+        # Detect orphaned subgraphs: chains rooted at tensors created
+        # outside RecorderTensor tracking (e.g. torch.zeros() with no
+        # subclass args).  The source-tracing code (Step 4 below)
+        # classifies inputs from non-existent nodes as external DRAM I/O.
+        # For dead-end layers whose input traces to a genuinely orphaned
+        # source, this phantom traffic should be zeroed.
+        #
+        # A layer's input is "orphaned" when the source traces to a
+        # non-existent ID AND the layer produces no live output.
+        # For scatter/setitem ops, if the TARGET (first input) traces to
+        # an orphaned source AND the output is dead-end, the write is
+        # phantom too.
+        #
+        # Pre-compute which layers are dead ends (no live output path).
+        _dead_end_layers: Set[str] = set()
+        for layer_id in layers_in:
+            if not _has_real_consumer(layer_id):
+                _dead_end_layers.add(layer_id)
+
+        # Track which layers are flagged as orphaned (for metadata).
+        _orphaned_layers: Set[str] = set()
+
         layers_out: Dict[str, Any] = {}
         total_macs = 0          # tensor-core MACs (matmul, conv)
         total_flops = 0         # 2 * total_macs
@@ -394,17 +320,15 @@ class EinsumGraphAnalyzer:
             )
 
             ops_cost = 0
-            if is_real_einsum and equation:
-                ops_cost = _compute_macs_from_equation(
-                    equation,
-                    tensor_shapes.get("inputs", []),
-                    tensor_shapes.get("outputs", []),
-                )
-            else:
-                try:
+            try:
+                if is_real_einsum and equation:
+                    ops_cost = int(
+                        self.einsum_analyzer.get_compute_cost(op_type, ts, equation=equation)
+                    )
+                else:
                     ops_cost = int(self.einsum_analyzer.get_compute_cost(op_type, ts))
-                except Exception:
-                    ops_cost = 0
+            except Exception:
+                ops_cost = 0
 
             # Zero-compute operations: no ALU work, only pointer/metadata
             # manipulation or pure memory copies.
@@ -559,6 +483,40 @@ class EinsumGraphAnalyzer:
                 memory_writes += [0] * max(0, len(output_sizes) - 1)
                 other_ops = 0
 
+            # Orphaned dead-end layers: ALL inputs trace (through views)
+            # to non-existent sources AND the layer has no live output.
+            # For scatter/setitem: if the TARGET (first input) traces to a
+            # non-existent source and the output is dead-end, the write is
+            # phantom — zero all memory.
+            # Standalone if (not elif) so it overrides any prior op-type branch.
+            if layer_id in _dead_end_layers and input_layer_ids:
+                _is_orphan = False
+                _SCATTER_TARGET_OPS_INLINE = {
+                    "__setitem__", "scatter", "scatter_",
+                    "index_copy", "index_copy_",
+                    "index_put", "index_put_",
+                }
+
+                def _source_is_orphan(cid: str) -> bool:
+                    src = _trace_source_through_views(cid) if cid in transparent_layer_ids else cid
+                    return src not in all_layer_ids and src not in start_node_ids
+
+                if all(_source_is_orphan(c) for c in input_layer_ids):
+                    _is_orphan = True
+
+                if (
+                    not _is_orphan
+                    and op_type in _SCATTER_TARGET_OPS_INLINE
+                    and _source_is_orphan(input_layer_ids[0])
+                ):
+                    _is_orphan = True
+
+                if _is_orphan:
+                    memory_reads = [0] * len(input_sizes)
+                    memory_writes = [0] * len(output_sizes)
+                    other_ops = 0
+                    _orphaned_layers.add(layer_id)
+
             # ── Step 3: Derive totals from corrected per-tensor counts ──
             input_elems = int(sum(memory_reads))
             output_elems = int(sum(memory_writes))
@@ -571,10 +529,8 @@ class EinsumGraphAnalyzer:
             #   - graph-internal  → intermediate activation (fusable, skip in fused model)
             #   - other           → external model input (DRAM read)
             #
-            # graph-internal = not a weight AND produced by a non-view op in the graph.
-            # Transparent views are "see-through": if the producer is a view,
-            # trace backward to find the real source.  If the source is a start
-            # node (outside the graph), the tensor is external.
+            # graph-internal = not a weight AND produced by a non-view op in
+            # the graph. Transparent views are traced back to their source.
             input_name_list = tensor_names.get("inputs") or []
             graph_internal_input_elems = 0   # intermediate activations from other ops
             external_input_elems = 0         # weights + model-level inputs (always DRAM)
@@ -607,9 +563,8 @@ class EinsumGraphAnalyzer:
             model_input_elems = int(external_input_elems)
             input_is_intermediate = graph_internal_input_elems > 0
 
-            # Classify outputs: intermediate if consumed by a real (non-view) op.
-            # If the only consumers are transparent views that themselves have
-            # no real consumers, this is a final model output.
+            # Classify outputs: intermediate if consumed by a real
+            # non-transparent op, or by views that lead to one.
             output_name_list = tensor_names.get("outputs") or []
             output_is_intermediate = False
             for oname in output_name_list:
@@ -675,6 +630,7 @@ class EinsumGraphAnalyzer:
                 "model_io_elements": model_io_elems,
                 "input_is_intermediate": input_is_intermediate,
                 "output_is_intermediate": output_is_intermediate,
+                "is_orphaned": layer_id in _orphaned_layers,
                 "connections": {"inputs": input_layer_ids, "outputs": output_layer_ids},
             }
 
@@ -716,6 +672,7 @@ class EinsumGraphAnalyzer:
                 "model_io_elements": int(total_model_io_elems),
                 "intermediate_elements": int(total_intermediate_elems),
                 "num_intermediate_tensors": len(intermediate_tensors),
+                "num_orphaned_layers": len(_orphaned_layers),
             },
             "metadata": {
                 "precision": precision,
