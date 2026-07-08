@@ -1051,3 +1051,76 @@ class TestKernel88MinGPTIntermediateTagging:
         """fused_prefetched (deduplicated) must be <= fused (per-op sum)."""
         total = analysis["total"]
         assert total["fused_prefetched_elements"] <= total["fused_elements"]
+
+
+# ---------------------------------------------------------------------------
+# Test: Stacked external tensor sliced per layer (KV-cache pattern)
+# ---------------------------------------------------------------------------
+class TestStackedSliceExternalReads:
+    """A stacked [num_layers, ...] external input sliced per layer must count
+    every slice read toward fused DRAM traffic, not just one.
+
+    Regression: the external-input dedup keyed reads by source tensor name,
+    so all N per-layer __getitem__ reads of a stacked KV-style tensor
+    collapsed to max(slice_size) = one slice — an N× undercount.  Distinct
+    slices are distinct bytes; their reads must sum (capped at the full
+    tensor, which also preserves the full-tensor fan-out dedup verified by
+    test_kernel88_fused_is_two_x).
+    """
+
+    NUM_LAYERS = 4
+    SLICE_ELEMS = 8 * 64
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x, kv):
+            # kv: (4, 8, 64) — stacked per-layer tensor (KV-cache pattern)
+            for i in range(4):
+                x = x + kv[i]
+            return x
+
+    def get_inputs():
+        return [torch.randn(8, 64), torch.randn(4, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_all_slices(self, analysis):
+        """fused = read x + read ALL kv slices + write output."""
+        x_elems = self.SLICE_ELEMS
+        kv_elems = self.NUM_LAYERS * self.SLICE_ELEMS
+        expected = x_elems + kv_elems + x_elems
+        assert analysis["total"]["fused_elements"] == expected, (
+            f"fused_elements {analysis['total']['fused_elements']} != {expected}; "
+            f"stacked-tensor slice reads were deduplicated to one slice"
+        )
+
+    def test_fused_prefetched_counts_all_slices(self, analysis):
+        """fused_prefetched uses the same dedup — must match fused."""
+        assert (
+            analysis["total"]["fused_prefetched_elements"]
+            == analysis["total"]["fused_elements"]
+        )
+
+    def test_fused_leq_unfused(self, analysis):
+        """Capped sum must never exceed the raw per-op total."""
+        total = analysis["total"]
+        assert total["fused_elements"] <= total["unfused_elements"]
+
+    def test_each_getitem_reads_one_slice(self, analysis):
+        """Per-op accounting is unchanged: each slice op reads slice_size."""
+        getitems = [
+            layer for layer in analysis["layers"].values()
+            if layer["type"] == "__getitem__"
+        ]
+        assert len(getitems) == self.NUM_LAYERS
+        for layer in getitems:
+            assert layer["input_elements"] == self.SLICE_ELEMS
