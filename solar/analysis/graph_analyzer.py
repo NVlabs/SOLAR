@@ -292,10 +292,20 @@ class EinsumGraphAnalyzer:
         total_intermediate_elems = 0  # Σ intermediate activation elems
 
         # Deduplicated external (non-intermediate) tensor tracking for the
-        # fused / fused_prefetched model.  When the same external tensor
-        # (e.g. model input x) fans out to multiple ops, it is read from
-        # DRAM once.  We track by tensor_name → max element count.
-        unique_external_inputs: Dict[str, int] = {}
+        # fused / fused_prefetched model.  Fused semantics: each external
+        # byte is read from DRAM at most once.  Two access patterns share a
+        # tensor name and must both be handled:
+        #   - fan-out: the same external tensor (e.g. model input x) is
+        #     read in full by multiple ops → read from DRAM once;
+        #   - slice fan-out: multiple ops read *different* slices of the
+        #     same external tensor (e.g. a stacked [num_layers, ...] KV
+        #     cache sliced per layer) → distinct bytes, reads must sum.
+        # Both are captured by summing reads per tensor name and capping
+        # the sum at the full source tensor size: full-tensor fan-out
+        # saturates the cap (counted once) while distinct slice reads
+        # accumulate up to it.
+        external_input_read_elems: Dict[str, int] = {}  # name → Σ per-op reads
+        external_input_full_elems: Dict[str, int] = {}  # name → full tensor size
         unique_external_outputs: Dict[str, int] = {}
 
         for layer_id, layer in layers_in.items():
@@ -555,8 +565,14 @@ class EinsumGraphAnalyzer:
                 else:
                     external_input_elems += mem_read
                     if iname:
-                        unique_external_inputs[iname] = max(
-                            unique_external_inputs.get(iname, 0), mem_read
+                        full_elems = input_sizes[i] if i < len(input_sizes) else 0
+                        external_input_read_elems[iname] = (
+                            external_input_read_elems.get(iname, 0) + mem_read
+                        )
+                        external_input_full_elems[iname] = max(
+                            external_input_full_elems.get(iname, 0),
+                            full_elems,
+                            mem_read,
                         )
 
             intermediate_input_elems = int(graph_internal_input_elems)
@@ -640,11 +656,17 @@ class EinsumGraphAnalyzer:
             total_unfused_elems += unfused_elems
             total_intermediate_elems += layer_intermediate_elems
 
-        # Deduplicated graph-level external I/O: when the same tensor
-        # (e.g. model input x) fans out to multiple ops, count it once.
+        # Deduplicated graph-level external I/O.  Per external tensor, DRAM
+        # reads are the per-op read sum capped at the full tensor size:
+        # full-tensor fan-out collapses to one read, while per-layer slices
+        # of a stacked input (e.g. [num_layers, ...] KV cache) accumulate.
         # Used for both fused and fused_prefetched totals.
+        unique_external_input_elems = sum(
+            min(read_elems, external_input_full_elems[name])
+            for name, read_elems in external_input_read_elems.items()
+        )
         total_fused_prefetched_elems = int(
-            sum(unique_external_inputs.values())
+            unique_external_input_elems
             + sum(unique_external_outputs.values())
         )
         # fused_elements == fused_prefetched_elements (same dedup logic)
