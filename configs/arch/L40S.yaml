@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "L40S"
+# NVIDIA L40S. Every value below is taken from the public L40S datasheet
+# (https://www.nvidia.com/en-us/data-center/l40s/, dense peak rates).
+# freq_GHz is a nominal clock: each MAC_per_cycle value is the published dense
+# peak divided by 2 (FLOP per MAC) and by that clock, so predicted runtimes
+# depend only on the published peaks. The datasheet publishes no L2 size or
+# FP64 rate, so those keys are omitted (the roofline does not use them).
+DRAM_capacity: 51539607552  # 48 GB GDDR6 with ECC
+DRAM_byte_per_cycle: 345.6  # 864 GB/s / 2.5 GHz
+freq_GHz: 2.5  # nominal clock (see header)
+MAC_per_cycle_fp32_sm: 18320  # 91.6 TFLOPS FP32 (CUDA cores)
+MAC_per_cycle_tf32_tc: 36600  # 183 TFLOPS TF32 Tensor Core, dense
+MAC_per_cycle_fp16_tc: 72410  # 362.05 TFLOPS FP16 Tensor Core, dense
+MAC_per_cycle_bf16_tc: 72410  # 362.05 TFLOPS BF16 Tensor Core, dense
+MAC_per_cycle_fp8_tc: 146600  # 733 TFLOPS FP8 Tensor Core, dense
+MAC_per_cycle_int8_tc: 146600  # 733 TOPS INT8 Tensor Core, dense
