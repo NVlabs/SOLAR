@@ -126,6 +126,35 @@ def _sanitize(name: str) -> str:
     return s
 
 
+def _recorded_output_slot(pred_id: str, recorded_name: Any) -> int:
+    """Output slot k of a producer referenced by a recorded tensor name.
+
+    The einsum layer records consumed tensors as ``<pred_id>.Output`` (slot
+    0) or ``<pred_id>.Output_<k>`` (slot k of a multi-output producer such
+    as chunk/split).  Unrecognized names map to slot 0.
+    """
+    if isinstance(recorded_name, str):
+        prefix = f"{pred_id}.Output_"
+        if recorded_name.startswith(prefix):
+            suffix = recorded_name[len(prefix):]
+            if suffix.isdigit():
+                return int(suffix)
+    return 0
+
+
+def _af_pred_tensor_name(pred_id: str, recorded_name: Any) -> str:
+    """AF tensor name for a consumed predecessor output.
+
+    Multi-output producers (chunk/split) emit their k-th output access as
+    ``<sanitized>_<k>``; a consumer must reference the same name.  Slot 0
+    keeps the plain sanitized producer name, matching the historical
+    convention.
+    """
+    base = _sanitize(pred_id)
+    slot = _recorded_output_slot(pred_id, recorded_name)
+    return f"{base}_{slot}" if slot > 0 else base
+
+
 def _bits_from_dtype(dtype_str: str) -> Optional[int]:
     """Translate a torch dtype string (e.g. ``'torch.float16'``) to bit width."""
     if not isinstance(dtype_str, str):
@@ -430,6 +459,18 @@ def _cross_layer_union(ctx: BuildContext) -> None:
             tensor_types_inputs=tensor_types_inputs,
             skip_weight_typed=True,
         )
+        # Recorded tensor names for non-weight slots, aligned with the
+        # role↔pred pairing rule above.  They identify which output slot
+        # of a multi-output producer (chunk/split) each pred read is.
+        tensor_names_inputs = (L.get("tensor_names") or {}).get("inputs") or []
+        nonweight_recorded = [
+            nm for j, nm in enumerate(tensor_names_inputs)
+            if (
+                str(tensor_types_inputs[j])
+                if j < len(tensor_types_inputs)
+                else "input"
+            ) != "weight"
+        ]
         for i, role in enumerate(input_roles):
             if i >= len(preds):
                 break
@@ -443,6 +484,13 @@ def _cross_layer_union(ctx: BuildContext) -> None:
             )
             if pred_output_role is None:
                 continue
+            # Union against the output slot this consumer actually reads,
+            # not the primary output: slot k of chunk/split has its own
+            # axes (and possibly its own sizes for uneven splits).
+            recorded = nonweight_recorded[i] if i < len(nonweight_recorded) else None
+            slot = _recorded_output_slot(pred, recorded)
+            if slot > 0 and f"Output_{slot}" in pred_operands:
+                pred_output_role = f"Output_{slot}"
             pred_dims = pred_operands.get(pred_output_role, [])
             cur_dims = operands.get(role, [])
             n = min(len(pred_dims), len(cur_dims))
@@ -585,6 +633,7 @@ def _emit_af_workload(ctx: BuildContext, model_name: str) -> dict:
         # (size 1) and a synthetic W{n} to the tensor slot (full rank),
         # producing pydantic "inconsistent ranks" errors downstream.
         tensor_types_inputs = (L.get("tensor_types") or {}).get("inputs") or []
+        tensor_names_inputs = (L.get("tensor_names") or {}).get("inputs") or []
         input_role_index = 0  # position within input-typed roles only
         pred_index = 0
         for role, dims in operands.items():
@@ -616,7 +665,12 @@ def _emit_af_workload(ctx: BuildContext, model_name: str) -> dict:
                     tensor_name = next_weight_name()
                     af_rename_key = "weight"
                 elif pred_index < len(preds):
-                    tensor_name = _sanitize(preds[pred_index])
+                    recorded = (
+                        tensor_names_inputs[input_role_index]
+                        if input_role_index < len(tensor_names_inputs)
+                        else None
+                    )
+                    tensor_name = _af_pred_tensor_name(preds[pred_index], recorded)
                     pred_index += 1
                     # Match OLD-pipeline convention: the FIRST consumed
                     # pred maps to "input", subsequent preds map to "weight".
@@ -1531,16 +1585,19 @@ def _validate_af_coverage(af: dict, layers: Dict[str, dict]) -> None:
         if not preds:
             continue
         in_types = (L.get("tensor_types") or {}).get("inputs") or []
+        in_names = (L.get("tensor_names") or {}).get("inputs") or []
         # Walk slots: pred_index advances only for non-weight slots, mirroring
         # the AF emit's pred-consumption rule. Each non-weight pred must
-        # appear by its sanitized name in the consumer's reads.
+        # appear by its sanitized name (slot-suffixed for multi-output
+        # producers) in the consumer's reads.
         expected: List[str] = []
         pred_index = 0
         for slot, slot_type in enumerate(in_types):
             if slot_type == "weight":
                 continue
             if pred_index < len(preds):
-                expected.append(_sanitize(preds[pred_index]))
+                recorded = in_names[slot] if slot < len(in_names) else None
+                expected.append(_af_pred_tensor_name(preds[pred_index], recorded))
             pred_index += 1
         # When tensor_types is shorter than preds (older graphs), assume
         # remaining preds are non-weight.
