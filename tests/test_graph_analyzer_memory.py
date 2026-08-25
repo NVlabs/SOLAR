@@ -1512,3 +1512,38 @@ class TestUnevenSplitPartitionReads:
         reads = 8 * 2  # the (8, 2) piece, not 8 * 5 and not the full tensor
         writes = 8 * 2
         assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestMultiOutputExternalWrites:
+    """Each external output of a multi-output op counts its own write.
+
+    Regression: the external-output dedup stored the layer's total write
+    (sum over all outputs) under every output name, so an op with N
+    external outputs was counted N times - an overcount that breaks the
+    SOL lower bound.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            values, indices = torch.max(x, dim=1)
+            return values, indices
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_each_output_once(self, analysis):
+        reads = 8 * 64
+        writes = 8 + 8  # values + indices, not 2 * (values + indices)
+        assert analysis["total"]["fused_elements"] == reads + writes

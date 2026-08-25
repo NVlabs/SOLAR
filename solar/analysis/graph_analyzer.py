@@ -819,11 +819,19 @@ class EinsumGraphAnalyzer:
             # Per-op model I/O: external inputs + model outputs (no intermediates)
             model_io_elems = model_input_elems + model_output_elems
 
-            # Track unique external outputs for deduplication.
+            # Track unique external outputs for deduplication.  Each output
+            # tensor counts its own write elements: assigning the layer's
+            # total (sum over all outputs) to every output name would count
+            # a multi-output op (e.g. max(dim) returning values + indices)
+            # once per output, overcounting DRAM writes and breaking the
+            # SOL lower bound.
             if not output_is_intermediate:
-                for oname in output_name_list:
+                for oi, oname in enumerate(output_name_list):
+                    write_elems = (
+                        int(memory_writes[oi]) if oi < len(memory_writes) else 0
+                    )
                     unique_external_outputs[oname] = max(
-                        unique_external_outputs.get(oname, 0), int(output_elems)
+                        unique_external_outputs.get(oname, 0), write_elems
                     )
 
             # Per-op fused elements: only non-intermediate DRAM traffic
