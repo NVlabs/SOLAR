@@ -42,7 +42,7 @@ See SOL_GUIDE.md for detailed explanation of the three SOL models.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import yaml
 
@@ -50,6 +50,15 @@ from solar.einsum import EinsumAnalyzer
 from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
 from solar.common.types import TensorShapes
 from solar.common.utils import ensure_directory, NoAliasDumper
+from solar.analysis.access_regions import (
+    PARTITION_OPS,
+    SLICE_VIEW_OPS,
+    Box,
+    box_size,
+    partition_output_box,
+    slice_op_boxes,
+    union_size,
+)
 
 
 PathLike = Union[str, Path]
@@ -60,6 +69,186 @@ def _product(shape: List[int]) -> int:
     for d in shape:
         out *= int(d)
     return int(out)
+
+
+def _layer_raw_attributes(layer: Dict[str, Any]) -> Any:
+    raw = layer.get("raw_attributes")
+    if raw is None:
+        raw = (layer.get("module_args") or {}).get("raw_attributes")
+    return raw
+
+
+def _canonical_external_tensor(
+    tensor_name: str,
+    tensor_producers: Dict[str, str],
+    layers_in: Dict[str, Any],
+    transparent_layer_ids: Set[str],
+) -> str:
+    """Trace a tensor name backward through transparent view layers.
+
+    Returns the base tensor name (start-node output, weight, or orphan)
+    when the whole producer chain is transparent.  When the chain cannot
+    be followed (real producer, dangling view, cycle), the original name
+    is returned so the tensor keeps its own dedup group; that reproduces
+    the previous per-name accounting and never merges unrelated tensors.
+    """
+    seen: Set[str] = set()
+    current = tensor_name
+    while current in tensor_producers:
+        if current in seen:
+            return tensor_name
+        seen.add(current)
+        producer_id = tensor_producers[current]
+        if producer_id not in transparent_layer_ids:
+            return tensor_name
+        producer_inputs = (
+            (layers_in.get(producer_id, {}).get("tensor_names") or {}).get("inputs") or []
+        )
+        if not producer_inputs or not producer_inputs[0]:
+            return tensor_name
+        current = str(producer_inputs[0])
+    return current
+
+
+def _partition_output_index(output_names: List[str], tensor_name: str) -> Optional[int]:
+    """Position of ``tensor_name`` among a partition op's ordered outputs.
+
+    The recorded output order must match the ``.Output`` / ``.Output_<k>``
+    suffix convention; misassigning a partition slot to the wrong region
+    could overcount the union, so any deviation rejects the fast path.
+    """
+    for position, name in enumerate(output_names):
+        suffix = str(name).rsplit(".", 1)[-1]
+        if position == 0:
+            if suffix != "Output":
+                return None
+        elif suffix != f"Output_{position}":
+            return None
+    try:
+        return output_names.index(tensor_name)
+    except ValueError:
+        return None
+
+
+def _resolve_read_region(
+    op_type: str,
+    input_index: int,
+    tensor_name: str,
+    mem_read: int,
+    input_shapes: List[Any],
+    input_sizes: List[int],
+    layer: Dict[str, Any],
+    layers_in: Dict[str, Any],
+    tensor_producers: Dict[str, str],
+    transparent_layer_ids: Set[str],
+) -> Tuple[str, Optional[List[Box]], int]:
+    """Resolve one external read into (group key, proven boxes, full size).
+
+    The group key is the canonical base tensor name.  ``boxes`` is a list
+    of proven access boxes over the base tensor, or None when the region
+    cannot be established statically (the caller then applies the
+    conservative per-group ``max`` accounting).  The returned full size is
+    a candidate for the base tensor's total element count; it is 0 when
+    the event provides no trustworthy candidate (e.g. reads through views,
+    whose local tensor size need not equal the base size).
+    """
+    canonical = _canonical_external_tensor(
+        tensor_name, tensor_producers, layers_in, transparent_layer_ids
+    )
+
+    if tensor_name not in tensor_producers:
+        # Direct read of the base tensor: its recorded size is the base size.
+        full_candidate = int(input_sizes[input_index]) if input_index < len(input_sizes) else 0
+        boxes: Optional[List[Box]] = None
+        if op_type in SLICE_VIEW_OPS and input_index == 0:
+            base_shape = input_shapes[0] if input_shapes else None
+            if isinstance(base_shape, list):
+                boxes = slice_op_boxes(
+                    op_type,
+                    _layer_raw_attributes(layer),
+                    base_shape,
+                    expected_elems=int(mem_read),
+                )
+        return canonical, boxes, full_candidate
+
+    # Read through a view chain.  The only statically provable case is a
+    # direct consumer of one output of a partition op (chunk/split) whose
+    # input is the base tensor itself.
+    producer_id = tensor_producers[tensor_name]
+    producer = layers_in.get(producer_id) or {}
+    producer_type = str(producer.get("type", "")).lower()
+    if producer_type in PARTITION_OPS:
+        p_names = producer.get("tensor_names") or {}
+        p_shapes = producer.get("tensor_shapes") or {}
+        p_inputs = p_names.get("inputs") or []
+        base_name = str(p_inputs[0]) if p_inputs and p_inputs[0] else ""
+        base_shape = (p_shapes.get("inputs") or [None])[0]
+        output_names = [str(n) for n in (p_names.get("outputs") or [])]
+        output_shapes = p_shapes.get("outputs") or []
+        if (
+            base_name
+            and base_name == canonical
+            and base_name not in tensor_producers
+            and isinstance(base_shape, list)
+            and all(isinstance(s, list) for s in output_shapes)
+        ):
+            output_index = _partition_output_index(output_names, tensor_name)
+            if output_index is not None:
+                box = partition_output_box(
+                    producer_type,
+                    _layer_raw_attributes(producer),
+                    base_shape,
+                    output_shapes,
+                    output_index,
+                )
+                if box is not None and box_size(box) == int(mem_read):
+                    return canonical, [box], _product(base_shape)
+
+    return canonical, None, 0
+
+
+def _sum_group_footprints(
+    groups: Dict[str, Dict[str, Any]],
+    base_full_sizes: Dict[str, int],
+    debug: bool = False,
+) -> int:
+    """Unique-footprint total across per-base-tensor read groups.
+
+    Per group the footprint is ``min(full, max(union(boxes), max(counted)))``:
+    exact when every access resolved to a proven box, and a valid lower
+    bound otherwise (any single access's element count, and the union of
+    proven regions, are both lower bounds of the true unique footprint).
+    Inconsistent full-size metadata degrades the group to the conservative
+    bound capped at the smallest candidate.
+    """
+    total = 0
+    for name, group in groups.items():
+        boxes: List[Box] = group["boxes"]
+        counted: List[int] = list(group["counted"])
+        full_candidates: Set[int] = {c for c in group["full"] if c > 0}
+        if name in base_full_sizes and base_full_sizes[name] > 0:
+            full_candidates.add(int(base_full_sizes[name]))
+
+        if len(full_candidates) > 1:
+            # Conflicting size metadata: distrust the boxes, keep the bound.
+            counted.extend(box_size(b) for b in boxes)
+            footprint = min(max(counted, default=0), min(full_candidates))
+            if debug:
+                print(
+                    f"Debug: external tensor '{name}' has conflicting full "
+                    f"sizes {sorted(full_candidates)}; using conservative bound"
+                )
+        else:
+            union = union_size(boxes) if boxes else 0
+            if union is None:
+                # Mixed ranks or budget overflow: degrade boxes to counts.
+                counted.extend(box_size(b) for b in boxes)
+                union = 0
+            footprint = max(union, max(counted, default=0))
+            if full_candidates:
+                footprint = min(footprint, full_candidates.pop())
+        total += int(footprint)
+    return total
 
 
 class EinsumGraphAnalyzer:
@@ -154,6 +343,17 @@ class EinsumGraphAnalyzer:
             if bool_start_node_ids:
                 print(f"Debug: Found {len(bool_start_node_ids)} bool-typed start nodes: {bool_start_node_ids}")
             print(f"Debug: Analyzing {len(layers_in)} computation nodes")
+
+        # Full element count of every start-node output tensor, keyed by
+        # tensor name.  Used as the authoritative base size when capping
+        # deduplicated external reads of a model input.
+        start_output_sizes: Dict[str, int] = {}
+        for sid in start_node_ids:
+            s_names = (all_layers[sid].get("tensor_names") or {}).get("outputs") or []
+            s_shapes = (all_layers[sid].get("tensor_shapes") or {}).get("outputs") or []
+            for s_name, s_shape in zip(s_names, s_shapes):
+                if s_name and isinstance(s_shape, list):
+                    start_output_sizes[str(s_name)] = _product(s_shape)
 
         # Build tensor producer/consumer maps using tensor_names from the
         # einsum graph.  A tensor is intermediate if it is produced by one op
@@ -292,10 +492,23 @@ class EinsumGraphAnalyzer:
         total_intermediate_elems = 0  # Σ intermediate activation elems
 
         # Deduplicated external (non-intermediate) tensor tracking for the
-        # fused / fused_prefetched model.  When the same external tensor
-        # (e.g. model input x) fans out to multiple ops, it is read from
-        # DRAM once.  We track by tensor_name → max element count.
-        unique_external_inputs: Dict[str, int] = {}
+        # fused / fused_prefetched model.  Fused semantics: each external
+        # byte is read from DRAM at most once, so per base tensor the DRAM
+        # traffic is the *unique element footprint* of all its reads:
+        #   - fan-out (full tensor read by several ops) counts once;
+        #   - disjoint slices of a stacked tensor (per-layer KV cache) sum;
+        #   - repeated or overlapping slices count each element once.
+        # Reads are grouped by canonical base tensor (traced through
+        # transparent views).  Each read contributes either a statically
+        # proven access box (see solar.analysis.access_regions) whose union
+        # is computed exactly, or — when the region cannot be proven — a
+        # bare element count that participates via max(), the conservative
+        # lower-bound accounting.  Group footprints are capped at the base
+        # tensor size, so the result never exceeds the true footprint and
+        # the SOL lower-bound property is preserved.
+        # Per canonical base tensor: proven boxes, unproven read counts,
+        # and full-size candidates observed at direct-read sites.
+        external_read_groups: Dict[str, Dict[str, Any]] = {}
         unique_external_outputs: Dict[str, int] = {}
 
         for layer_id, layer in layers_in.items():
@@ -409,9 +622,9 @@ class EinsumGraphAnalyzer:
                 # chunk/split return views into the source tensor
                 "chunk", "split", "tensor_split",
             }
-            _SLICE_VIEW_OPS = {
-                "__getitem__", "narrow", "slice", "select",
-            }
+            # Shared with the access-region analysis, which relies on the
+            # invariant that these ops' read equals their output size.
+            _SLICE_VIEW_OPS = SLICE_VIEW_OPS
             _SCATTER_OPS = {
                 "__setitem__", "scatter", "scatter_",
                 "index_copy", "index_copy_",
@@ -555,9 +768,27 @@ class EinsumGraphAnalyzer:
                 else:
                     external_input_elems += mem_read
                     if iname:
-                        unique_external_inputs[iname] = max(
-                            unique_external_inputs.get(iname, 0), mem_read
+                        canonical, boxes, full_candidate = _resolve_read_region(
+                            op_type,
+                            i,
+                            iname,
+                            int(mem_read),
+                            input_shapes,
+                            input_sizes,
+                            layer,
+                            layers_in,
+                            tensor_producers,
+                            transparent_layer_ids,
                         )
+                        group = external_read_groups.setdefault(
+                            canonical, {"boxes": [], "counted": [], "full": set()}
+                        )
+                        if full_candidate > 0:
+                            group["full"].add(int(full_candidate))
+                        if boxes:
+                            group["boxes"].extend(boxes)
+                        else:
+                            group["counted"].append(int(mem_read))
 
             intermediate_input_elems = int(graph_internal_input_elems)
             model_input_elems = int(external_input_elems)
@@ -588,11 +819,19 @@ class EinsumGraphAnalyzer:
             # Per-op model I/O: external inputs + model outputs (no intermediates)
             model_io_elems = model_input_elems + model_output_elems
 
-            # Track unique external outputs for deduplication.
+            # Track unique external outputs for deduplication.  Each output
+            # tensor counts its own write elements: assigning the layer's
+            # total (sum over all outputs) to every output name would count
+            # a multi-output op (e.g. max(dim) returning values + indices)
+            # once per output, overcounting DRAM writes and breaking the
+            # SOL lower bound.
             if not output_is_intermediate:
-                for oname in output_name_list:
+                for oi, oname in enumerate(output_name_list):
+                    write_elems = (
+                        int(memory_writes[oi]) if oi < len(memory_writes) else 0
+                    )
                     unique_external_outputs[oname] = max(
-                        unique_external_outputs.get(oname, 0), int(output_elems)
+                        unique_external_outputs.get(oname, 0), write_elems
                     )
 
             # Per-op fused elements: only non-intermediate DRAM traffic
@@ -640,11 +879,17 @@ class EinsumGraphAnalyzer:
             total_unfused_elems += unfused_elems
             total_intermediate_elems += layer_intermediate_elems
 
-        # Deduplicated graph-level external I/O: when the same tensor
-        # (e.g. model input x) fans out to multiple ops, count it once.
-        # Used for both fused and fused_prefetched totals.
+        # Deduplicated graph-level external I/O.  Per canonical base tensor,
+        # DRAM reads are the unique element footprint of all accesses: the
+        # exact union of statically proven access regions, with unproven
+        # reads folded in via the conservative max() lower bound, capped at
+        # the base tensor size.  Used for both fused and fused_prefetched
+        # totals.
+        unique_external_input_elems = _sum_group_footprints(
+            external_read_groups, start_output_sizes, debug=self.debug
+        )
         total_fused_prefetched_elems = int(
-            sum(unique_external_inputs.values())
+            unique_external_input_elems
             + sum(unique_external_outputs.values())
         )
         # fused_elements == fused_prefetched_elements (same dedup logic)

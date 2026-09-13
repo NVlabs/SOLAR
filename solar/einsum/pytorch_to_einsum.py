@@ -464,6 +464,12 @@ class PyTorchToEinsum:
         left untouched.
         """
         self._tensor_to_producer_op = {}
+        # tensor_id -> position among its producer's ordered outputs.  Only
+        # populated for slots > 0; consumers of slot 0 keep the plain
+        # ``<producer>.Output`` name.  Without this, every consumer of a
+        # multi-output op (chunk/split) was attributed to output 0, losing
+        # which partition slice it actually reads.
+        self._tensor_to_producer_slot = {}
         op_id_set = set(op_ids)
 
         # --- (A+B prep) Index orphan / dead-end tensor nodes --------------
@@ -899,6 +905,19 @@ class PyTorchToEinsum:
 
             if len(producers) == 1 and producers[0] in op_ids:
                 self._tensor_to_producer_op[tensor_id] = producers[0]
+                producer_outputs = list(
+                    ((layers.get(producers[0]) or {}).get("connections") or {}).get("outputs")
+                    or []
+                )
+                producer_out_shapes = (
+                    (layers.get(producers[0]) or {}).get("output_shapes") or []
+                )
+                if tensor_id in producer_outputs:
+                    slot = producer_outputs.index(tensor_id)
+                    # Only record slots the producer declares a shape for, so
+                    # consumer names always match a produced tensor name.
+                    if 0 < slot < max(len(producer_out_shapes), 1):
+                        self._tensor_to_producer_slot[tensor_id] = slot
 
             for producer in producers:
                 for consumer in consumers:
@@ -3136,6 +3155,20 @@ class PyTorchToEinsum:
                     f"shape-match uniquely."
                 )
 
+        # Which output slot of its producer each input tensor is (0 for the
+        # primary output).  Consumers of chunk/split slot k must reference
+        # ``<producer>.Output_<k>``, not the primary output.  A recorded slot
+        # is only trusted when the input actually resolved to that producer.
+        tensor_slots = getattr(self, "_tensor_to_producer_slot", {})
+        input_slots: List[int] = []
+        for i, conn_id in enumerate(raw_input_connections):
+            if i >= len(input_connections):
+                break
+            slot = tensor_slots.get(conn_id, 0)
+            if slot and input_connections[i] != tensor_to_producer.get(conn_id):
+                slot = 0
+            input_slots.append(slot)
+
         # Take tensor input/output types directly from PyTorch graph by index.
         pytorch_input_types = list(node_data.get("input_types") or [])
         if len(pytorch_input_types) < len(input_connections):
@@ -3149,7 +3182,8 @@ class PyTorchToEinsum:
 
         # Build tensor_names using input_types
         tensor_names = self._build_tensor_names(
-            node_id, node_data_with_types, input_connections, output_connections
+            node_id, node_data_with_types, input_connections, output_connections,
+            input_slots=input_slots,
         )
         pytorch_output_types = list(node_data.get("output_types") or [])
         if len(pytorch_output_types) < len(tensor_names.get("outputs", [])):
@@ -3233,11 +3267,16 @@ class PyTorchToEinsum:
         node_data: Dict[str, Any],
         input_connections: List[str],
         output_connections: List[str],
+        input_slots: Optional[List[int]] = None,
     ) -> Dict[str, List[str]]:
         """Build tensor names matching input_shapes/output_shapes order.
 
         Uses input_types to name weight inputs as <node_id>.Weight
-        and activation inputs as <predecessor_id>.Output.
+        and activation inputs as <predecessor_id>.Output.  When
+        ``input_slots`` marks an input as output slot k > 0 of its
+        producer (multi-output ops like chunk/split), the name is
+        <predecessor_id>.Output_<k>, matching the producer's own
+        output naming.
         """
         input_names: List[str] = []
         output_names: List[str] = []
@@ -3251,7 +3290,9 @@ class PyTorchToEinsum:
                 input_names.append(name)
                 weight_idx += 1
             else:
-                input_names.append(f"{pred_id}.Output")
+                slot = input_slots[i] if input_slots and i < len(input_slots) else 0
+                suffix = ".Output" if slot == 0 else f".Output_{slot}"
+                input_names.append(f"{pred_id}{suffix}")
 
         # Output tensors
         output_names.append(f"{node_id}.Output")

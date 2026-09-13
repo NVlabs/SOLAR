@@ -1051,3 +1051,499 @@ class TestKernel88MinGPTIntermediateTagging:
         """fused_prefetched (deduplicated) must be <= fused (per-op sum)."""
         total = analysis["total"]
         assert total["fused_prefetched_elements"] <= total["fused_elements"]
+
+
+# ---------------------------------------------------------------------------
+# Test: Stacked external tensor sliced per layer (KV-cache pattern)
+# ---------------------------------------------------------------------------
+class TestStackedSliceExternalReads:
+    """A stacked [num_layers, ...] external input sliced per layer must count
+    every slice read toward fused DRAM traffic, not just one.
+
+    Regression: the external-input dedup keyed reads by source tensor name,
+    so all N per-layer __getitem__ reads of a stacked KV-style tensor
+    collapsed to max(slice_size) = one slice — an N× undercount.  Distinct
+    slices are distinct bytes; the access-region analysis resolves each
+    slice to its region and counts the exact union (which also preserves
+    the full-tensor fan-out dedup verified by test_kernel88_fused_is_two_x).
+    """
+
+    NUM_LAYERS = 4
+    SLICE_ELEMS = 8 * 64
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x, kv):
+            # kv: (4, 8, 64) — stacked per-layer tensor (KV-cache pattern)
+            for i in range(4):
+                x = x + kv[i]
+            return x
+
+    def get_inputs():
+        return [torch.randn(8, 64), torch.randn(4, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_all_slices(self, analysis):
+        """fused = read x + read ALL kv slices + write output."""
+        x_elems = self.SLICE_ELEMS
+        kv_elems = self.NUM_LAYERS * self.SLICE_ELEMS
+        expected = x_elems + kv_elems + x_elems
+        assert analysis["total"]["fused_elements"] == expected, (
+            f"fused_elements {analysis['total']['fused_elements']} != {expected}; "
+            f"stacked-tensor slice reads were deduplicated to one slice"
+        )
+
+    def test_fused_prefetched_counts_all_slices(self, analysis):
+        """fused_prefetched uses the same dedup — must match fused."""
+        assert (
+            analysis["total"]["fused_prefetched_elements"]
+            == analysis["total"]["fused_elements"]
+        )
+
+    def test_fused_leq_unfused(self, analysis):
+        """Capped sum must never exceed the raw per-op total."""
+        total = analysis["total"]
+        assert total["fused_elements"] <= total["unfused_elements"]
+
+    def test_each_getitem_reads_one_slice(self, analysis):
+        """Per-op accounting is unchanged: each slice op reads slice_size."""
+        getitems = [
+            layer for layer in analysis["layers"].values()
+            if layer["type"] == "__getitem__"
+        ]
+        assert len(getitems) == self.NUM_LAYERS
+        for layer in getitems:
+            assert layer["input_elements"] == self.SLICE_ELEMS
+
+
+# ---------------------------------------------------------------------------
+# Tests: Access-region analysis for external reads (alias analysis)
+# ---------------------------------------------------------------------------
+class TestRepeatedSliceExternalReads:
+    """Repeated identical slices of one external tensor count once.
+
+    The unique footprint of x[0:10] read twice is 10 rows, not 20: the
+    capped-sum aggregation overcounted this pattern, breaking the SOL
+    lower-bound property.  The region union counts each element once.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[0:10] + x[0:10]
+
+    def get_inputs():
+        return [torch.randn(16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_slice_once(self, analysis):
+        reads = 10 * 64
+        writes = 10 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestOverlappingSliceExternalReads:
+    """Overlapping slices count the overlap once: |[0:10) ∪ [5:15)| = 15."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[0:10] + x[5:15]
+
+    def get_inputs():
+        return [torch.randn(16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_union(self, analysis):
+        reads = 15 * 64
+        writes = 10 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestMixedFullAndSliceReads:
+    """A full read plus a slice read of the same tensor count as one full
+    read: the slice is a subset of the full access."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x * 2.0 + x[0:4].sum(dim=0)
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_full_once(self, analysis):
+        reads = 8 * 64
+        writes = 8 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestTwoDimensionalSliceUnion:
+    """Two 2-D slices overlapping in both dimensions: exact 2-D union.
+
+    x[0:4, 0:32] and x[2:6, 16:48] on (8, 64) overlap in the
+    [2:4) x [16:32) rectangle: 128 + 128 - 32 = 224 unique elements.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[0:4, 0:32] + x[2:6, 16:48]
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_exact_union(self, analysis):
+        reads = 4 * 32 + 4 * 32 - 2 * 16
+        writes = 4 * 32
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestNegativeIndexSlice:
+    """Negative integer indices resolve to their normalized regions."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, kv):
+            return kv[0] + kv[-1]
+
+    def get_inputs():
+        return [torch.randn(4, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_two_distinct_slices(self, analysis):
+        reads = 2 * 8 * 64  # kv[0] and kv[3] are disjoint
+        writes = 8 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestStridedSliceFallback:
+    """Strided slices are not statically boxed; the conservative fallback
+    (per-tensor max of reads) applies and must not overcount.
+
+    x[::2] and x[1::2] are disjoint (true footprint 8 rows) but strided;
+    the documented lower bound is max(4, 4) = 4 rows.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[::2] + x[1::2]
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_uses_conservative_bound(self, analysis):
+        reads = 4 * 64  # max of the two strided reads, not their sum
+        writes = 4 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestTensorIndexFallback:
+    """Dynamic (tensor) indexing cannot be proven; the gather read falls
+    back to the conservative count without crashing."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            idx = torch.tensor([0, 2, 2])
+            return x[idx].sum(dim=0)
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_uses_gather_read(self, analysis):
+        reads = 3 * 12  # recorded gather output size (conservative)
+        writes = 12
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestStaticIntListIndex:
+    """A static integer-list gather with duplicate indices counts each
+    distinct row once: x[[0, 2, 2]] touches rows {0, 2}."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[[0, 2, 2]].sum(dim=0)
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_distinct_rows(self, analysis):
+        reads = 2 * 12
+        writes = 12
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestChunkPartitionReads:
+    """Consumed chunk outputs count as their exact disjoint regions."""
+
+    SUBSET_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            a, b, c = x.chunk(3, dim=1)
+            return a + c
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    ALL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            a, b, c = x.chunk(3, dim=1)
+            return a + b + c
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    def test_subset_of_chunks(self, tmp_path):
+        analysis = _run_full_pipeline(tmp_path, self.SUBSET_SOURCE)
+        reads = 2 * 8 * 4  # chunks 0 and 2 only
+        writes = 8 * 4
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+    def test_all_chunks_equal_full_tensor(self, tmp_path):
+        analysis = _run_full_pipeline(tmp_path, self.ALL_SOURCE)
+        reads = 8 * 12  # partition union == full tensor
+        writes = 8 * 4
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestViewAliasDeduplication:
+    """A tensor read directly and through a view is one base tensor: the
+    two reads deduplicate to one full read (previously double-counted
+    because the dedup keyed on the view's output name)."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            y = x.view(8, 64)
+            return x + y
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_base_once(self, analysis):
+        reads = 8 * 64
+        writes = 8 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestExpandReadCappedAtBase:
+    """A full read through expand touches every base element exactly once
+    in DRAM terms: the group footprint is capped at the base size."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x.expand(8, 64) * 2.0
+
+    def get_inputs():
+        return [torch.randn(1, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_read_capped_at_base(self, analysis):
+        reads = 1 * 64  # base tensor size, not the expanded 8 * 64
+        writes = 8 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestUnevenSplitPartitionReads:
+    """Uneven split: only the consumed piece counts, with its exact size.
+
+    Also exercises the multi-output slot plumbing end-to-end: consumer
+    tensor names carry the slot (converter), the AF union-find pairs the
+    consumer with the correct output's axes, and the analyzer resolves the
+    partition box from the recorded output shapes.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            a, b, c = x.split([5, 5, 2], dim=1)
+            return c * 2.0
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_consumed_piece_only(self, analysis):
+        reads = 8 * 2  # the (8, 2) piece, not 8 * 5 and not the full tensor
+        writes = 8 * 2
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestMultiOutputExternalWrites:
+    """Each external output of a multi-output op counts its own write.
+
+    Regression: the external-output dedup stored the layer's total write
+    (sum over all outputs) under every output name, so an op with N
+    external outputs was counted N times - an overcount that breaks the
+    SOL lower bound.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            values, indices = torch.max(x, dim=1)
+            return values, indices
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_each_output_once(self, analysis):
+        reads = 8 * 64
+        writes = 8 + 8  # values + indices, not 2 * (values + indices)
+        assert analysis["total"]["fused_elements"] == reads + writes

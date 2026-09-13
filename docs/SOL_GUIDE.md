@@ -77,7 +77,7 @@ Layer 3 (Linear): Read Input (from DRAM) + Weight, Write Output → DRAM
 ### Description
 Intermediate tensor accesses are **excluded** from memory cost. Only weights and model-boundary I/O (global inputs/outputs) are counted.
 
-### Memory Calculation ([`graph_analyzer.py` L340–383](../solar/analysis/graph_analyzer.py#L340-L383))
+### Memory Calculation ([`graph_analyzer.py`](../solar/analysis/graph_analyzer.py))
 ```
 Per layer:
   external_input_elems_i = weight_elems + non-intermediate activation elems
@@ -85,9 +85,23 @@ Per layer:
   model_io_elems_i       = external_input_elems_i + model_output_elems_i
   fused_elements_i       = model_io_elems_i
 
-Total:    fused_elements = Σ_i fused_elements_i
+Total:    fused_elements = unique external read footprint + Σ external writes
           fused_bytes    = fused_elements × bytes_per_element
 ```
+
+The graph total deduplicates external reads across ops: each external byte
+is read from DRAM at most once, so per base tensor the reads count as the
+*unique element footprint* of all accesses. Statically provable access
+regions (basic `__getitem__` indexing and `chunk`/`split` partitions,
+resolved in [`access_regions.py`](../solar/analysis/access_regions.py)) are
+combined as an exact region union — repeated or overlapping slices count
+their elements once, disjoint slices of a stacked tensor (per-layer KV
+cache) sum. Reads whose region cannot be proven fall back to the
+conservative per-tensor `max`, and every group is capped at the base
+tensor size, so the total never exceeds the true footprint and the SOL
+lower-bound property is preserved. The per-layer `fused_elements_i`
+(and `model_io_elements` in `analysis.yaml`) remain raw per-op values for
+diagnostics and may double-count shared tensors.
 
 ### Roofline Application ([`perf_model.py` L218](../solar/perf/perf_model.py#L218))
 ```
@@ -117,13 +131,13 @@ Layer 3 (Linear): Read Weight, Write Model_Output
 ### Description
 A **single roofline** is applied to the entire graph. Total compute and total memory accesses (weights + model I/O) are aggregated, assuming perfect overlap between compute and memory operations.
 
-### Memory Calculation ([`graph_analyzer.py` L423–431](../solar/analysis/graph_analyzer.py#L423-L431))
+### Memory Calculation ([`graph_analyzer.py`](../solar/analysis/graph_analyzer.py))
 ```
-fused_prefetched_elements = Σ_i model_io_elems_i
+fused_prefetched_elements = unique external read footprint + Σ external writes
 fused_prefetched_bytes    = fused_prefetched_elements × bytes_per_element
 ```
 
-> **Note**: In the current implementation, `fused_prefetched_elements` is computed identically to `fused_elements` (both sum `model_io_elems` per layer). They produce the same result. See [Section 6](#6-known-implementation-gaps).
+> **Note**: In the current implementation, `fused_prefetched_elements` is computed identically to `fused_elements` (the same deduplicated external I/O total). They produce the same result. See [Section 6](#6-known-implementation-gaps).
 
 ### Roofline Application ([`perf_model.py` L219](../solar/perf/perf_model.py#L219))
 ```
@@ -234,11 +248,10 @@ Per-op-sum is always >= whole-graph roofline (`Σ max(c_i, m_i) >= max(Σ c_i, �
 
 ### Gap 2: Fused and fused_prefetched are identical
 
-Both compute `Σ model_io_elems` per layer:
-- `fused_elements`: accumulated via per-layer sum ([line 420](../solar/analysis/graph_analyzer.py#L420))
-- `fused_prefetched_elements`: accumulated via separate sum over the same field ([lines 427–431](../solar/analysis/graph_analyzer.py#L427-L431))
-
-These always produce the same total, so fused and fused_prefetched runtime/cycles are identical.
+Both use the same deduplicated external I/O total (unique external read
+footprint plus external writes) computed in
+[`graph_analyzer.py`](../solar/analysis/graph_analyzer.py), so fused and
+fused_prefetched runtime/cycles are identical.
 
 For discussion of multi-stream concurrency and PDL modeling implications, see [SOL_CONCURRENCY_AND_PDL.md](./SOL_CONCURRENCY_AND_PDL.md).
 

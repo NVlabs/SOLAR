@@ -113,3 +113,69 @@ def test_convert_operation_remaps_hidden_tensor_input_to_predecessor_op():
 
     assert out["tensor_names"]["inputs"][0] == "Model.linear.bias_add.Output"
     assert out["connections"]["inputs"] == ["Model.linear.bias_add"]
+
+
+def test_multi_output_consumer_names_carry_output_slot(tmp_path):
+    """Consumers of chunk/split outputs must reference the slot they read.
+
+    Regression: every consumer of a multi-output op was named
+    ``<producer>.Output``, collapsing all partition slices onto slot 0.
+    This broke consumer attribution (Output_1/Output_2 appeared consumed
+    by nobody) and made distinct chunk reads indistinguishable in the
+    fused-model external-read deduplication.
+    """
+    import yaml
+    from textwrap import dedent
+    from solar.common.types import ProcessingConfig
+    from solar.graph import PyTorchProcessor
+
+    model_source = dedent(
+        """\
+        import torch
+        import torch.nn as nn
+
+        class Model(nn.Module):
+            def forward(self, x):
+                a, b, c = x.chunk(3, dim=1)
+                return a + b + c
+
+        def get_inputs():
+            return [torch.randn(8, 12)]
+
+        def get_init_inputs():
+            return []
+        """
+    )
+    model_file = tmp_path / "model.py"
+    model_file.write_text(model_source)
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+    einsum_dir = tmp_path / "einsum"
+    einsum_dir.mkdir()
+
+    processor = PyTorchProcessor(
+        ProcessingConfig(save_graph=False, force_rerun=True, debug=False, safe_mode=False)
+    )
+    assert processor.process_model_file(str(model_file), str(graph_dir))
+    converter = PyTorchToEinsum()
+    assert converter.convert(str(graph_dir / "pytorch_graph.yaml"), str(einsum_dir))
+
+    with open(einsum_dir / "einsum_graph.yaml") as f:
+        graph = yaml.safe_load(f)
+    layers = graph["layers"]
+
+    chunk_outputs = layers["Model.chunk"]["tensor_names"]["outputs"]
+    assert chunk_outputs == [
+        "Model.chunk.Output",
+        "Model.chunk.Output_1",
+        "Model.chunk.Output_2",
+    ]
+    # add(a, b) reads slots 0 and 1; add_1(<add>, c) reads slot 2.
+    assert layers["Model.add"]["tensor_names"]["inputs"] == [
+        "Model.chunk.Output",
+        "Model.chunk.Output_1",
+    ]
+    assert layers["Model.add_1"]["tensor_names"]["inputs"] == [
+        "Model.add.Output",
+        "Model.chunk.Output_2",
+    ]
