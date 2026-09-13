@@ -22,7 +22,9 @@ records (tuple indices stringified as lists, kwargs with bare keys).
 import pytest
 
 from solar.analysis.access_regions import (
+    access_entry_to_boxes,
     box_size,
+    boxes_to_list,
     parse_call_attributes,
     partition_output_box,
     slice_op_boxes,
@@ -260,3 +262,32 @@ class TestUnionSize:
         boxes = [((i, i + 1), (0, 8), (0, 64)) for i in range(4)]
         assert union_size(boxes) == 4 * 8 * 64
         assert all(box_size(b) == 8 * 64 for b in boxes)
+
+# ---------------------------------------------------------------------------
+# access metadata serialization
+# ---------------------------------------------------------------------------
+class TestAccessMetadataSerialization:
+    def test_boxes_round_trip_from_yaml_shape(self):
+        boxes = [((0, 10), (0, 64)), ((5, 15), (0, 64))]
+        access = {
+            "base_tensor": "Model.input.Output",
+            "base_shape": [16, 64],
+            "boxes": boxes_to_list(boxes),
+        }
+        assert access_entry_to_boxes(access, expected_elems=20 * 64) == boxes
+
+    def test_rejects_wrong_element_count(self):
+        access = {
+            "base_tensor": "Model.input.Output",
+            "base_shape": [16, 64],
+            "boxes": [[[0, 10], [0, 64]]],
+        }
+        assert access_entry_to_boxes(access, expected_elems=11 * 64) is None
+
+    def test_rejects_out_of_bounds_box(self):
+        access = {
+            "base_tensor": "Model.input.Output",
+            "base_shape": [16, 64],
+            "boxes": [[[0, 17], [0, 64]]],
+        }
+        assert access_entry_to_boxes(access, expected_elems=17 * 64) is None

@@ -24,6 +24,7 @@ Verifies that:
 """
 
 import pytest
+import yaml
 from pathlib import Path
 from textwrap import dedent
 
@@ -33,7 +34,12 @@ from solar.einsum.pytorch_to_einsum import PyTorchToEinsum
 from solar.analysis.graph_analyzer import EinsumGraphAnalyzer
 
 
-def _run_full_pipeline(tmp_path: Path, model_source: str, precision: str = "fp32") -> dict:
+def _run_full_pipeline(
+    tmp_path: Path,
+    model_source: str,
+    precision: str = "fp32",
+    mutate_einsum=None,
+) -> dict:
     """Run full Solar pipeline from source code to analysis."""
     model_file = tmp_path / "model.py"
     model_file.write_text(dedent(model_source))
@@ -57,6 +63,13 @@ def _run_full_pipeline(tmp_path: Path, model_source: str, precision: str = "fp32
     converter = PyTorchToEinsum()
     einsum_graph = converter.convert(str(graph_dir / "pytorch_graph.yaml"), str(einsum_dir))
     assert einsum_graph is not None, "PyTorchToEinsum.convert failed"
+
+    if mutate_einsum is not None:
+        for graph_name in ("einsum_graph.yaml", "einsum_graph_renamed.yaml"):
+            graph_path = einsum_dir / graph_name
+            graph = yaml.safe_load(graph_path.read_text())
+            mutate_einsum(graph)
+            graph_path.write_text(yaml.safe_dump(graph, sort_keys=False))
 
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir()
@@ -1124,6 +1137,46 @@ class TestStackedSliceExternalReads:
         assert len(getitems) == self.NUM_LAYERS
         for layer in getitems:
             assert layer["input_elements"] == self.SLICE_ELEMS
+
+
+# ---------------------------------------------------------------------------
+# Test: Analyzer consumes explicit access metadata
+# ---------------------------------------------------------------------------
+class TestAnalyzerUsesExplicitAccessMetadata:
+    """Analyzer should prefer structured access metadata over raw parsing."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[0:10] + x[5:15]
+
+    def get_inputs():
+        return [torch.randn(16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        def corrupt_raw_attributes(graph):
+            for layer in graph["layers"].values():
+                if layer.get("type") == "__getitem__":
+                    layer["raw_attributes"] = "not parseable"
+
+        return _run_full_pipeline(
+            tmp_path,
+            self.MODEL_SOURCE,
+            mutate_einsum=corrupt_raw_attributes,
+        )
+
+    def test_fused_counts_union_from_access_metadata(self, analysis):
+        reads = 15 * 64
+        writes = 10 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
 
 
 # ---------------------------------------------------------------------------
