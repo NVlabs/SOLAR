@@ -3211,6 +3211,14 @@ class PyTorchToEinsum:
         # Build additional_info for weight/bias metadata
         additional_info = self._build_additional_info(node_data)
 
+        raw_attributes = module_args.get("raw_attributes")
+        access = self._build_access_metadata(
+            node_type,
+            raw_attributes,
+            tensor_names,
+            tensor_shapes,
+        )
+
         # Filter out weight connections from connections.inputs
         # (parameter nodes don't exist as layers in the einsum graph)
         activation_connections = [
@@ -3254,12 +3262,141 @@ class PyTorchToEinsum:
         if additional_info:
             result["additional_info"] = additional_info
 
+        if access:
+            result["access"] = access
+
         # Pass through raw_attributes from module_args if present
-        raw_attributes = module_args.get("raw_attributes")
         if raw_attributes:
             result["raw_attributes"] = raw_attributes
 
         return result
+
+    def _build_access_metadata(
+        self,
+        node_type: str,
+        raw_attributes: Any,
+        tensor_names: Dict[str, List[str]],
+        tensor_shapes: Dict[str, List[List[int]]],
+    ) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+        """Emit normalized access-region metadata for view-like ops.
+
+        The analyzer can consume this structured form directly while older
+        graphs continue to fall back to raw_attributes parsing. Imports stay
+        local to avoid making einsum conversion depend on analysis package
+        initialization at module import time.
+        """
+        from solar.analysis.access_regions import (
+            PARTITION_OPS,
+            SLICE_VIEW_OPS,
+            boxes_to_list,
+            partition_output_box,
+            slice_op_boxes,
+        )
+
+        def _valid_shape(shape: Any) -> bool:
+            return isinstance(shape, list) and all(
+                isinstance(dim, int) and not isinstance(dim, bool) and dim > 0
+                for dim in shape
+            )
+
+        def _shape_product(shape: List[int]) -> int:
+            result = 1
+            for dim in shape:
+                result *= int(dim)
+            return int(result)
+
+        def _entry(
+            index: int,
+            tensor_name: str,
+            base_tensor: str,
+            base_shape: List[int],
+            boxes: List[Any],
+            source: str,
+        ) -> Dict[str, Any]:
+            return {
+                "index": int(index),
+                "tensor": str(tensor_name),
+                "kind": "region",
+                "base_tensor": str(base_tensor),
+                "base_shape": [int(dim) for dim in base_shape],
+                "boxes": boxes_to_list(boxes),
+                "source": source,
+            }
+
+        op_type = str(node_type).lower()
+        input_names = list((tensor_names or {}).get("inputs") or [])
+        output_names = list((tensor_names or {}).get("outputs") or [])
+        input_shapes = list((tensor_shapes or {}).get("inputs") or [])
+        output_shapes = list((tensor_shapes or {}).get("outputs") or [])
+        access: Dict[str, List[Dict[str, Any]]] = {"inputs": [], "outputs": []}
+
+        if (
+            op_type in SLICE_VIEW_OPS
+            and input_names
+            and output_names
+            and input_shapes
+            and output_shapes
+            and _valid_shape(input_shapes[0])
+            and isinstance(output_shapes[0], list)
+        ):
+            expected_elems = _shape_product(output_shapes[0])
+            boxes = slice_op_boxes(
+                op_type,
+                raw_attributes,
+                input_shapes[0],
+                expected_elems=expected_elems,
+            )
+            if boxes is not None:
+                access["inputs"].append(
+                    _entry(
+                        0,
+                        input_names[0],
+                        input_names[0],
+                        input_shapes[0],
+                        boxes,
+                        "raw_attributes",
+                    )
+                )
+                access["outputs"].append(
+                    _entry(
+                        0,
+                        output_names[0],
+                        input_names[0],
+                        input_shapes[0],
+                        boxes,
+                        "raw_attributes",
+                    )
+                )
+
+        if (
+            op_type in PARTITION_OPS
+            and input_names
+            and input_shapes
+            and _valid_shape(input_shapes[0])
+            and all(_valid_shape(shape) for shape in output_shapes)
+        ):
+            for output_index, output_name in enumerate(output_names):
+                box = partition_output_box(
+                    op_type,
+                    raw_attributes,
+                    input_shapes[0],
+                    output_shapes,
+                    output_index,
+                )
+                if box is None:
+                    continue
+                access["outputs"].append(
+                    _entry(
+                        output_index,
+                        output_name,
+                        input_names[0],
+                        input_shapes[0],
+                        [box],
+                        "partition_shapes",
+                    )
+                )
+
+        return {key: value for key, value in access.items() if value} or None
 
     def _build_tensor_names(
         self,

@@ -179,3 +179,79 @@ def test_multi_output_consumer_names_carry_output_slot(tmp_path):
         "Model.add.Output",
         "Model.chunk.Output_2",
     ]
+
+    chunk = layers["Model.chunk"]
+    chunk_access = chunk["access"]["outputs"]
+    assert [entry["index"] for entry in chunk_access] == [0, 1, 2]
+    assert [entry["base_tensor"] for entry in chunk_access] == [
+        chunk["tensor_names"]["inputs"][0],
+        chunk["tensor_names"]["inputs"][0],
+        chunk["tensor_names"]["inputs"][0],
+    ]
+    assert [entry["base_shape"] for entry in chunk_access] == [
+        [8, 12],
+        [8, 12],
+        [8, 12],
+    ]
+    assert [entry["boxes"] for entry in chunk_access] == [
+        [[[0, 8], [0, 4]]],
+        [[[0, 8], [4, 8]]],
+        [[[0, 8], [8, 12]]],
+    ]
+
+
+def test_slice_access_metadata_is_emitted(tmp_path):
+    """Slice nodes carry explicit region metadata for downstream consumers."""
+    import yaml
+    from textwrap import dedent
+    from solar.common.types import ProcessingConfig
+    from solar.graph import PyTorchProcessor
+
+    model_source = dedent(
+        """\
+        import torch
+        import torch.nn as nn
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x[0:10] + x[5:15]
+
+        def get_inputs():
+            return [torch.randn(16, 64)]
+
+        def get_init_inputs():
+            return []
+        """
+    )
+    model_file = tmp_path / "model.py"
+    model_file.write_text(model_source)
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+    einsum_dir = tmp_path / "einsum"
+    einsum_dir.mkdir()
+
+    processor = PyTorchProcessor(
+        ProcessingConfig(save_graph=False, force_rerun=True, debug=False, safe_mode=False)
+    )
+    assert processor.process_model_file(str(model_file), str(graph_dir))
+    converter = PyTorchToEinsum()
+    assert converter.convert(str(graph_dir / "pytorch_graph.yaml"), str(einsum_dir))
+
+    with open(einsum_dir / "einsum_graph.yaml") as f:
+        graph = yaml.safe_load(f)
+    getitems = [layer for layer in graph["layers"].values() if layer["type"] == "__getitem__"]
+    getitems = sorted(
+        getitems,
+        key=lambda layer: layer["access"]["inputs"][0]["boxes"][0][0][0],
+    )
+
+    assert [layer["access"]["inputs"][0]["boxes"] for layer in getitems] == [
+        [[[0, 10], [0, 64]]],
+        [[[5, 15], [0, 64]]],
+    ]
+    for layer in getitems:
+        entry = layer["access"]["inputs"][0]
+        assert entry["index"] == 0
+        assert entry["kind"] == "region"
+        assert entry["base_shape"] == [16, 64]
+        assert layer["access"]["outputs"][0]["boxes"] == entry["boxes"]
