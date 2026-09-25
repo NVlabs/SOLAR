@@ -64,6 +64,7 @@ from solar.einsum.af_graph_builder import build_af_graph_from_dict
 from solar.einsum.analyzer import EinsumAnalyzer
 from solar.einsum.einsum_rank_renamer import EinsumRankRenamer
 from solar.einsum.einsum_to_taco import add_taco_expressions
+from solar.einsum.ops.base import conv_call_kwargs
 from solar.einsum.ops.base import EinsumOp, EinsumOperand
 from solar.einsum.ops.registry import get_global_registry
 
@@ -1547,7 +1548,7 @@ class PyTorchToEinsum:
             return False
 
         module_args = node_data.get("module_args") or {}
-        groups = int(module_args.get("groups", 1))
+        groups = int(conv_call_kwargs(module_args).get("groups") or 1)
         if groups <= 1:
             return False
 
@@ -1581,7 +1582,7 @@ class PyTorchToEinsum:
     ) -> Tuple[Dict[str, Dict[str, Any]], str, Dict[int, str]]:
         """Expand group-wise conv into input view, grouped conv, and output view."""
         module_args = node_data.get("module_args") or {}
-        groups = int(module_args.get("groups", 1))
+        groups = int(conv_call_kwargs(module_args).get("groups") or 1)
         input_shapes = node_data.get("input_shapes") or []
         output_shapes = node_data.get("output_shapes") or []
         input_dtypes = node_data.get("input_dtypes") or []
