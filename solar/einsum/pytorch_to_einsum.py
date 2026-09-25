@@ -2769,7 +2769,14 @@ class PyTorchToEinsum:
             # Activation tensors should reference the canonical start node IDs
             # (e.g. start/start_1) after tensor-node collapse.
             activation_einsum_id = start_node_id_map.get(activation_conn_id, activation_conn_id)
-            matmul_input_names.append(f"{activation_einsum_id}.Output")
+            # The activation may be output slot k of a multi-output producer
+            # (e.g. slot 1 of a split feeding a second linear); name it
+            # <producer>.Output_<k> like _build_tensor_names does, otherwise
+            # both slots alias the primary output and the pre-AF shape check
+            # sees one tensor name with two shapes.
+            act_slot = getattr(self, "_tensor_to_producer_slot", {}).get(activation_conn_id, 0)
+            act_suffix = ".Output" if act_slot == 0 else f".Output_{act_slot}"
+            matmul_input_names.append(f"{activation_einsum_id}{act_suffix}")
             if isinstance(activation_entry[2], list):
                 matmul_input_shapes_list.append(list(activation_entry[2]))
             matmul_connection_inputs.append(activation_einsum_id)
