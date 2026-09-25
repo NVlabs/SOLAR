@@ -454,7 +454,17 @@ def _primary_output_role(pred_operands: dict,
 
 
 def _cross_layer_union(ctx: BuildContext) -> None:
-    """Phase 2: union axes across producer→consumer connections (pos-wise)."""
+    """Phase 2: union axes across producer→consumer connections (pos-wise).
+
+    Also unions every read of a *producer-less* tensor (a torchview
+    ``hidden-tensor`` placeholder for something created by an untraced op,
+    e.g. ``torch.ones`` / ``torch.arange`` / a dtype ``view`` inside
+    ``forward``).  Such a tensor has no output axes to union against, so
+    without this step each consumer would mint its own ranks for the same
+    AF tensor name — the strided-slice ``x[..., ::2]`` / ``x[..., 1::2]``
+    pattern used by FP4 packing code tripped the one-rank-tuple invariant.
+    """
+    external_reads: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
     for layer_name, L in ctx.layers.items():
         preds = (L.get("connections") or {}).get("inputs") or []
         operands = L.get("operands") or {}
@@ -489,6 +499,10 @@ def _cross_layer_union(ctx: BuildContext) -> None:
             pred = preds[i]
             pred_layer = ctx.layers.get(pred)
             if pred_layer is None:
+                # No producer layer (torchview placeholder for a tensor made
+                # by an untraced op).  Remember the read so all consumers of
+                # this external source can be unioned afterwards.
+                external_reads[pred].append((layer_name, role))
                 continue
             pred_operands = pred_layer.get("operands") or {}
             pred_output_role = _primary_output_role(
@@ -513,6 +527,38 @@ def _cross_layer_union(ctx: BuildContext) -> None:
                     continue
                 if ctx.axes[a].size == ctx.axes[b].size:
                     ctx.uf.union(a, b)
+
+    _union_external_reads(ctx, external_reads)
+
+
+def _union_external_reads(ctx: BuildContext,
+                          external_reads: Dict[str, List[Tuple[str, str]]]) -> None:
+    """Union all reads of each producer-less tensor position-wise.
+
+    The first read acts as the reference; every other read of the same
+    tensor is unioned against it at each position whose size matches.
+    Sizes normally match exactly (it is the same tensor), but a consumer
+    that recorded a viewed shape is left alone at mismatching positions
+    rather than mis-unioned.
+    """
+    for pred, reads in external_reads.items():
+        if len(reads) < 2:
+            continue
+        ref_layer, ref_role = reads[0]
+        ref_dims = (ctx.layers[ref_layer].get("operands") or {}).get(ref_role, [])
+        for layer_name, role in reads[1:]:
+            cur_dims = (ctx.layers[layer_name].get("operands") or {}).get(role, [])
+            n = min(len(ref_dims), len(cur_dims))
+            for pos in range(n):
+                a = AxisKey(ref_layer, ref_role, pos)
+                b = AxisKey(layer_name, role, pos)
+                if a not in ctx.axes or b not in ctx.axes:
+                    continue
+                if ctx.axes[a].size == ctx.axes[b].size:
+                    ctx.uf.union(a, b)
+        ctx.diagnostics.append(
+            f"external tensor {pred!r}: unioned {len(reads)} consumer reads "
+            f"position-wise so they share one rank tuple.")
 
 
 def _assign_canonical_names(ctx: BuildContext) -> None:
