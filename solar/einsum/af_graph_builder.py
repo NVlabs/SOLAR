@@ -142,17 +142,29 @@ def _recorded_output_slot(pred_id: str, recorded_name: Any) -> int:
     return 0
 
 
+def _af_slot_tensor_name(sanitized_base: str, slot: int) -> str:
+    """AF tensor name for output slot ``slot`` of an op.
+
+    Slot 0 keeps the plain sanitized op name (historical convention).  Slot
+    k > 0 gets the suffix ``__o<k>``.  The double underscore matters:
+    torchview names repeated ops ``X``, ``X_1``, ``X_2`` ..., so the older
+    ``<base>_<k>`` scheme made slot 1 of ``Model.split`` collide with the
+    primary output of the sibling op ``Model.split_1``.  Sanitized op names
+    never contain a double underscore followed by ``o<digits>`` because
+    ``_sanitize`` only maps single non-identifier characters to ``_``.
+    """
+    return f"{sanitized_base}__o{slot}" if slot > 0 else sanitized_base
+
+
 def _af_pred_tensor_name(pred_id: str, recorded_name: Any) -> str:
     """AF tensor name for a consumed predecessor output.
 
-    Multi-output producers (chunk/split) emit their k-th output access as
-    ``<sanitized>_<k>``; a consumer must reference the same name.  Slot 0
-    keeps the plain sanitized producer name, matching the historical
-    convention.
+    Multi-output producers (chunk/split/topk/where...) emit their k-th
+    output access via ``_af_slot_tensor_name``; a consumer must reference
+    the same name.
     """
-    base = _sanitize(pred_id)
-    slot = _recorded_output_slot(pred_id, recorded_name)
-    return f"{base}_{slot}" if slot > 0 else base
+    return _af_slot_tensor_name(_sanitize(pred_id),
+                                _recorded_output_slot(pred_id, recorded_name))
 
 
 def _bits_from_dtype(dtype_str: str) -> Optional[int]:
@@ -648,7 +660,11 @@ def _emit_af_workload(ctx: BuildContext, model_name: str) -> dict:
                     tensor_name = sanitized_name
                 elif role.startswith("Output_"):
                     n_str = role.split("_", 1)[1] if "_" in role else "0"
-                    tensor_name = f"{sanitized_name}_{n_str}"
+                    tensor_name = (
+                        _af_slot_tensor_name(sanitized_name, int(n_str))
+                        if n_str.isdigit()
+                        else f"{sanitized_name}_{n_str}"
+                    )
                 else:
                     tensor_name = sanitized_name
                 af_rename_key = "output"
