@@ -459,6 +459,13 @@ def main() -> None:
                              "the SOL-ExecBench leaderboard target)")
     parser.add_argument("--precision", help="Override SOLAR precision key (fp16, bf16, fp8, ...). "
                                             "Default: inferred from the definition's input dtypes.")
+    parser.add_argument("--fp32-as", default="fp32", choices=["fp32", "tf32", "fp16"],
+                        help="How to price problems whose inferred precision is fp32. 'fp32' (default) uses "
+                             "4 B/elem and the CUDA-core rate; 'tf32' the TF32 tensor-core rate with 4 B/elem; "
+                             "'fp16' reproduces the leaderboard reference table, which priced every non-quant "
+                             "problem at 16-bit tensor-core rate and 2 B/elem.")
+    parser.add_argument("--out-root", type=Path,
+                        help="Root for artifacts (default: SOLAR/out/execbench); each problem gets <root>/<problem>/<uuid>/")
     parser.add_argument("--output-dir", type=Path, help="Where to write artifacts (default: SOLAR/out/execbench/<problem>/<uuid>)")
     parser.add_argument("--t-k", type=float, help="Optional measured kernel latency (ms) to compute a SOL-Score")
     parser.add_argument("--t-b", type=float, help="Optional baseline latency (ms) for the SOL-Score")
@@ -471,8 +478,11 @@ def main() -> None:
     axes = resolve_axes(definition, workload)
     scalars = scalar_inputs(definition, workload)
     precision = pick_precision(definition, args.precision)
+    if args.precision is None and precision == "fp32" and args.fp32_as != "fp32":
+        precision = args.fp32_as
 
-    out_base = args.output_dir or (SOLAR_ROOT / "out" / "execbench" / definition["name"] / str(workload.get("uuid", args.workload_index)))
+    out_root = args.out_root or (SOLAR_ROOT / "out" / "execbench")
+    out_base = args.output_dir or (out_root / definition["name"] / str(workload.get("uuid", args.workload_index)))
     out_base.mkdir(parents=True, exist_ok=True)
 
     print(f"Problem : {definition['name']}")
@@ -502,6 +512,7 @@ def main() -> None:
         "resolved_axes": axes,
         "arch": perf.get("arch", {}).get("name", args.arch_config),
         "precision": precision,
+        "fp32_policy": args.fp32_as,
         "quant_dtypes": quant_dtypes,
         "perf_mac_key": perf.get("arch", {}).get("mac_per_cycle_key"),
         "perf_bytes_per_element": perf.get("workload", {}).get("bytes_per_element"),

@@ -16,6 +16,8 @@ ap.add_argument("--arch-config", default="B200")
 ap.add_argument("--timeout", type=int, default=900)
 ap.add_argument("--limit", type=int)
 ap.add_argument("--resume", type=Path, help="Skip problems already marked ok in a previous sweep .jsonl")
+ap.add_argument("--out-root", type=Path, help="Passed to the runner: artifact root (default SOLAR/out/execbench)")
+ap.add_argument("--runner-args", default="", help="Extra arguments appended to every run_execbench_problem.py call, e.g. '--fp32-as fp16'")
 ap.add_argument("--only-failed", type=Path, help="Re-run only the problems marked failed in a previous sweep .jsonl")
 ap.add_argument("--allow-cuda", action="store_true",
                 help="Let child processes see the GPU. Off by default: SOLAR traces on meta/CPU, and "
@@ -36,7 +38,7 @@ def _limit_mem():
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
 
 ts = time.strftime("%Y%m%d_%H%M%S")
-out_dir = ROOT / "out" / "execbench"; out_dir.mkdir(parents=True, exist_ok=True)
+out_dir = args.out_root or (ROOT / "out" / "execbench"); out_dir.mkdir(parents=True, exist_ok=True)
 jsonl = out_dir / f"sweep_{ts}.jsonl"
 rows = []
 for subset in args.subsets:
@@ -52,6 +54,10 @@ for subset in args.subsets:
         t0 = time.time()
         cmd = [sys.executable, str(ROOT / "scripts/run_execbench_problem.py"), str(p),
                "--workload-index", str(args.workload_index), "--arch-config", args.arch_config]
+        if args.out_root:
+            cmd += ["--out-root", str(args.out_root)]
+        if args.runner_args.strip():
+            cmd += args.runner_args.split()
         try:
             r = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, timeout=args.timeout,
                                preexec_fn=_limit_mem, env=child_env)
