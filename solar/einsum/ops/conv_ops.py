@@ -26,6 +26,7 @@ from solar.einsum.ops.base import (
     EinsumOpHandler,
     EinsumOp,
     EinsumOperand,
+    conv_call_kwargs,
 )
 from solar.einsum.ops.registry import get_global_registry
 from solar.common.types import TensorShape, TensorShapes
@@ -49,11 +50,15 @@ class Conv1dHandler(EinsumOpHandler):
         if input_shape is None or weight_shape is None:
             raise ValueError(f"Missing Input/Weight shapes for {op_name}")
         
-        stride = tuple(kwargs.get("stride", (1,)))
-        padding = tuple(kwargs.get("padding", (0,)))
-        dilation = tuple(kwargs.get("dilation", (1,)))
         module_args = kwargs.get("module_args", {})
-        groups = int(module_args.get("groups", 1)) if module_args else 1
+        # Functional F.conv*d carries stride/padding/dilation/groups only in
+        # raw_attributes; nn.Conv*d exposes them in module_args. Both paths
+        # are normalised by conv_call_kwargs.
+        call = conv_call_kwargs(module_args)
+        stride = tuple(kwargs.get("stride") or call.get("stride") or (1,))
+        padding = tuple(kwargs.get("padding") or call.get("padding") or (0,))
+        dilation = tuple(kwargs.get("dilation") or call.get("dilation") or (1,))
+        groups = int(call.get("groups") or 1)
         in_channels = int(module_args.get("in_channels", input_shape[1])) if module_args else input_shape[1]
         out_channels = int(module_args.get("out_channels", weight_shape[0])) if module_args else weight_shape[0]
         
@@ -129,11 +134,15 @@ class Conv2dHandler(EinsumOpHandler):
         if input_shape is None or weight_shape is None:
             raise ValueError(f"Missing Input/Weight shapes for {op_name}")
         
-        stride = tuple(kwargs.get("stride", (1, 1)))
-        padding = tuple(kwargs.get("padding", (0, 0)))
-        dilation = tuple(kwargs.get("dilation", (1, 1)))
         module_args = kwargs.get("module_args", {})
-        groups = int(module_args.get("groups", 1)) if module_args else 1
+        # Functional F.conv*d carries stride/padding/dilation/groups only in
+        # raw_attributes; nn.Conv*d exposes them in module_args. Both paths
+        # are normalised by conv_call_kwargs.
+        call = conv_call_kwargs(module_args)
+        stride = tuple(kwargs.get("stride") or call.get("stride") or (1, 1))
+        padding = tuple(kwargs.get("padding") or call.get("padding") or (0, 0))
+        dilation = tuple(kwargs.get("dilation") or call.get("dilation") or (1, 1))
+        groups = int(call.get("groups") or 1)
         in_channels = int(module_args.get("in_channels", input_shape[1])) if module_args else input_shape[1]
         out_channels = int(module_args.get("out_channels", weight_shape[0])) if module_args else weight_shape[0]
         
@@ -209,9 +218,17 @@ class Conv3dHandler(EinsumOpHandler):
         if input_shape is None or weight_shape is None:
             raise ValueError(f"Missing Input/Weight shapes for {op_name}")
 
-        stride = tuple(kwargs.get("stride", (1, 1, 1)))
-        padding = tuple(kwargs.get("padding", (0, 0, 0)))
-        dilation = tuple(kwargs.get("dilation", (1, 1, 1)))
+        module_args = kwargs.get("module_args", {})
+        # Functional F.conv*d carries stride/padding/dilation/groups only in
+        # raw_attributes; nn.Conv*d exposes them in module_args. Both paths
+        # are normalised by conv_call_kwargs.
+        call = conv_call_kwargs(module_args)
+        stride = tuple(kwargs.get("stride") or call.get("stride") or (1, 1, 1))
+        padding = tuple(kwargs.get("padding") or call.get("padding") or (0, 0, 0))
+        dilation = tuple(kwargs.get("dilation") or call.get("dilation") or (1, 1, 1))
+        groups = int(call.get("groups") or 1)
+        in_channels = int(module_args.get("in_channels", input_shape[1])) if module_args else input_shape[1]
+        out_channels = int(module_args.get("out_channels", weight_shape[0])) if module_args else weight_shape[0]
 
         return self._generate_conv3d_einsum(
             input_shape, weight_shape, stride, padding, dilation
