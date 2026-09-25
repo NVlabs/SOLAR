@@ -418,11 +418,22 @@ class PyTorchToEinsum:
             str(dtype_str).replace("torch.", "").lower(), 32
         )
 
+    # Ops whose tensor operands are all "real" (weights / activations): a
+    # tensor argument recorded in ``raw_attributes`` but absent from the
+    # traced edges is an untraced constant (e.g. a Sobel kernel built with
+    # ``torch.tensor`` inside ``forward``) and must still be read from DRAM.
+    _CONST_OPERAND_OPS: "set[str]" = {
+        "conv1d", "conv2d", "conv3d",
+        "conv_transpose1d", "conv_transpose2d", "conv_transpose3d",
+        "linear", "matmul", "bmm", "addmm", "mm", "embedding",
+    }
+
     def _repair_torchview_quirks(
         self,
         layers: Dict[str, Any],
         op_ids: List[str],
         tensor_ids: List[str],
+        auxiliary_ids: Optional[List[str]] = None,
     ) -> None:
         """Single pass repairing every known torchview tracing quirk.
 
@@ -519,11 +530,23 @@ class PyTorchToEinsum:
                 continue
             in_dtypes = odata.get("input_dtypes") or []
             default_dt = str(in_dtypes[0]) if in_dtypes else "torch.float32"
+            op_type_l = (odata.get("type") or "").lower()
             for sh, cnt in missing.items():
                 for _ in range(cnt):
                     candidates = [(t, p, d) for (t, p, d)
                                   in hidden_dangling_by_shape.get(sh, [])
                                   if (t, p) not in consumed]
+                    if (not candidates and len(sh) >= 1
+                            and op_type_l in self._CONST_OPERAND_OPS):
+                        # (A') No traced tensor anywhere carries this
+                        # operand: it is an untraced constant. Synthesize an
+                        # auxiliary-tensor source so the op keeps its full
+                        # arity (conv keeps its kernel, matmul its weight)
+                        # and the bytes are counted as a model input.
+                        self._synthesize_constant_operand(
+                            layers, op_id, odata, list(sh), default_dt,
+                            auxiliary_ids)
+                        continue
                     if len(candidates) != 1:
                         continue  # ambiguous or none
                     tensor_id, producer_op, dt = candidates[0]
@@ -881,7 +904,7 @@ class PyTorchToEinsum:
         # scalar edges, orphan/dead-end tensor pairs, and fp32-overridden
         # output dtypes. After this call, ``layers`` is the cleaned source
         # of truth for downstream graph construction and handlers.
-        self._repair_torchview_quirks(layers, op_ids, tensor_ids)
+        self._repair_torchview_quirks(layers, op_ids, tensor_ids, auxiliary_ids)
 
         graph = nx.DiGraph()
         for op_id in op_ids:
@@ -935,6 +958,46 @@ class PyTorchToEinsum:
                         graph.add_edge(op_id, out_id)
 
         return graph, start_nodes_info, param_nodes_info
+
+    def _synthesize_constant_operand(
+        self,
+        layers: Dict[str, Any],
+        op_id: str,
+        odata: Dict[str, Any],
+        shape: List[int],
+        dtype: str,
+        auxiliary_ids: Optional[List[str]],
+    ) -> str:
+        """Add an ``auxiliary-tensor`` node feeding ``op_id`` for an untraced operand."""
+        k = 0
+        aux_id = f"{op_id}.const"
+        while aux_id in layers:
+            k += 1
+            aux_id = f"{op_id}.const_{k}"
+        layers[aux_id] = {
+            "type": "auxiliary-tensor",
+            "node_class": "TensorNode",
+            "input_shapes": [],
+            "output_shapes": [list(shape)],
+            "input_dtypes": [dtype],
+            "output_dtypes": [dtype],
+            "input_types": [],
+            "output_types": ["output"],
+            "module_args": {
+                "hierarchical_name": aux_id,
+                "synthesized": "untraced constant operand (from raw_attributes)",
+            },
+            "connections": {"inputs": [], "outputs": [op_id]},
+        }
+        odata.setdefault("input_shapes", []).append(list(shape))
+        odata.setdefault("input_dtypes", []).append(dtype)
+        odata.setdefault("input_types", []).append("input")
+        odata.setdefault("connections", {}).setdefault("inputs", []).append(aux_id)
+        if auxiliary_ids is not None:
+            auxiliary_ids.append(aux_id)
+        if self._debug:
+            print(f"  [repair A'] {op_id}: synthesized constant operand {aux_id} shape={shape}")
+        return aux_id
 
     def _partition_nodes(
         self,
