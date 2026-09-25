@@ -290,8 +290,12 @@ def generate_model_file(
     input_names: List[str] = list(definition["inputs"].keys())
     tensor_names = [n for n in input_names if definition["inputs"][n]["shape"] is not None]
     if not tensor_names:
-        sys.exit("Problem has no tensor inputs (scalars only); SOLAR traces tensor dataflow "
-                 "and has nothing to model here.")
+        # torchview only records ops applied to (descendants of) the traced
+        # input tensors; tensors created inside run() from scalars are
+        # invisible to it, so the graph would be empty. Fail with a clear
+        # message rather than an "einsum_graph has no layers" error later.
+        sys.exit("Problem has no tensor inputs (scalars only). torchview cannot record ops on "
+                 "tensors created inside run(), so SOLAR has nothing to trace here.")
     custom_fn = definition.get("custom_inputs_entrypoint")
     uses_custom = any(workload["inputs"].get(n, {}).get("type") == "custom" for n in input_names)
 

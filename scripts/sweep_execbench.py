@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Run run_execbench_problem.py over every SOL-ExecBench problem (one workload each)
 and write a pass/fail table to out/execbench/sweep_<ts>.{jsonl,md}."""
-import argparse, json, resource, subprocess, sys, time
+import argparse, json, os, resource, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -17,10 +17,18 @@ ap.add_argument("--timeout", type=int, default=900)
 ap.add_argument("--limit", type=int)
 ap.add_argument("--resume", type=Path, help="Skip problems already marked ok in a previous sweep .jsonl")
 ap.add_argument("--only-failed", type=Path, help="Re-run only the problems marked failed in a previous sweep .jsonl")
+ap.add_argument("--allow-cuda", action="store_true",
+                help="Let child processes see the GPU. Off by default: SOLAR traces on meta/CPU, and "
+                     "CUDA initialisation reserves tens of GB of virtual address space that would "
+                     "trip the --mem-gb RLIMIT_AS cap on large graphs.")
 ap.add_argument("--mem-gb", type=float, default=40.0,
                 help="Per-problem virtual address-space cap (RLIMIT_AS) in GB; 0 disables. "
                      "Keeps one runaway trace from taking down the whole machine.")
 args = ap.parse_args()
+
+child_env = dict(os.environ)
+if not args.allow_cuda:
+    child_env["CUDA_VISIBLE_DEVICES"] = ""
 
 def _limit_mem():
     if args.mem_gb > 0:
@@ -46,7 +54,7 @@ for subset in args.subsets:
                "--workload-index", str(args.workload_index), "--arch-config", args.arch_config]
         try:
             r = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, timeout=args.timeout,
-                               preexec_fn=_limit_mem)
+                               preexec_fn=_limit_mem, env=child_env)
             rc, out, err = r.returncode, r.stdout, r.stderr
         except subprocess.TimeoutExpired as e:
             def _s(b): return b.decode(errors="replace") if isinstance(b, bytes) else (b or "")
