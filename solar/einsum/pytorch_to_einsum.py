@@ -1207,31 +1207,43 @@ class PyTorchToEinsum:
         if len(input_shapes) < 3:
             raise ValueError(f"SDPA requires 3 inputs (Q, K, V). Got: {input_shapes}")
 
-        query_shape = list(input_shapes[0])  # [B, H, Q, D]
-        key_shape = list(input_shapes[1])    # [B, H, K, D]
-        value_shape = list(input_shapes[2])  # [B, H, K, V]
+        query_shape = list(input_shapes[0])  # [..., Q, D]
+        key_shape = list(input_shapes[1])    # [..., K, D]
+        value_shape = list(input_shapes[2])  # [..., K, V]
         output_shape = list(output_shapes[0]) if output_shapes else None
 
-        # Infer dimensions
-        B = query_shape[0]  # batch
-        H = query_shape[1]  # heads
-        Q_len = query_shape[2]  # query sequence length
-        D = query_shape[3]  # embedding dim
-        K_len = key_shape[2]    # key sequence length
-        V_dim = value_shape[3]  # value embedding dim
+        if len(query_shape) < 2 or len(key_shape) < 2 or len(value_shape) < 2:
+            raise ValueError(f"SDPA inputs must be at least 2-D. Got: {input_shapes}")
+
+        # SDPA accepts any number of leading batch-like dims ([B, H, ...] is
+        # only the common case; 5-D [B, M, Nh, C, D] blocked attention is
+        # legal too). Everything but the last two dims is carried through
+        # unchanged; label them with single letters that don't clash with
+        # Q/K/D/V. The classic 4-D case keeps the historical "BH" labels.
+        lead_shape = query_shape[:-2]
+        n_lead = len(lead_shape)
+        _lead_pool = ["B", "H", "E", "F", "G", "I", "J", "L", "M", "N", "P", "R", "S", "T"]
+        if n_lead > len(_lead_pool):
+            raise ValueError(f"SDPA with {n_lead} leading dims is not supported: {input_shapes}")
+        lead = _lead_pool[:n_lead]
+        lead_eq = "".join(lead)
+
+        Q_len = query_shape[-2]  # query sequence length
+        D = query_shape[-1]      # embedding dim
+        K_len = key_shape[-2]    # key sequence length
+        V_dim = value_shape[-1]  # value embedding dim
 
         # Intermediate shapes
-        scores_shape = [B, H, Q_len, K_len]  # Q @ K^T
-        final_output_shape = output_shape if output_shape else [B, H, Q_len, V_dim]
+        scores_shape = lead_shape + [Q_len, K_len]  # Q @ K^T
+        final_output_shape = output_shape if output_shape else lead_shape + [Q_len, V_dim]
 
-        # Build input connections
-        input_connections = sorted(list(op_graph.predecessors(node_id)))
-        for info in start_nodes_info:
-            if node_id in info.get("consumers", []):
-                start_id = start_node_id_map.get(info["original_id"])
-                if start_id and start_id not in input_connections:
-                    input_connections.append(start_id)
-        input_connections = sorted(input_connections)
+        # Build input connections in *argument* order (Q, K, V[, attn_mask]).
+        # Sorting predecessor names here used to make an ``attn_mask``
+        # producer that sorts early (``Model.to`` < ``Model.transpose``)
+        # take the Q slot.
+        input_connections = self._ordered_input_producers(
+            node_id, node_data, op_graph, start_nodes_info, start_node_id_map
+        )
 
         output_connections = sorted(list(op_graph.successors(node_id)))
 
@@ -1254,10 +1266,10 @@ class PyTorchToEinsum:
         }
 
         # 1. Q @ K^T -> attention scores
-        # Einsum: BHQD,BHKD->BHQK (D is contracted)
+        # Einsum: <lead>QD,<lead>KD-><lead>QK (D is contracted)
         subgraph[qk_node_id] = {
             "type": "matmul",
-            "einsum_equation": "BHQD,BHKD->BHQK",
+            "einsum_equation": f"{lead_eq}QD,{lead_eq}KD->{lead_eq}QK",
             "elementwise_op": "mul",
             "reduction_op": "add",
             "is_real_einsum": True,
@@ -1280,9 +1292,9 @@ class PyTorchToEinsum:
             # Operands drive the AF graph builder; without them the
             # layer is silently dropped (cf. commit 8162f29 for linear).
             "operands": {
-                "Input":  ["B", "H", "Q", "D"],
-                "Weight": ["B", "H", "K", "D"],
-                "Output": ["B", "H", "Q", "K"],
+                "Input":  lead + ["Q", "D"],
+                "Weight": lead + ["K", "D"],
+                "Output": lead + ["Q", "K"],
             },
             "tensor_dtypes": {
                 "inputs": [act_dtype, act_dtype],
@@ -1297,7 +1309,7 @@ class PyTorchToEinsum:
         # 2. Scale by 1/sqrt(d_k)
         subgraph[scale_node_id] = {
             "type": "mul",
-            "einsum_equation": "BHQK->BHQK",
+            "einsum_equation": f"{lead_eq}QK->{lead_eq}QK",
             "elementwise_op": "mul",
             "reduction_op": "none",
             "is_real_einsum": False,
@@ -1315,8 +1327,8 @@ class PyTorchToEinsum:
                 "outputs": [scores_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Output": ["B", "H", "Q", "K"],
+                "Input":  lead + ["Q", "K"],
+                "Output": lead + ["Q", "K"],
             },
             "tensor_dtypes": {
                 "inputs": [act_dtype],
@@ -1334,7 +1346,7 @@ class PyTorchToEinsum:
         # 3. Softmax over K dimension (dim=-1)
         subgraph[softmax_node_id] = {
             "type": "softmax",
-            "einsum_equation": "BHQK->BHQK",
+            "einsum_equation": f"{lead_eq}QK->{lead_eq}QK",
             "elementwise_op": "softmax",
             "reduction_op": "none",
             "is_real_einsum": False,
@@ -1352,8 +1364,8 @@ class PyTorchToEinsum:
                 "outputs": [scores_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Output": ["B", "H", "Q", "K"],
+                "Input":  lead + ["Q", "K"],
+                "Output": lead + ["Q", "K"],
             },
             "tensor_dtypes": {
                 "inputs": [act_dtype],
@@ -1372,7 +1384,7 @@ class PyTorchToEinsum:
         # Einsum: BHQK,BHKV->BHQV (K is contracted)
         subgraph[av_node_id] = {
             "type": "matmul",
-            "einsum_equation": "BHQK,BHKV->BHQV",
+            "einsum_equation": f"{lead_eq}QK,{lead_eq}KV->{lead_eq}QV",
             "elementwise_op": "mul",
             "reduction_op": "add",
             "is_real_einsum": True,
@@ -1393,9 +1405,9 @@ class PyTorchToEinsum:
                 "outputs": [final_output_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Weight": ["B", "H", "K", "V"],
-                "Output": ["B", "H", "Q", "V"],
+                "Input":  lead + ["Q", "K"],
+                "Weight": lead + ["K", "V"],
+                "Output": lead + ["Q", "V"],
             },
             "tensor_dtypes": {
                 "inputs": [act_dtype, act_dtype],
@@ -1408,6 +1420,55 @@ class PyTorchToEinsum:
         }
 
         return subgraph, av_node_id, input_mapping
+
+    def _ordered_input_producers(
+        self,
+        node_id: str,
+        node_data: Dict[str, Any],
+        op_graph: nx.DiGraph,
+        start_nodes_info: List[Dict[str, Any]],
+        start_node_id_map: Dict[str, str],
+    ) -> List[str]:
+        """Producer ids of ``node_id``'s inputs in PyTorch argument order.
+
+        Walks ``connections.inputs`` (tensor ids, in call order) and maps
+        each to the op / start node that produces it: start-node map first
+        (also carries hidden-tensor -> producer entries), then op-graph
+        nodes, then ``_tensor_to_producer_op``.  Inputs that cannot be
+        resolved are filled positionally from the still-unassigned
+        predecessors when the counts match.  Any predecessor or consumed
+        start node not yet listed is appended (sorted) so no edge is lost.
+        Used by the op expanders (SDPA) that previously relied on sorted
+        predecessor names, which does not reflect argument order.
+        """
+        raw_inputs = list((node_data.get("connections") or {}).get("inputs") or [])
+        preds = list(op_graph.predecessors(node_id))
+        tensor_to_producer = getattr(self, "_tensor_to_producer_op", {})
+        ordered: List[Optional[str]] = []
+        for tid in raw_inputs:
+            if tid in start_node_id_map:
+                ordered.append(start_node_id_map[tid])
+            elif tid in op_graph.nodes:
+                ordered.append(tid)
+            elif tensor_to_producer.get(tid) in op_graph.nodes:
+                ordered.append(tensor_to_producer[tid])
+            else:
+                ordered.append(None)
+        unresolved = [i for i, x in enumerate(ordered) if x is None]
+        remaining = [p for p in preds if p not in ordered]
+        if unresolved and len(unresolved) == len(remaining):
+            for i, p in zip(unresolved, remaining):
+                ordered[i] = p
+        result = [x for x in ordered if x is not None]
+        for p in sorted(preds):
+            if p not in result:
+                result.append(p)
+        for info in start_nodes_info:
+            if node_id in info.get("consumers", []):
+                start_id = start_node_id_map.get(info["original_id"])
+                if start_id and start_id not in result:
+                    result.append(start_id)
+        return result
 
     def _should_expand_groupwise_conv(self, node_data: Dict[str, Any]) -> bool:
         """Check if this is a group-wise convolution that needs reshape expansion.
