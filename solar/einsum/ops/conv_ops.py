@@ -28,6 +28,12 @@ from solar.einsum.ops.base import (
     EinsumOperand,
     conv_call_kwargs,
 )
+
+
+def _nd(value, nd: int) -> tuple:
+    """Broadcast a scalar / 1-tuple conv argument (stride, padding, dilation) to ``nd`` dims."""
+    t = tuple(value) if isinstance(value, (tuple, list)) else (value,)
+    return t * nd if len(t) == 1 and nd > 1 else t
 from solar.einsum.ops.registry import get_global_registry
 from solar.common.types import TensorShape, TensorShapes
 
@@ -55,9 +61,9 @@ class Conv1dHandler(EinsumOpHandler):
         # raw_attributes; nn.Conv*d exposes them in module_args. Both paths
         # are normalised by conv_call_kwargs.
         call = conv_call_kwargs(module_args)
-        stride = tuple(kwargs.get("stride") or call.get("stride") or (1,))
-        padding = tuple(kwargs.get("padding") or call.get("padding") or (0,))
-        dilation = tuple(kwargs.get("dilation") or call.get("dilation") or (1,))
+        stride = _nd(kwargs.get("stride") or call.get("stride") or (1,), 1)
+        padding = _nd(kwargs.get("padding") or call.get("padding") or (0,), 1)
+        dilation = _nd(kwargs.get("dilation") or call.get("dilation") or (1,), 1)
         groups = int(call.get("groups") or 1)
         in_channels = int(module_args.get("in_channels", input_shape[1])) if module_args else input_shape[1]
         out_channels = int(module_args.get("out_channels", weight_shape[0])) if module_args else weight_shape[0]
@@ -139,9 +145,9 @@ class Conv2dHandler(EinsumOpHandler):
         # raw_attributes; nn.Conv*d exposes them in module_args. Both paths
         # are normalised by conv_call_kwargs.
         call = conv_call_kwargs(module_args)
-        stride = tuple(kwargs.get("stride") or call.get("stride") or (1, 1))
-        padding = tuple(kwargs.get("padding") or call.get("padding") or (0, 0))
-        dilation = tuple(kwargs.get("dilation") or call.get("dilation") or (1, 1))
+        stride = _nd(kwargs.get("stride") or call.get("stride") or (1, 1), 2)
+        padding = _nd(kwargs.get("padding") or call.get("padding") or (0, 0), 2)
+        dilation = _nd(kwargs.get("dilation") or call.get("dilation") or (1, 1), 2)
         groups = int(call.get("groups") or 1)
         in_channels = int(module_args.get("in_channels", input_shape[1])) if module_args else input_shape[1]
         out_channels = int(module_args.get("out_channels", weight_shape[0])) if module_args else weight_shape[0]
@@ -223,9 +229,9 @@ class Conv3dHandler(EinsumOpHandler):
         # raw_attributes; nn.Conv*d exposes them in module_args. Both paths
         # are normalised by conv_call_kwargs.
         call = conv_call_kwargs(module_args)
-        stride = tuple(kwargs.get("stride") or call.get("stride") or (1, 1, 1))
-        padding = tuple(kwargs.get("padding") or call.get("padding") or (0, 0, 0))
-        dilation = tuple(kwargs.get("dilation") or call.get("dilation") or (1, 1, 1))
+        stride = _nd(kwargs.get("stride") or call.get("stride") or (1, 1, 1), 3)
+        padding = _nd(kwargs.get("padding") or call.get("padding") or (0, 0, 0), 3)
+        dilation = _nd(kwargs.get("dilation") or call.get("dilation") or (1, 1, 1), 3)
         groups = int(call.get("groups") or 1)
         in_channels = int(module_args.get("in_channels", input_shape[1])) if module_args else input_shape[1]
         out_channels = int(module_args.get("out_channels", weight_shape[0])) if module_args else weight_shape[0]
