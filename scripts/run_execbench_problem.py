@@ -326,11 +326,23 @@ def generate_model_file(
         custom_block = "\n".join([
             "    axes_and_scalars = dict(_AXES)",
             "    axes_and_scalars.update(_STATIC_SCALARS)",
-            "    # Custom inputs are materialised on CPU (not meta): references often do",
-            "    # data-dependent indexing (index_add, topk, cu_seqlens) that needs values.",
-            f"    _custom = _ref.{custom_fn}(axes_and_scalars, torch.device('cpu'))",
+            "    # SOLAR calls get_inputs() once for its zero-memory meta-device trace and",
+            "    # again (CPU) only if that trace fails on data-dependent ops. Generate on",
+            "    # meta for the first call so large shapes don't materialise GBs of real",
+            "    # tensors; fall back to CPU for retries or if the generator itself needs",
+            "    # real values (e.g. .item()).",
+            "    _CALLS[0] += 1",
+            "    _custom = None",
+            "    if _CALLS[0] == 1:",
+            "        try:",
+            f"            _custom = _ref.{custom_fn}(axes_and_scalars, torch.device('meta'))",
+            "        except Exception:",
+            "            _custom = None",
+            "    if _custom is None:",
+            f"        _custom = _ref.{custom_fn}(axes_and_scalars, torch.device('cpu'))",
             "    for _k in _CUSTOM_SCALARS:",
-            "        _SCALARS[_k] = _custom[_k]",
+            "        _v = _custom[_k]",
+            "        _SCALARS[_k] = _v.item() if isinstance(_v, torch.Tensor) and _v.numel() == 1 and _v.device.type != 'meta' else _v",
             "",
         ])
     else:
@@ -374,6 +386,7 @@ _STATIC_SCALARS = {scalars!r}
 _CUSTOM_SCALARS = {custom_scalars!r}
 _SCALARS = dict(_STATIC_SCALARS)  # custom scalars are filled in by get_inputs()
 _PARAM_ORDER = {input_names!r}
+_CALLS = [0]  # get_inputs() call counter: 1st call -> meta device, later calls -> CPU
 
 
 class Model(nn.Module):
