@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "unit": "ns",
+  "node_kind": "synthetic_task",
+  "duration_source": "synthetic",
+  "stream_semantics": "explicit_order_only",
+  "resources": [],
+  "nodes": [
+    {"id": "a", "duration_ns": 2, "stream": "s0", "deps": []},
+    {"id": "b", "duration_ns": 3, "stream": "s1", "deps": ["a"]},
+    {"id": "c", "duration_ns": 5, "stream": "s2", "deps": ["a"]},
+    {"id": "d", "duration_ns": 1, "stream": "s0", "deps": ["b", "c"]}
+  ],
+  "stream_order": {"s0": ["a", "d"], "s1": ["b"], "s2": ["c"]}
+}
