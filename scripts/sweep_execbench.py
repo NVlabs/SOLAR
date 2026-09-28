@@ -21,6 +21,8 @@ ap.add_argument("--limit", type=int)
 ap.add_argument("--resume", type=Path, help="Skip problems already marked ok in a previous sweep .jsonl")
 ap.add_argument("--out-root", type=Path, help="Passed to the runner: artifact root (default SOLAR/out/execbench)")
 ap.add_argument("--runner-args", default="", help="Extra arguments appended to every run_execbench_problem.py call, e.g. '--fp32-as fp16'")
+ap.add_argument("--only-problems", nargs="*", default=[],
+                help="Restrict the sweep to these problem names (or unique prefixes like 031_)")
 ap.add_argument("--skip-problems", nargs="*", default=[],
                 help="Problem names (or unique prefixes like 031_) to leave out of this sweep")
 ap.add_argument("--only-failed", type=Path, help="Re-run only the problems marked failed in a previous sweep .jsonl")
@@ -66,6 +68,8 @@ for subset in args.subsets:
     if args.limit: probs = probs[: args.limit]
     for p in probs:
         if any(p.name == sk or p.name.startswith(sk) for sk in args.skip_problems):
+            continue
+        if args.only_problems and not any(p.name == o or p.name.startswith(o) for o in args.only_problems):
             continue
         if args.all_workloads:
             n = sum(1 for l in (p / "workload.jsonl").read_text().splitlines() if l.strip())
