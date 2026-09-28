@@ -49,7 +49,7 @@ import yaml
 from solar.einsum import EinsumAnalyzer
 from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
 from solar.common.types import TensorShapes
-from solar.common.utils import ensure_directory, NoAliasDumper
+from solar.common.utils import ensure_directory, NoAliasDumper, yaml_safe_load
 from solar.analysis.access_regions import (
     PARTITION_OPS,
     SLICE_VIEW_OPS,
@@ -294,7 +294,7 @@ class EinsumGraphAnalyzer:
 
         try:
             with open(src) as f:
-                graph = yaml.safe_load(f) or {}
+                graph = yaml_safe_load(f) or {}
         except Exception as exc:
             if self.debug:
                 print(f"Debug: failed reading einsum graph: {exc}")

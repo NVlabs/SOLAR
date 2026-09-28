@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import yaml
+from solar.common.utils import yaml_safe_load
 
 
 # ---------------------------------------------------------------------------
@@ -1874,7 +1875,7 @@ def build_af_graph_from_yaml(einsum_graph_yaml: Union[Path, str],
     """
     path = Path(einsum_graph_yaml)
     with open(path) as f:
-        graph = yaml.safe_load(f)
+        graph = yaml_safe_load(f)
     af = build_af_graph_from_dict(graph)
 
     if output_path is not None:
