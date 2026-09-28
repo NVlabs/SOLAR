@@ -35,7 +35,7 @@ from typing import Any, Dict, Optional, Union
 import yaml
 
 from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
-from solar.common.utils import ensure_directory, NoAliasDumper
+from solar.common.utils import ensure_directory, NoAliasDumper, yaml_safe_load
 
 
 PathLike = Union[str, Path]
@@ -84,7 +84,7 @@ class EinsumGraphPerfModel:
 
         try:
             with open(analysis_path) as f:
-                analysis = yaml.safe_load(f) or {}
+                analysis = yaml_safe_load(f) or {}
         except Exception as exc:
             if self.debug:
                 print(f"Debug: failed reading analysis: {exc}")
