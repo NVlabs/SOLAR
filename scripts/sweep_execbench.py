@@ -21,6 +21,8 @@ ap.add_argument("--limit", type=int)
 ap.add_argument("--resume", type=Path, help="Skip problems already marked ok in a previous sweep .jsonl")
 ap.add_argument("--out-root", type=Path, help="Passed to the runner: artifact root (default SOLAR/out/execbench)")
 ap.add_argument("--runner-args", default="", help="Extra arguments appended to every run_execbench_problem.py call, e.g. '--fp32-as fp16'")
+ap.add_argument("--skip-problems", nargs="*", default=[],
+                help="Problem names (or unique prefixes like 031_) to leave out of this sweep")
 ap.add_argument("--only-failed", type=Path, help="Re-run only the problems marked failed in a previous sweep .jsonl")
 ap.add_argument("--allow-cuda", action="store_true",
                 help="Let child processes see the GPU. Off by default: SOLAR traces on meta/CPU, and "
@@ -63,6 +65,8 @@ for subset in args.subsets:
     probs = sorted(p for p in (BENCH / subset).iterdir() if (p / "definition.json").exists())
     if args.limit: probs = probs[: args.limit]
     for p in probs:
+        if any(p.name == sk or p.name.startswith(sk) for sk in args.skip_problems):
+            continue
         if args.all_workloads:
             n = sum(1 for l in (p / "workload.jsonl").read_text().splitlines() if l.strip())
             idxs = list(range(n))
