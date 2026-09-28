@@ -1103,6 +1103,7 @@ class PyTorchToEinsum:
         }
 
         # Add start nodes from auxiliary tensors (model inputs only)
+        self._start_node_targets = None
         start_node_id_map = self._add_start_nodes(result, start_nodes_info)
 
         # Combine start + param info for ID mapping in _convert_operation.
@@ -1119,6 +1120,11 @@ class PyTorchToEinsum:
         for tensor_id, producer_op in self._tensor_to_producer_op.items():
             if tensor_id not in start_node_id_map:
                 start_node_id_map[tensor_id] = producer_op
+        # ``x in start_node_id_map.values()`` is a linear scan over every
+        # tensor in the graph; done once per op input it made
+        # _convert_operation quadratic (93% of einsum-stage time on a
+        # 4.8k-node trace). Cache the value set for the per-op lookups.
+        self._start_node_targets = set(start_node_id_map.values())
 
         # Track node ID remapping for split/expanded operations
         # Maps original node_id -> final output node_id
@@ -1491,6 +1497,14 @@ class PyTorchToEinsum:
 
         return subgraph, av_node_id, input_mapping
 
+    def _start_targets(self, start_node_id_map: Dict[str, str]) -> "set[str]":
+        """Set of start-node / producer ids that inputs may map to (cached per conversion)."""
+        cached = getattr(self, "_start_node_targets", None)
+        if cached is None:
+            cached = set(start_node_id_map.values())
+            self._start_node_targets = cached
+        return cached
+
     def _ordered_input_producers(
         self,
         node_id: str,
@@ -1668,7 +1682,7 @@ class PyTorchToEinsum:
             if itype == "weight":
                 input_connections.append(mapped)
                 continue
-            if mapped in start_node_id_map.values() or mapped in op_graph.nodes:
+            if mapped in self._start_targets(start_node_id_map) or mapped in op_graph.nodes:
                 input_connections.append(mapped)
                 assigned_preds.add(mapped)
                 continue
@@ -3159,7 +3173,7 @@ class PyTorchToEinsum:
             if itype == "weight":
                 input_connections.append(mapped)
                 continue
-            if mapped in start_node_id_map.values() or mapped in op_graph.nodes:
+            if mapped in self._start_targets(start_node_id_map) or mapped in op_graph.nodes:
                 input_connections.append(mapped)
                 assigned_preds.add(mapped)
                 continue
