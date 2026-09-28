@@ -90,12 +90,14 @@ This is the canonical intermediate representation. **All layers — including su
 |-------|------|-------------|
 | `taco_expression` | `str` | TACO index notation equivalent |
 | `raw_attributes` | `str` | Original torchview raw_attributes string |
+| `access` | `dict` | Structured memory-region metadata for view-like ops; see below |
 | `tensor_dtypes` | `dict` | `{inputs: [str], outputs: [str]}` — dtype strings (used on `start` nodes) |
 
 ### Key conventions
 
 - **`tensor_names`**, **`tensor_types`**, and **`tensor_shapes`** are parallel arrays: `tensor_names.inputs[i]` describes the same tensor as `tensor_shapes.inputs[i]` and `tensor_types.inputs[i]`.
 - **`connections`** references layer IDs (dict keys), not tensor names.
+- **`access`** entries are optional and sparse. Each entry has `index`, `tensor`, `kind: region`, `base_tensor`, `base_shape`, `boxes`, and `source`. `boxes` is a list of axis-aligned half-open regions encoded as `[[lo, hi], ...]` over `base_shape`. Slice/view inputs and aliasing outputs use this to preserve memory-access regions without reparsing `raw_attributes`.
 - **`start` nodes** represent model inputs. They have `tensor_shapes.inputs: []` and `tensor_shapes.outputs: [[shape]]`. They are filtered out before analysis.
 - **Subgraph expansions** (e.g. grouped conv → reshape_input + reshape_weight + conv + reshape_output) must emit the same schema as regular layers. Never use flat `input_shapes`/`output_shapes` keys — those belong to `pytorch_graph.yaml` only.
 
