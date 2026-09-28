@@ -59,6 +59,7 @@ from solar.common.utils import (
     validate_tensor_names_match_shapes,
     LocalDumper,
     flowify,
+    yaml_safe_load,
 )
 from solar.einsum.af_graph_builder import build_af_graph_from_dict
 from solar.einsum.analyzer import EinsumAnalyzer
@@ -834,7 +835,7 @@ class PyTorchToEinsum:
 
             if suffix in {".yaml", ".yml"}:
                 with open(path) as f:
-                    data = yaml.safe_load(f)
+                    data = yaml_safe_load(f)
             elif suffix == ".json":
                 with open(path) as f:
                     data = json.load(f)
@@ -910,6 +911,10 @@ class PyTorchToEinsum:
         graph = nx.DiGraph()
         for op_id in op_ids:
             graph.add_node(op_id, **(layers.get(op_id) or {}))
+        # Membership tests below run once per tensor edge; a list makes the
+        # edge build O(tensors x ops), which dominated conversion time on
+        # traces with thousands of ops (per-batch-element loops).
+        op_id_set = set(op_ids)
 
         # Collect auxiliary tensor info for start nodes (model inputs only)
         start_nodes_info = self._collect_start_node_info(
@@ -927,7 +932,7 @@ class PyTorchToEinsum:
             producers = list(conns.get("inputs") or [])
             consumers = list(conns.get("outputs") or [])
 
-            if len(producers) == 1 and producers[0] in op_ids:
+            if len(producers) == 1 and producers[0] in op_id_set:
                 self._tensor_to_producer_op[tensor_id] = producers[0]
                 producer_outputs = list(
                     ((layers.get(producers[0]) or {}).get("connections") or {}).get("outputs")
@@ -945,7 +950,7 @@ class PyTorchToEinsum:
 
             for producer in producers:
                 for consumer in consumers:
-                    if producer in op_ids and consumer in op_ids:
+                    if producer in op_id_set and consumer in op_id_set:
                         if producer != consumer:
                             graph.add_edge(producer, consumer)
 
@@ -955,7 +960,7 @@ class PyTorchToEinsum:
                 conns = (layers.get(op_id) or {}).get("connections") or {}
                 outputs = list(conns.get("outputs") or [])
                 for out_id in outputs:
-                    if out_id in op_ids and out_id != op_id:
+                    if out_id in op_id_set and out_id != op_id:
                         graph.add_edge(op_id, out_id)
 
         return graph, start_nodes_info, param_nodes_info
@@ -1044,6 +1049,7 @@ class PyTorchToEinsum:
     ) -> List[Dict[str, Any]]:
         """Collect information about auxiliary tensors to create start nodes."""
         start_nodes_info: List[Dict[str, Any]] = []
+        op_id_set = set(op_ids)
 
         for idx, aux_id in enumerate(auxiliary_ids):
             aux_data = layers.get(aux_id) or {}
@@ -1051,7 +1057,7 @@ class PyTorchToEinsum:
             output_shapes = aux_data.get("output_shapes") or []
             consumers = list(conns.get("outputs") or [])
             # Filter to only include operation nodes
-            valid_consumers = [c for c in consumers if c in op_ids]
+            valid_consumers = [c for c in consumers if c in op_id_set]
 
             output_dtypes = aux_data.get("output_dtypes") or []
 
