@@ -401,6 +401,67 @@ class TestLinearBiasFusedElements:
             assert "weight" in types, f"{lid}: bias_add should have 'weight' input type"
 
 
+class TestFunctionalLinearBiasFusedElements:
+    """F.linear(x, weight, bias) on plain tensors, none an nn.Parameter.
+    The trace labels all three arguments "input"; weight and bias must
+    still be modeled instead of silently dropped."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Model(nn.Module):
+        def forward(self, x, weight, bias):
+            return F.linear(x, weight, bias)
+
+    def get_inputs():
+        return [torch.randn(2, 16, 64), torch.randn(32, 64), torch.randn(32)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_weight_and_bias_in_fused(self, analysis):
+        x, weight, bias, out = 2 * 16 * 64, 32 * 64, 32, 2 * 16 * 32
+        assert analysis["total"]["fused_elements"] == x + weight + bias + out
+
+    def test_bias_add_has_weight_type(self, analysis):
+        bias_layers = [l for lid, l in analysis["layers"].items() if "bias_add" in lid]
+        assert bias_layers, "No bias_add layer found"
+        for layer in bias_layers:
+            assert layer["tensor_shapes"]["inputs"][1:] == [[32]]
+
+
+class TestMixedLinearBiasFusedElements(TestFunctionalLinearBiasFusedElements):
+    """F.linear with an nn.Parameter weight and a plain-tensor bias.
+    Only the weight is labelled; the bias must still be modeled."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.randn(32, 64))
+
+        def forward(self, x, bias):
+            return F.linear(x, self.weight, bias)
+
+    def get_inputs():
+        return [torch.randn(2, 16, 64), torch.randn(32)]
+
+    def get_init_inputs():
+        return []
+    """
+
+
 # ---------------------------------------------------------------------------
 # Test: Conv2d — implicit weight and bias not in connections
 # ---------------------------------------------------------------------------

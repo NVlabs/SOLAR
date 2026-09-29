@@ -2569,6 +2569,16 @@ class PyTorchToEinsum:
         if activation_entry is None and typed_inputs:
             activation_entry = typed_inputs[0]
 
+        # F.linear on plain or computed tensors labels them "input", so the
+        # loop above can miss the weight or bias. If more than one traced
+        # argument is unlabelled, the first is the activation and the rest are
+        # weight/bias; later entries are op-graph aliases.
+        traced_args = typed_inputs[:len(input_shapes)] if input_shapes else typed_inputs
+        unlabelled = [e for e in traced_args if e not in weight_entries]
+        if len(unlabelled) > 1 and len(traced_args) <= 3:
+            activation_entry = unlabelled[0]
+            weight_entries = [e for e in traced_args if e is not activation_entry]
+
         # Bias is normally rank-1 among weight inputs.
         bias_entry: Optional[Tuple[int, str, Any, str]] = None
         for entry in weight_entries:
