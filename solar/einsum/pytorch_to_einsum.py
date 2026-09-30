@@ -403,6 +403,11 @@ class PyTorchToEinsum:
         "view_as", "reshape_as", "broadcast_to", "expand_as",
         "detach", "alias", "ravel", "unbind", "diagonal",
     }
+    # Ops whose recorded output dtype must be kept as-is by the dtype repair.
+    _CAST_OP_TYPES: "set[str]" = {
+        "to", "type", "type_as", "float", "double", "half", "bfloat16",
+        "int", "long", "short", "bool", "byte", "char",
+    }
     _DTYPE_BITS: "dict[str, int]" = {
         "float64": 64, "double": 64, "complex128": 128, "complex64": 64,
         "float32": 32, "tf32": 32,
@@ -611,7 +616,15 @@ class PyTorchToEinsum:
             if in_dtypes:
                 odata["input_dtypes"] = in_dtypes
             layer_type = (odata.get("type") or "").lower()
-            if layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
+            recorded_out = list(odata.get("output_dtypes") or [])
+            if layer_type in self._CAST_OP_TYPES and recorded_out:
+                # Explicit dtype casts (.to(dtype), .float(), .half() ...) are the
+                # one place torchview's recorded output dtype is authoritative:
+                # the whole point of the op is to change width, so the
+                # widest-input rule below would undo it (e.g. bf16 -> fp32
+                # became bf16 and the fp32 output was priced at 2 B).
+                widest = recorded_out[0]
+            elif layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
                 widest = (in_dtypes[0] if in_dtypes
                           else (odata.get("output_dtypes") or ["torch.float32"])[0])
             elif in_dtypes:
