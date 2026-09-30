@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -480,7 +480,8 @@ def run_stage(cmd: List[str], verbose: bool) -> None:
         sys.exit(f"Stage failed with exit code {result.returncode}: {cmd[2]}")
 
 
-def run_solar(model_file: Path, out_base: Path, arch: str, precision: str, verbose: bool) -> Path:
+def run_solar(model_file: Path, out_base: Path, arch: str, precision: str, verbose: bool,
+              reuse_einsum: Optional[Path] = None) -> Path:
     graph_out = out_base / "graph"
     einsum_out = out_base / "einsum"
     analysis_out = out_base / "analysis"
@@ -489,15 +490,23 @@ def run_solar(model_file: Path, out_base: Path, arch: str, precision: str, verbo
         d.mkdir(parents=True, exist_ok=True)
     py = sys.executable
 
-    print("==> Stage 1: PyTorch graph extraction")
-    run_stage([py, "-m", "solar.cli.process_model", "--model-file", str(model_file),
-               "--output-dir", str(graph_out), "--force-rerun"], verbose)
-    print("==> Stage 2: einsum conversion")
-    run_stage([py, "-m", "solar.cli.toeinsum_model", "--graph-path", str(graph_out / "pytorch_graph.yaml"),
-               "--output-dir", str(einsum_out), "--no-copy-graph"], verbose)
+    if reuse_einsum is not None:
+        # Stages 1-2 (trace + einsum conversion) do not depend on the arch or
+        # precision policy; reuse a previous run's einsum graph and only redo
+        # analysis + perf (seconds instead of minutes per shape).
+        print(f"==> Stages 1-2 skipped: reusing {reuse_einsum}")
+        einsum_graph = reuse_einsum
+    else:
+        print("==> Stage 1: PyTorch graph extraction")
+        run_stage([py, "-m", "solar.cli.process_model", "--model-file", str(model_file),
+                   "--output-dir", str(graph_out), "--force-rerun"], verbose)
+        print("==> Stage 2: einsum conversion")
+        run_stage([py, "-m", "solar.cli.toeinsum_model", "--graph-path", str(graph_out / "pytorch_graph.yaml"),
+                   "--output-dir", str(einsum_out), "--no-copy-graph"], verbose)
+        einsum_graph = einsum_out / "einsum_graph_renamed.yaml"
     print("==> Stage 3: hardware-independent analysis")
     run_stage([py, "-m", "solar.cli.analyze_model",
-               "--einsum-graph-path", str(einsum_out / "einsum_graph_renamed.yaml"),
+               "--einsum-graph-path", str(einsum_graph),
                "--output-dir", str(analysis_out), "--precision", precision], verbose)
     print(f"==> Stage 4: SOL perf prediction ({arch}, {precision})")
     run_stage([py, "-m", "solar.cli.predict_perf_model", "--analysis-path", str(analysis_out / "analysis.yaml"),
@@ -531,6 +540,9 @@ def main() -> None:
                              "4 B/elem and the CUDA-core rate; 'tf32' the TF32 tensor-core rate with 4 B/elem; "
                              "'fp16' reproduces the leaderboard reference table, which priced every non-quant "
                              "problem at 16-bit tensor-core rate and 2 B/elem.")
+    parser.add_argument("--reuse-from", type=Path,
+                        help="Results root of a previous run; if it holds <problem>/<uuid>/einsum/einsum_graph_renamed.yaml "
+                             "for this shape, skip tracing + einsum conversion and only redo analysis + perf.")
     parser.add_argument("--out-root", type=Path,
                         help="Root for artifacts (default: SOLAR/out/execbench); each problem gets <root>/<problem>/<uuid>/")
     parser.add_argument("--output-dir", type=Path, help="Where to write artifacts (default: SOLAR/out/execbench/<problem>/<uuid>)")
@@ -568,7 +580,14 @@ def main() -> None:
     generate_model_file(definition, workload, axes, scalars, model_file)
     print(f"Generated SOLAR model file: {model_file}")
 
-    perf_path = run_solar(model_file, out_base, args.arch_config, precision, args.verbose)
+    reuse_einsum = None
+    if args.reuse_from:
+        cand = args.reuse_from / definition["name"] / str(workload.get("uuid", args.workload_index)) / "einsum" / "einsum_graph_renamed.yaml"
+        if cand.exists():
+            reuse_einsum = cand
+        else:
+            print(f"Note: nothing to reuse at {cand}; running all stages")
+    perf_path = run_solar(model_file, out_base, args.arch_config, precision, args.verbose, reuse_einsum=reuse_einsum)
     perf = yaml.safe_load(perf_path.read_text())
 
     summary = {
@@ -596,6 +615,7 @@ def main() -> None:
             mode: perf.get(mode, {}).get("memory_bytes") for mode in ("unfused", "fused", "fused_prefetched")
         },
         "perf_yaml": str(perf_path),
+        "reused_einsum_from": str(reuse_einsum) if reuse_einsum else None,
     }
 
     if args.t_k is not None and args.t_b is not None:
