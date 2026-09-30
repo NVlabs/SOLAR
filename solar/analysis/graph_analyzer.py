@@ -207,6 +207,57 @@ def _resolve_read_region(
     return canonical, None, 0
 
 
+# torch dtype string -> bytes per (stored) element. Packed FP4 (float4_e2m1fn_x2)
+# stores two values per byte, but the tensor's element count already counts packed
+# bytes, so it is 1 byte per element here.
+_DTYPE_BYTES = {
+    "float64": 8, "double": 8, "int64": 8, "long": 8, "complex64": 8,
+    "float32": 4, "float": 4, "int32": 4, "int": 4, "tf32": 4,
+    "bfloat16": 2, "float16": 2, "half": 2, "int16": 2, "short": 2,
+    "float8_e4m3fn": 1, "float8_e5m2": 1, "float8_e4m3fnuz": 1, "float8_e5m2fnuz": 1,
+    "int8": 1, "uint8": 1, "byte": 1, "bool": 1, "float4_e2m1fn_x2": 1,
+}
+
+
+def _dtype_bytes(dtype: Any, default: float) -> float:
+    """Bytes per element for a torch dtype string; ``default`` when unknown/missing."""
+    if not dtype:
+        return default
+    key = str(dtype).replace("torch.", "").strip().lower()
+    return float(_DTYPE_BYTES.get(key, default))
+
+
+def _group_footprints(
+    groups: Dict[str, Dict[str, Any]],
+    base_full_sizes: Dict[str, int],
+    debug: bool = False,
+) -> Dict[str, int]:
+    """Per-base-tensor unique read footprint (elements); see _sum_group_footprints."""
+    out: Dict[str, int] = {}
+    for name, group in groups.items():
+        boxes: List[Box] = group["boxes"]
+        counted: List[int] = list(group["counted"])
+        full_candidates: Set[int] = {c for c in group["full"] if c > 0}
+        if name in base_full_sizes and base_full_sizes[name] > 0:
+            full_candidates.add(int(base_full_sizes[name]))
+        if len(full_candidates) > 1:
+            counted.extend(box_size(b) for b in boxes)
+            footprint = min(max(counted, default=0), min(full_candidates))
+            if debug:
+                print(f"Debug: external tensor '{name}' has conflicting full "
+                      f"sizes {sorted(full_candidates)}; using conservative bound")
+        else:
+            union = union_size(boxes) if boxes else 0
+            if union is None:
+                counted.extend(box_size(b) for b in boxes)
+                union = 0
+            footprint = max(union, max(counted, default=0))
+            if full_candidates:
+                footprint = min(footprint, full_candidates.pop())
+        out[name] = int(footprint)
+    return out
+
+
 def _sum_group_footprints(
     groups: Dict[str, Dict[str, Any]],
     base_full_sizes: Dict[str, int],
@@ -510,6 +561,9 @@ class EinsumGraphAnalyzer:
         # and full-size candidates observed at direct-read sites.
         external_read_groups: Dict[str, Dict[str, Any]] = {}
         unique_external_outputs: Dict[str, int] = {}
+        unique_external_output_bpe: Dict[str, float] = {}
+        total_unfused_bytes = 0.0
+        total_intermediate_bytes = 0.0
 
         for layer_id, layer in layers_in.items():
             op_type = str(layer.get("type", "unknown"))
@@ -648,20 +702,15 @@ class EinsumGraphAnalyzer:
                 memory_writes = [0] * len(output_sizes)
                 other_ops = 0
 
-            # TEMPORARY FIX: Skip memory for bool-typed tensors.
-            # Bool tensors (masks, attention patterns) are 1 byte each but
-            # SOLAR uses a global bytes_per_element (2 for fp16). Rather than
-            # counting them at the wrong byte width, zero them out — masks are
-            # negligible compared to compute/activation tensors and should not
-            # dominate the SOL estimate.
-            if layer_id in _bool_layers:
-                memory_reads = [0] * len(input_sizes)
-                memory_writes = [0] * len(output_sizes)
+            # Bool-typed tensors (masks) used to be zeroed here because a
+            # single graph-wide bytes_per_element priced them at 2 B. Bytes
+            # are now taken from each tensor's own dtype (1 B for bool), so
+            # masks count at their true size.
 
             # View/reshape ops produce zero-copy aliases — they never
             # materialize data to DRAM.  The downstream consumer accounts
             # for the actual read, so these ops contribute 0 memory.
-            elif op_type in _ZERO_COPY_VIEW_OPS:
+            if op_type in _ZERO_COPY_VIEW_OPS:
                 memory_reads = [0] * len(input_sizes)
                 memory_writes = [0] * len(output_sizes)
                 other_ops = 0
@@ -735,6 +784,20 @@ class EinsumGraphAnalyzer:
             output_elems = int(sum(memory_writes))
             unfused_elems = input_elems + output_elems
 
+            # Per-tensor byte widths from the recorded dtypes (fallback: the
+            # graph-wide element_size). A single bytes_per_element misprices
+            # mixed graphs: bool masks (1 B) at 2 B, fp32 outputs of an fp8
+            # problem at 1 B, packed FP4 inputs next to bf16 activations.
+            _in_dt = (layer.get("tensor_dtypes") or {}).get("inputs") or []
+            _out_dt = (layer.get("tensor_dtypes") or {}).get("outputs") or []
+            in_bpe = [_dtype_bytes(_in_dt[i] if i < len(_in_dt) else None, element_size)
+                      for i in range(len(memory_reads))]
+            out_bpe = [_dtype_bytes(_out_dt[o] if o < len(_out_dt) else None, element_size)
+                       for o in range(len(memory_writes))]
+            input_bytes = sum(r * b for r, b in zip(memory_reads, in_bpe))
+            output_bytes = sum(w * b for w, b in zip(memory_writes, out_bpe))
+            unfused_bytes = input_bytes + output_bytes
+
             # ── Step 4: Classify inputs as external vs graph-internal ──
             # Uses memory_reads (already corrected) so no re-scanning needed.
             # Classify each input tensor:
@@ -748,6 +811,8 @@ class EinsumGraphAnalyzer:
             input_name_list = tensor_names.get("inputs") or []
             graph_internal_input_elems = 0   # intermediate activations from other ops
             external_input_elems = 0         # weights + model-level inputs (always DRAM)
+            graph_internal_input_bytes = 0.0
+            external_input_bytes = 0.0
 
             for i, mem_read in enumerate(memory_reads):
                 if mem_read <= 0:
@@ -763,8 +828,10 @@ class EinsumGraphAnalyzer:
 
                 if is_graph_internal:
                     graph_internal_input_elems += mem_read
+                    graph_internal_input_bytes += mem_read * in_bpe[i]
                 else:
                     external_input_elems += mem_read
+                    external_input_bytes += mem_read * in_bpe[i]
                     if iname:
                         canonical, boxes, full_candidate = _resolve_read_region(
                             op_type,
@@ -779,8 +846,9 @@ class EinsumGraphAnalyzer:
                             transparent_layer_ids,
                         )
                         group = external_read_groups.setdefault(
-                            canonical, {"boxes": [], "counted": [], "full": set()}
+                            canonical, {"boxes": [], "counted": [], "full": set(), "bpe": 0.0}
                         )
+                        group["bpe"] = max(float(group.get("bpe") or 0.0), in_bpe[i])
                         if full_candidate > 0:
                             group["full"].add(int(full_candidate))
                         if boxes:
@@ -811,6 +879,8 @@ class EinsumGraphAnalyzer:
             intermediate_output_elems = output_elems if output_is_intermediate else 0
             # Total intermediate elems for this layer (inputs + outputs)
             layer_intermediate_elems = intermediate_input_elems + intermediate_output_elems
+            layer_intermediate_bytes = graph_internal_input_bytes + (
+                output_bytes if output_is_intermediate else 0.0)
 
             # Model output elems: final graph outputs that must go to DRAM
             model_output_elems = output_elems if not output_is_intermediate else 0
@@ -831,6 +901,10 @@ class EinsumGraphAnalyzer:
                     unique_external_outputs[oname] = max(
                         unique_external_outputs.get(oname, 0), write_elems
                     )
+                    unique_external_output_bpe[oname] = max(
+                        unique_external_output_bpe.get(oname, 0.0),
+                        out_bpe[oi] if oi < len(out_bpe) else element_size,
+                    )
 
             # Per-op fused elements: only non-intermediate DRAM traffic
             fused_elems = int(model_io_elems)
@@ -845,6 +919,9 @@ class EinsumGraphAnalyzer:
                 "unfused_elements": unfused_elems,
                 "orojenesis_elements": None,
                 "fused_elements": fused_elems,
+                "unfused_bytes": int(unfused_bytes),
+                "intermediate_bytes": int(layer_intermediate_bytes),
+                "bytes_per_element": {"inputs": in_bpe, "outputs": out_bpe},
                 "tensor_shapes": {
                     "inputs": [s for s in input_shapes if isinstance(s, list)],
                     "outputs": [s for s in output_shapes if isinstance(s, list)],
@@ -876,6 +953,8 @@ class EinsumGraphAnalyzer:
             total_flops += flops
             total_unfused_elems += unfused_elems
             total_intermediate_elems += layer_intermediate_elems
+            total_unfused_bytes += unfused_bytes
+            total_intermediate_bytes += layer_intermediate_bytes
 
         # Deduplicated graph-level external I/O.  Per canonical base tensor,
         # DRAM reads are the unique element footprint of all accesses: the
@@ -883,13 +962,24 @@ class EinsumGraphAnalyzer:
         # reads folded in via the conservative max() lower bound, capped at
         # the base tensor size.  Used for both fused and fused_prefetched
         # totals.
-        unique_external_input_elems = _sum_group_footprints(
+        group_footprints = _group_footprints(
             external_read_groups, start_output_sizes, debug=self.debug
         )
+        unique_external_input_elems = sum(group_footprints.values())
         total_fused_prefetched_elems = int(
             unique_external_input_elems
             + sum(unique_external_outputs.values())
         )
+        # Same footprints priced at each tensor's own dtype width.
+        unique_external_input_bytes = sum(
+            fp * float(external_read_groups[name].get("bpe") or element_size)
+            for name, fp in group_footprints.items()
+        )
+        unique_external_output_bytes = sum(
+            elems * unique_external_output_bpe.get(name, element_size)
+            for name, elems in unique_external_outputs.items()
+        )
+        total_fused_bytes = int(unique_external_input_bytes + unique_external_output_bytes)
         # fused_elements == fused_prefetched_elements (same dedup logic)
         total_fused_elems = total_fused_prefetched_elems
 
@@ -914,12 +1004,21 @@ class EinsumGraphAnalyzer:
                 "fused_prefetched_elements": total_fused_prefetched_elems,
                 "model_io_elements": int(total_model_io_elems),
                 "intermediate_elements": int(total_intermediate_elems),
+                # Byte totals at per-tensor dtype widths (the perf model
+                # prefers these over elements x bytes_per_element).
+                "fused_bytes": total_fused_bytes,
+                "fused_prefetched_bytes": total_fused_bytes,
+                "unfused_bytes": int(total_unfused_bytes),
+                "intermediate_bytes": int(total_intermediate_bytes),
+                "external_input_bytes": int(unique_external_input_bytes),
+                "external_output_bytes": int(unique_external_output_bytes),
                 "num_intermediate_tensors": len(intermediate_tensors),
                 "num_orphaned_layers": len(_orphaned_layers),
             },
             "metadata": {
                 "precision": precision,
                 "bytes_per_element": element_size,
+                "bytes_accounting": "per-tensor-dtype",
                 "source_graph": str(src),
             },
         }
