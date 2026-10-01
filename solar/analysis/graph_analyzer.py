@@ -361,6 +361,10 @@ class EinsumGraphAnalyzer:
                     print("Debug: failed to copy einsum_graph.yaml")
 
         all_layers: Dict[str, Any] = graph.get("layers") or {}
+        # Layers feeding the model's declared outputs (written by the
+        # converter from torchview's ``output-tensor`` nodes). Older graphs
+        # lack the key; then every consumer-less op is treated as an output.
+        model_output_ops: Set[str] = set(graph.get("model_output_ops") or [])
         element_size = BYTES_PER_ELEMENT.get(precision, 4)
 
         # Override precision/element_size from quant metadata if available
@@ -476,6 +480,21 @@ class EinsumGraphAnalyzer:
                         queue.append(out_id)
                     elif out_id in all_layer_ids:
                         return True
+            return False
+
+        def _reaches_model_output(layer_id: str) -> bool:
+            """True if the layer (or a view chain from it) is a declared model output."""
+            visited: Set[str] = set()
+            queue = [layer_id]
+            while queue:
+                lid = queue.pop(0)
+                if lid in visited:
+                    continue
+                visited.add(lid)
+                if lid in model_output_ops:
+                    return True
+                conns = (layers_in.get(lid, {}).get("connections") or {}).get("outputs") or []
+                queue.extend(out_id for out_id in conns if out_id in transparent_layer_ids)
             return False
 
         if self.debug:
@@ -874,6 +893,13 @@ class EinsumGraphAnalyzer:
                         break
                 if output_is_intermediate:
                     break
+            if (not output_is_intermediate and model_output_ops
+                    and not _reaches_model_output(layer_id)):
+                # Consumer-less result that is not a declared model output:
+                # dead code, or consumed by an op torchview does not trace
+                # (in-place ``result[mask] = v``). A fused kernel never
+                # writes it to DRAM, so it is intermediate traffic.
+                output_is_intermediate = True
 
             # Intermediate output elems: written to cache (fused) not DRAM
             intermediate_output_elems = output_elems if output_is_intermediate else 0

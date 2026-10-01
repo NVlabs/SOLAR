@@ -407,6 +407,23 @@ class PyTorchToEinsum:
     _CAST_OP_TYPES: "set[str]" = {
         "to", "type", "type_as", "float", "double", "half", "bfloat16",
         "int", "long", "short", "bool", "byte", "char",
+        # Creation / index ops choose their dtype independently of their
+        # inputs (``zeros_like(x, dtype=uint8)``, ``argmax`` -> int64).
+        "zeros_like", "ones_like", "full_like", "empty_like", "rand_like",
+        "randn_like", "randint_like", "zeros", "ones", "full", "empty",
+        "arange", "linspace", "argmax", "argmin", "argsort", "nonzero",
+        "bucketize", "searchsorted", "one_hot",
+    }
+    # Comparison / logical ops always produce ``torch.bool`` (1 B); the
+    # widest-input rule would price an fp32 mask at 4 B.
+    _BOOL_OP_TYPES: "set[str]" = {
+        "eq", "ne", "gt", "lt", "ge", "le",
+        "__eq__", "__ne__", "__gt__", "__lt__", "__ge__", "__le__",
+        "__and__", "__or__", "__xor__", "__invert__",
+        "__rand__", "__ror__", "__rxor__",
+        "logical_and", "logical_or", "logical_not", "logical_xor",
+        "isnan", "isinf", "isfinite", "isclose", "isin", "signbit",
+        "any", "all", "equal", "allclose",
     }
     _DTYPE_BITS: "dict[str, int]" = {
         "float64": 64, "double": 64, "complex128": 128, "complex64": 64,
@@ -624,6 +641,10 @@ class PyTorchToEinsum:
                 # widest-input rule below would undo it (e.g. bf16 -> fp32
                 # became bf16 and the fp32 output was priced at 2 B).
                 widest = recorded_out[0]
+            elif layer_type in self._BOOL_OP_TYPES:
+                # Comparisons and logical ops produce masks whatever their
+                # inputs are (``x > 0`` on fp32 is 1 B, not 4 B).
+                widest = "torch.bool"
             elif layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
                 widest = (in_dtypes[0] if in_dtypes
                           else (odata.get("output_dtypes") or ["torch.float32"])[0])
@@ -1223,6 +1244,22 @@ class PyTorchToEinsum:
 
         # Fix connections for split/expanded operations
         self._fix_split_connections(result, node_id_remap, expanded_input_map)
+
+        # Record which einsum layers feed the model's declared outputs
+        # (torchview ``output-tensor`` nodes). An op whose result is neither
+        # consumed nor returned is dead code or has an untraced in-place
+        # consumer (``result[mask] = v``); the analyzer uses this list to
+        # avoid charging a DRAM write for such tensors.
+        output_ops: List[str] = []
+        for node_id, node_data in (pytorch_graph.get("layers") or {}).items():
+            if str(node_data.get("type", "")).lower() != "output-tensor":
+                continue
+            for src in (node_data.get("connections") or {}).get("inputs") or []:
+                src = node_id_remap.get(src, src)
+                if src in result["layers"] and src not in output_ops:
+                    output_ops.append(src)
+        if output_ops:
+            result["model_output_ops"] = output_ops
 
         return result
 
