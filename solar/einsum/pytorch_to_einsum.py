@@ -534,7 +534,10 @@ class PyTorchToEinsum:
             key = (sh, dt)
             if not producers_ and consumers_:
                 orphans_by_key[key].append(tensor_id)
-            elif len(producers_) == 1 and not consumers_:
+            elif (len(producers_) == 1 and not consumers_
+                  and (tdata.get("type") or "").lower() != "output-tensor"):
+                # Model outputs legitimately end the graph; they are not
+                # the dead-end half of a split tensor node.
                 dangling_by_key[key].append((tensor_id, producers_[0]))
                 if (tdata.get("type") or "").lower() == "hidden-tensor":
                     hidden_dangling_by_shape[sh].append((tensor_id, producers_[0], dt))
@@ -589,77 +592,247 @@ class PyTorchToEinsum:
                         tout.append(op_id)
 
         # --- (B) Split tensor-node pairs ----------------------------------
+        # torchview records the result of a creation op (``zeros_like``) or
+        # an in-place update as one dead-end node and hands consumers a
+        # second, producer-less node of the same shape. One orphan / one
+        # dead-end is the common case; several accumulators of one shape
+        # (``grad_w = zeros_like(w)`` per expert weight) produce equal-size
+        # groups, which are paired in trace order (the dead-end precedes
+        # the orphan that replaces it).
         for key, orphan_ids in orphans_by_key.items():
             de_list = [(t, p) for (t, p) in dangling_by_key.get(key, [])
                        if (t, p) not in consumed]
-            if len(orphan_ids) != 1 or len(de_list) != 1:
+            if not de_list or len(orphan_ids) != len(de_list):
                 continue
-            orphan_id = orphan_ids[0]
-            producer_op = de_list[0][1]
-            self._tensor_to_producer_op[orphan_id] = producer_op
-            # Rewire the orphan's ``connections.inputs`` to the producer so
-            # the normal edge build picks up producer→consumer naturally.
-            orphan_data = layers.get(orphan_id) or {}
-            ocon_in = orphan_data.setdefault("connections", {}).setdefault("inputs", [])
-            if producer_op not in ocon_in:
-                ocon_in.append(producer_op)
+            for orphan_id, (_, producer_op) in zip(orphan_ids, de_list):
+                self._tensor_to_producer_op[orphan_id] = producer_op
+                # Rewire the orphan's ``connections.inputs`` to the producer so
+                # the normal edge build picks up producer→consumer naturally.
+                orphan_data = layers.get(orphan_id) or {}
+                ocon_in = orphan_data.setdefault("connections", {}).setdefault("inputs", [])
+                if producer_op not in ocon_in:
+                    ocon_in.append(producer_op)
 
         # --- (C) Output-dtype correction ----------------------------------
-        # Seed the corrected-dtype map from every NON-OP node's declared
-        # dtype: regular tensor nodes (intermediates), auxiliary-tensor
-        # nodes (model inputs), and parameter-tensor nodes (weights). These
-        # are ground truth, recorded by torchview at trace time. Op-output
-        # dtypes get overwritten below as we walk the graph in topo order.
-        # ``_partition_nodes`` splits these into three lists; iterate every
-        # non-op layer (anything in ``layers`` that's not in ``op_id_set``)
-        # so we don't miss auxiliary/parameter tensors.
-        corrected_dtype: Dict[str, str] = {}
+        self._repair_dtypes(layers, op_id_set)
+
+    # ---- dtype repair -----------------------------------------------------
+    _TENSOR_ARG_RE = re.compile(r"Tensor\(shape=\(([^)]*)\),\s*dtype=(torch\.\w+)\)")
+    _DTYPE_TOKEN_RE = re.compile(r"(?<![\w.])(torch\.[a-z0-9_]+)\b")
+    _DTYPE_NAMES = {
+        "float64", "double", "float32", "float", "float16", "half", "bfloat16",
+        "float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz",
+        "float4_e2m1fn_x2", "int64", "long", "int32", "int", "int16", "short",
+        "int8", "uint8", "bool", "complex64", "complex128", "cfloat", "cdouble",
+    }
+    _DTYPE_ALIASES = {
+        "torch.float": "torch.float32", "torch.double": "torch.float64",
+        "torch.half": "torch.float16", "torch.long": "torch.int64",
+        "torch.int": "torch.int32", "torch.short": "torch.int16",
+        "torch.cfloat": "torch.complex64", "torch.cdouble": "torch.complex128",
+    }
+    _METHOD_CASTS = {
+        "float": "torch.float32", "double": "torch.float64", "half": "torch.float16",
+        "bfloat16": "torch.bfloat16", "int": "torch.int32", "long": "torch.int64",
+        "short": "torch.int16", "bool": "torch.bool", "byte": "torch.uint8",
+        "char": "torch.int8",
+    }
+    _GENERIC_CASTS = {"to", "type", "type_as", "astype"}
+    _CREATION_OPS = {
+        "zeros_like", "ones_like", "full_like", "empty_like", "rand_like",
+        "randn_like", "randint_like", "zeros", "ones", "full", "empty",
+        "arange", "linspace", "eye", "rand", "randn", "randint", "tensor",
+    }
+    _INDEX_OUTPUT_OPS = {"argmax", "argmin", "argsort", "nonzero", "bucketize",
+                         "searchsorted", "argwhere", "count_nonzero"}
+    _VALUE_INDEX_OPS = {"topk", "sort", "max", "min", "mode", "kthvalue", "median"}
+    _INT_DTYPES = {"torch.int64", "torch.int32", "torch.int16", "torch.int8",
+                   "torch.uint8", "torch.bool"}
+
+    @classmethod
+    def _norm_dtype(cls, d: Optional[str]) -> Optional[str]:
+        if not d:
+            return None
+        d = str(d)
+        if not d.startswith("torch."):
+            d = "torch." + d
+        return cls._DTYPE_ALIASES.get(d, d)
+
+    @classmethod
+    def _raw_call(cls, odata: Dict[str, Any]) -> Tuple[str, str, List[Tuple[Tuple[int, ...], str]]]:
+        """Split ``raw_attributes`` into (args text, kwargs text, tensor args)."""
+        raw = odata.get("raw_attributes")
+        if raw is None:
+            raw = (odata.get("module_args") or {}).get("raw_attributes")
+        raw = str(raw or "")
+        if not raw:
+            return "", "", []
+        if "], {" in raw:
+            args_part, kwargs_part = raw.rsplit("], {", 1)
+        else:
+            args_part, kwargs_part = raw, ""
+        tensors = []
+        for m in cls._TENSOR_ARG_RE.finditer(args_part):
+            shape = tuple(int(x) for x in re.findall(r"-?\d+", m.group(1)))
+            tensors.append((shape, cls._norm_dtype(m.group(2))))
+        return args_part, kwargs_part, tensors
+
+    @classmethod
+    def _kwarg_dtype(cls, kwargs_part: str) -> Optional[str]:
+        m = re.search(r"\bdtype\s*:\s*(torch\.[a-z0-9_]+)", kwargs_part)
+        return cls._norm_dtype(m.group(1)) if m else None
+
+    @classmethod
+    def _free_dtype_tokens(cls, args_part: str) -> List[str]:
+        """``torch.X`` dtype tokens in the args that are not inside ``Tensor(...)``."""
+        stripped = cls._TENSOR_ARG_RE.sub("T", args_part)
+        out = []
+        for m in cls._DTYPE_TOKEN_RE.finditer(stripped):
+            tok = m.group(1)
+            if tok[len("torch."):] in cls._DTYPE_NAMES:
+                out.append(cls._norm_dtype(tok))
+        return out
+
+    @classmethod
+    def _cast_target(cls, layer_type: str, args_part: str, kwargs_part: str,
+                     tensors: List[Tuple[Tuple[int, ...], str]]) -> Optional[str]:
+        """Target dtype of an explicit cast, or None for a device-only move."""
+        if layer_type in cls._METHOD_CASTS:
+            return cls._METHOD_CASTS[layer_type]
+        kw = cls._kwarg_dtype(kwargs_part)
+        if kw:
+            return kw
+        toks = cls._free_dtype_tokens(args_part)
+        if toks:
+            return toks[0]
+        if layer_type == "type_as" or (layer_type == "to" and len(tensors) >= 2):
+            # ``x.to(other)`` / ``x.type_as(other)`` adopt the other tensor's dtype.
+            return tensors[1][1]
+        return None
+
+    @classmethod
+    def _promote(cls, dtypes: List[str]) -> Optional[str]:
+        """PyTorch-style promotion: floats beat ints beat bool; widest wins."""
+        ds = [cls._norm_dtype(d) for d in dtypes if d]
+        if not ds:
+            return None
+        floats = [d for d in ds if d not in cls._INT_DTYPES]
+        if floats:
+            return max(floats, key=cls._bits_of_dtype)
+        ints = [d for d in ds if d != "torch.bool"]
+        if ints:
+            return max(ints, key=cls._bits_of_dtype)
+        return "torch.bool"
+
+    def _repair_dtypes(self, layers: Dict[str, Any], op_id_set: "set[str]") -> None:
+        """Rebuild every tensor dtype from the call arguments torchview recorded.
+
+        torchview's per-node ``input_dtypes`` / ``output_dtypes`` are not
+        trustworthy: for models without parameters (every SOL-ExecBench
+        problem) missing dtypes are padded with ``torch.float32``, so a
+        ``.to(torch.bfloat16)`` output, an fp16 model input or a bool mask
+        all read as 4 B tensors. The ``raw_attributes`` string, however,
+        carries each tensor argument as ``Tensor(shape=..., dtype=...)`` and
+        each cast target literally, so dtypes are rebuilt from it:
+
+        * op inputs: the raw tensor argument with the same shape (in order);
+          the matched source tensor node is corrected too, so model inputs
+          and weights get their real width;
+        * casts (``to``/``type``/``float``/``half``/...): the dtype kwarg,
+          a free ``torch.X`` token, the method name, or the other tensor's
+          dtype; a device-only ``.to(device)`` keeps the input dtype;
+        * creation ops (``zeros_like(x, dtype=...)``, ``arange``...): the
+          dtype kwarg, else the tensor argument's dtype;
+        * comparisons / logical ops: ``torch.bool``; index-producing ops:
+          ``torch.int64`` (second output of ``topk``/``sort``/``max(dim)``);
+        * everything else: PyTorch promotion over the inputs (floats beat
+          ints beat bool, widest wins), so ``embedding(ids, table)`` and
+          ``where(mask, a, b)`` take the data dtype, not the index width.
+        """
+        corrected: Dict[str, str] = {}
         for layer_id, ldata in layers.items():
             if layer_id in op_id_set:
                 continue
-            outd = (ldata.get("output_dtypes") or ldata.get("input_dtypes")
-                    or [])
+            outd = ldata.get("output_dtypes") or ldata.get("input_dtypes") or []
             if outd:
-                corrected_dtype[layer_id] = outd[0]
+                corrected[layer_id] = self._norm_dtype(outd[0])
+
+        def _set_tensor_dtype(tid: str, dtype: str) -> None:
+            corrected[tid] = dtype
+            tdata = layers.get(tid)
+            if tdata is None or tid in op_id_set:
+                return
+            for key in ("output_dtypes", "input_dtypes"):
+                n = len(tdata.get(key) or [])
+                if n:
+                    tdata[key] = [dtype] * n
 
         for layer_id, odata in layers.items():
             if layer_id not in op_id_set:
                 continue
+            layer_type = (odata.get("type") or "").lower()
             in_tensors = (odata.get("connections") or {}).get("inputs") or []
-            in_dtypes = list(odata.get("input_dtypes") or [])
+            in_shapes = [tuple(int(x) for x in s) if isinstance(s, (list, tuple)) else None
+                         for s in (odata.get("input_shapes") or [])]
+            in_dtypes = [self._norm_dtype(d) for d in (odata.get("input_dtypes") or [])]
+            while len(in_dtypes) < len(in_tensors):
+                in_dtypes.append(None)
+            args_part, kwargs_part, raw_tensors = self._raw_call(odata)
+
+            # (1) inputs: raw tensor args matched by shape, else propagated dtype.
+            used = [False] * len(raw_tensors)
             for i, tid in enumerate(in_tensors):
-                if tid in corrected_dtype and i < len(in_dtypes):
-                    in_dtypes[i] = corrected_dtype[tid]
+                shape = in_shapes[i] if i < len(in_shapes) else None
+                raw_dtype = None
+                if shape is not None:
+                    for j, (rshape, rdtype) in enumerate(raw_tensors):
+                        if not used[j] and rshape == shape:
+                            used[j] = True
+                            raw_dtype = rdtype
+                            break
+                if raw_dtype:
+                    in_dtypes[i] = raw_dtype
+                    if tid in layers and tid not in op_id_set:
+                        _set_tensor_dtype(tid, raw_dtype)
+                elif tid in corrected:
+                    in_dtypes[i] = corrected[tid]
+            in_dtypes = [d or "torch.float32" for d in in_dtypes]
             if in_dtypes:
                 odata["input_dtypes"] = in_dtypes
-            layer_type = (odata.get("type") or "").lower()
-            recorded_out = list(odata.get("output_dtypes") or [])
-            if layer_type in self._CAST_OP_TYPES and recorded_out:
-                # Explicit dtype casts (.to(dtype), .float(), .half() ...) are the
-                # one place torchview's recorded output dtype is authoritative:
-                # the whole point of the op is to change width, so the
-                # widest-input rule below would undo it (e.g. bf16 -> fp32
-                # became bf16 and the fp32 output was priced at 2 B).
-                widest = recorded_out[0]
-            elif layer_type in self._BOOL_OP_TYPES:
-                # Comparisons and logical ops produce masks whatever their
-                # inputs are (``x > 0`` on fp32 is 1 B, not 4 B).
-                widest = "torch.bool"
-            elif layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
-                widest = (in_dtypes[0] if in_dtypes
-                          else (odata.get("output_dtypes") or ["torch.float32"])[0])
-            elif in_dtypes:
-                widest = max(in_dtypes, key=self._bits_of_dtype)
-            else:
-                widest = (odata.get("output_dtypes") or ["torch.float32"])[0]
+
+            # (2) outputs.
             n_out = len(odata.get("output_dtypes") or []) or 1
-            odata["output_dtypes"] = [widest] * n_out
-            for tid in (odata.get("connections") or {}).get("outputs") or []:
-                if tid in layers:
-                    tdata = layers[tid]
-                    n = len(tdata.get("output_dtypes") or []) or 1
-                    tdata["output_dtypes"] = [widest] * n
-                corrected_dtype[tid] = widest
+            recorded = [self._norm_dtype(d) for d in (odata.get("output_dtypes") or [])]
+            data_dtype = self._promote(in_dtypes) or (recorded[0] if recorded else "torch.float32")
+            out_dtypes: List[str]
+            if layer_type in self._METHOD_CASTS or layer_type in self._GENERIC_CASTS:
+                target = self._cast_target(layer_type, args_part, kwargs_part, raw_tensors)
+                out_dtypes = [target or (in_dtypes[0] if in_dtypes else data_dtype)] * n_out
+            elif layer_type in self._BOOL_OP_TYPES:
+                out_dtypes = ["torch.bool"] * n_out
+            elif layer_type in self._INDEX_OUTPUT_OPS:
+                out_dtypes = ["torch.int64"] * n_out
+            elif layer_type in self._VALUE_INDEX_OPS and n_out >= 2:
+                out_dtypes = [data_dtype] + ["torch.int64"] * (n_out - 1)
+            elif layer_type in self._CREATION_OPS:
+                kw = self._kwarg_dtype(kwargs_part) or (self._free_dtype_tokens(args_part) or [None])[0]
+                if kw:
+                    chosen = kw
+                elif raw_tensors:
+                    chosen = raw_tensors[0][1]
+                elif in_dtypes:
+                    chosen = in_dtypes[0]
+                else:
+                    chosen = recorded[0] if recorded else "torch.float32"
+                out_dtypes = [chosen] * n_out
+            elif layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
+                out_dtypes = [in_dtypes[0] if in_dtypes else data_dtype] * n_out
+            else:
+                out_dtypes = [data_dtype] * n_out
+            odata["output_dtypes"] = out_dtypes
+            for k, tid in enumerate((odata.get("connections") or {}).get("outputs") or []):
+                d = out_dtypes[min(k, len(out_dtypes) - 1)]
+                _set_tensor_dtype(tid, d)
 
     def _validate_tensor_shape_consistency(
         self,
@@ -1251,15 +1424,48 @@ class PyTorchToEinsum:
         # consumer (``result[mask] = v``); the analyzer uses this list to
         # avoid charging a DRAM write for such tensors.
         output_ops: List[str] = []
-        for node_id, node_data in (pytorch_graph.get("layers") or {}).items():
+        model_outputs: List[Dict[str, Any]] = []
+        pt_layers = pytorch_graph.get("layers") or {}
+        for node_id, node_data in pt_layers.items():
             if str(node_data.get("type", "")).lower() != "output-tensor":
                 continue
-            for src in (node_data.get("connections") or {}).get("inputs") or []:
-                src = node_id_remap.get(src, src)
+            shapes = node_data.get("input_shapes") or []
+            dtypes = node_data.get("input_dtypes") or []
+            for i, src in enumerate((node_data.get("connections") or {}).get("inputs") or []):
+                dtype = dtypes[i] if i < len(dtypes) else None
+                # Einsum-side name of the tensor handed to the output: the
+                # analyzer uses it to recognise reads of an output buffer
+                # whose producer torchview lost (orphan accumulators).
+                first_src = node_id_remap.get(src, src)
+                tensor_name = f"{first_src}.Output"
+                # The output may be reached through tensor nodes
+                # (``hidden-tensor``) rather than directly from the op;
+                # follow them to the producing op, taking the (repaired)
+                # dtype of the tensor on the way.
+                hops = 0
+                while src is not None and src not in result["layers"] and hops < 8:
+                    tnode = pt_layers.get(src)
+                    if tnode is None:
+                        break
+                    d = (tnode.get("output_dtypes") or tnode.get("input_dtypes") or [None])[0]
+                    if d:
+                        dtype = d
+                    ins = (tnode.get("connections") or {}).get("inputs") or []
+                    src = node_id_remap.get(ins[0], ins[0]) if ins else None
+                    hops += 1
+                src = node_id_remap.get(src, src) if src is not None else None
                 if src in result["layers"] and src not in output_ops:
                     output_ops.append(src)
+                model_outputs.append({
+                    "op": src if src in result["layers"] else None,
+                    "tensor": tensor_name,
+                    "shape": list(shapes[i]) if i < len(shapes) and isinstance(shapes[i], (list, tuple)) else None,
+                    "dtype": dtype,
+                })
         if output_ops:
             result["model_output_ops"] = output_ops
+        if model_outputs:
+            result["model_outputs"] = model_outputs
 
         return result
 
