@@ -480,9 +480,38 @@ def run_stage(cmd: List[str], verbose: bool) -> None:
         sys.exit(f"Stage failed with exit code {result.returncode}: {cmd[2]}")
 
 
+def _run_stages_in_process(graph_path: Optional[Path], einsum_out: Path, einsum_graph: Path,
+                           analysis_out: Path, perf_out: Path, arch: str, precision: str,
+                           dtype_bytes: bool) -> None:
+    """Stages 2-4 through the Python API in this process.
+
+    The subprocess route pays ~6 s of torch import per stage; for the
+    re-analysis sweeps (thousands of shapes, traces reused) that overhead
+    dominates. Behaviour matches the CLIs (no graph copy, no rank rename).
+    """
+    # Import the checked-out package, not a stale site-packages install.
+    if str(SOLAR_ROOT) not in sys.path:
+        sys.path.insert(0, str(SOLAR_ROOT))
+    from solar.analysis import EinsumGraphAnalyzer
+    from solar.einsum.pytorch_to_einsum import PyTorchToEinsum
+    from solar.perf import EinsumGraphPerfModel
+    if graph_path is not None:
+        print("==> Stage 2: einsum conversion (in-process)")
+        if PyTorchToEinsum().convert(str(graph_path), str(einsum_out), copy_graph=False) is None:
+            sys.exit("Stage failed: einsum conversion")
+    print("==> Stage 3: hardware-independent analysis (in-process)")
+    if EinsumGraphAnalyzer().analyze_graph(str(einsum_graph), str(analysis_out),
+                                           precision=precision) is None:
+        sys.exit("Stage failed: analysis")
+    print(f"==> Stage 4: SOL perf prediction ({arch}, {precision}, in-process)")
+    if EinsumGraphPerfModel(dtype_bytes=dtype_bytes).predict(
+            analysis_out / "analysis.yaml", perf_out, arch_config=arch, precision=precision) is None:
+        sys.exit("Stage failed: perf prediction")
+
+
 def run_solar(model_file: Path, out_base: Path, arch: str, precision: str, verbose: bool,
               reuse_einsum: Optional[Path] = None, dtype_bytes: bool = True,
-              reuse_graph: Optional[Path] = None) -> Path:
+              reuse_graph: Optional[Path] = None, in_process: bool = False) -> Path:
     graph_out = out_base / "graph"
     einsum_out = out_base / "einsum"
     analysis_out = out_base / "analysis"
@@ -508,10 +537,23 @@ def run_solar(model_file: Path, out_base: Path, arch: str, precision: str, verbo
             run_stage([py, "-m", "solar.cli.process_model", "--model-file", str(model_file),
                        "--output-dir", str(graph_out), "--force-rerun"], verbose)
             graph_path = graph_out / "pytorch_graph.yaml"
-        print("==> Stage 2: einsum conversion")
-        run_stage([py, "-m", "solar.cli.toeinsum_model", "--graph-path", str(graph_path),
-                   "--output-dir", str(einsum_out), "--no-copy-graph"], verbose)
         einsum_graph = einsum_out / "einsum_graph_renamed.yaml"
+        if in_process:
+            _run_stages_in_process(graph_path, einsum_out, einsum_graph, analysis_out, perf_out,
+                                   arch, precision, dtype_bytes)
+            graph_path = None
+        else:
+            print("==> Stage 2: einsum conversion")
+            run_stage([py, "-m", "solar.cli.toeinsum_model", "--graph-path", str(graph_path),
+                       "--output-dir", str(einsum_out), "--no-copy-graph"], verbose)
+    if in_process and reuse_einsum is not None:
+        _run_stages_in_process(None, einsum_out, einsum_graph, analysis_out, perf_out,
+                               arch, precision, dtype_bytes)
+    if in_process:
+        perf_files = sorted(perf_out.glob("perf_*.yaml"), key=lambda p: p.stat().st_mtime)
+        if not perf_files:
+            sys.exit(f"No perf_*.yaml produced under {perf_out}")
+        return perf_files[-1]
     print("==> Stage 3: hardware-independent analysis")
     run_stage([py, "-m", "solar.cli.analyze_model",
                "--einsum-graph-path", str(einsum_graph),
@@ -558,6 +600,9 @@ def main() -> None:
                              "and perf; with --reuse-einsum also reuses the einsum graph and redoes only analysis + perf.")
     parser.add_argument("--reuse-einsum", action="store_true",
                         help="With --reuse-from: also reuse the einsum graph (only valid if the converter is unchanged).")
+    parser.add_argument("--in-process", action="store_true",
+                        help="Run stages 2-4 through the Python API in this process (skips ~6 s of torch "
+                             "import per stage; intended for --reuse-from re-analysis sweeps).")
     parser.add_argument("--out-root", type=Path,
                         help="Root for artifacts (default: SOLAR/out/execbench); each problem gets <root>/<problem>/<uuid>/")
     parser.add_argument("--output-dir", type=Path, help="Where to write artifacts (default: SOLAR/out/execbench/<problem>/<uuid>)")
@@ -606,7 +651,8 @@ def main() -> None:
         else:
             print(f"Note: nothing to reuse under {prev}; running all stages")
     perf_path = run_solar(model_file, out_base, args.arch_config, precision, args.verbose,
-                          reuse_einsum=reuse_einsum, dtype_bytes=not args.uniform_bytes, reuse_graph=reuse_graph)
+                          reuse_einsum=reuse_einsum, dtype_bytes=not args.uniform_bytes, reuse_graph=reuse_graph,
+                          in_process=args.in_process)
     perf = yaml.safe_load(perf_path.read_text())
 
     summary = {
