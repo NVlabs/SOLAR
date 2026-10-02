@@ -78,6 +78,20 @@ def _layer_raw_attributes(layer: Dict[str, Any]) -> Any:
     return raw
 
 
+_CREATION_OPS_ZERO_READ = frozenset({
+    "zeros_like", "ones_like", "full_like", "empty_like", "rand_like",
+    "randn_like", "randint_like", "zeros", "ones", "full", "empty",
+    "arange", "linspace", "eye",
+})
+_LAZY_UNARY_OPS = frozenset({
+    "to", "type", "type_as", "float", "half", "bfloat16", "double",
+    "clone", "contiguous", "copy_", "detach",
+})
+_GATHER_CONSUMER_OPS = frozenset(SLICE_VIEW_OPS) | frozenset({
+    "index_select", "gather", "take", "take_along_dim", "embedding",
+})
+
+
 def _canonical_external_tensor(
     tensor_name: str,
     tensor_producers: Dict[str, str],
@@ -365,6 +379,13 @@ class EinsumGraphAnalyzer:
         # converter from torchview's ``output-tensor`` nodes). Older graphs
         # lack the key; then every consumer-less op is treated as an output.
         model_output_ops: Set[str] = set(graph.get("model_output_ops") or [])
+        # Declared outputs with shape/dtype; any whose producer is not
+        # charged as an external write below (untraced in-place producer,
+        # or an intermediate that is also returned) is added explicitly.
+        model_outputs: List[Dict[str, Any]] = list(graph.get("model_outputs") or [])
+        declared_output_tensors: Set[str] = {
+            str(mo["tensor"]) for mo in model_outputs if mo.get("tensor")
+        }
         element_size = BYTES_PER_ELEMENT.get(precision, 4)
 
         # Override precision/element_size from quant metadata if available
@@ -496,6 +517,42 @@ class EinsumGraphAnalyzer:
                 conns = (layers_in.get(lid, {}).get("connections") or {}).get("outputs") or []
                 queue.extend(out_id for out_id in conns if out_id in transparent_layer_ids)
             return False
+
+        # Lazy casts/copies feeding gathers: ``cache.to(fp32)[pages]`` in
+        # the reference code converts the whole KV cache, but a kernel only
+        # touches the gathered pages. When every real consumer of a unary
+        # elementwise op (through views) is a slice/gather, cap the op's
+        # read of its input at the total gathered size.
+        lazy_read_cap: Dict[str, int] = {}
+        for lid, layer in layers_in.items():
+            if str(layer.get("type", "")).lower() not in _LAZY_UNARY_OPS:
+                continue
+            total = 0
+            found = False
+            only_gathers = True
+            seen: Set[str] = set()
+            queue = [lid]
+            while queue and only_gathers:
+                cur = queue.pop()
+                for oname in (layers_in[cur].get("tensor_names") or {}).get("outputs") or []:
+                    for cid in tensor_consumers.get(oname) or ():
+                        if cid in seen:
+                            continue
+                        seen.add(cid)
+                        clayer = layers_in.get(cid) or {}
+                        ctype = str(clayer.get("type", "")).lower()
+                        if ctype in _GATHER_CONSUMER_OPS:
+                            found = True
+                            for shp in (clayer.get("tensor_shapes") or {}).get("outputs") or []:
+                                total += _product(shp) if isinstance(shp, list) else 0
+                        elif cid in transparent_layer_ids:
+                            queue.append(cid)
+                        else:
+                            only_gathers = False
+                            break
+            if found and only_gathers:
+                lazy_read_cap[lid] = total
+        external_output_layers: Set[str] = set()
 
         if self.debug:
             print(f"Debug: Found {len(intermediate_tensors)} intermediate tensors")
@@ -764,6 +821,15 @@ class EinsumGraphAnalyzer:
                 memory_writes += [0] * max(0, len(output_sizes) - 1)
                 other_ops = 0
 
+            # Creation ops (zeros_like, full_like, arange ...) only take
+            # shape/dtype from their argument; nothing is read from DRAM.
+            if op_type in _CREATION_OPS_ZERO_READ:
+                memory_reads = [0] * len(input_sizes)
+                other_ops = 0
+
+            if layer_id in lazy_read_cap and memory_reads:
+                memory_reads[0] = min(memory_reads[0], lazy_read_cap[layer_id])
+
             # Orphaned dead-end layers: ALL inputs trace (through views)
             # to non-existent sources AND the layer has no live output.
             # For scatter/setitem: if the TARGET (first input) traces to a
@@ -842,6 +908,17 @@ class EinsumGraphAnalyzer:
                     producer_id = tensor_producers[iname]
                     source_id = _trace_source_through_views(producer_id)
                     is_graph_internal = source_id in all_layer_ids and source_id not in transparent_layer_ids
+                elif declared_output_tensors and (
+                    iname in declared_output_tensors
+                    or _canonical_external_tensor(
+                        iname, tensor_producers, layers_in, transparent_layer_ids
+                    ) in declared_output_tensors
+                ):
+                    # A producer-less tensor that is a declared model output
+                    # is a buffer created inside the model (torchview split
+                    # the in-place accumulator into an orphan node); reading
+                    # it back is on-chip traffic, not a DRAM input.
+                    is_graph_internal = True
                 else:
                     is_graph_internal = False
 
@@ -893,7 +970,7 @@ class EinsumGraphAnalyzer:
                         break
                 if output_is_intermediate:
                     break
-            if (not output_is_intermediate and model_output_ops
+            if (not output_is_intermediate and (model_output_ops or model_outputs)
                     and not _reaches_model_output(layer_id)):
                 # Consumer-less result that is not a declared model output:
                 # dead code, or consumed by an op torchview does not trace
@@ -920,6 +997,7 @@ class EinsumGraphAnalyzer:
             # once per output, overcounting DRAM writes and breaking the
             # SOL lower bound.
             if not output_is_intermediate:
+                external_output_layers.add(layer_id)
                 for oi, oname in enumerate(output_name_list):
                     write_elems = (
                         int(memory_writes[oi]) if oi < len(memory_writes) else 0
@@ -988,6 +1066,30 @@ class EinsumGraphAnalyzer:
         # reads folded in via the conservative max() lower bound, capped at
         # the base tensor size.  Used for both fused and fused_prefetched
         # totals.
+        # Declared model outputs not charged above: produced by an op
+        # torchview did not trace (in-place ``out[idx] = v``), or an
+        # intermediate that is also returned. They still have to be
+        # written once at their declared shape and dtype.
+        for k, mo in enumerate(model_outputs):
+            op = mo.get("op")
+            shape = mo.get("shape")
+            if op in external_output_layers or not isinstance(shape, list):
+                continue
+            elems = _product(shape)
+            if elems <= 0:
+                continue
+            key = f"declared_output_{k}"
+            bpe = _dtype_bytes(mo.get("dtype"), element_size)
+            unique_external_outputs[key] = elems
+            unique_external_output_bpe[key] = bpe
+            # The write happens in every execution model, so the unfused
+            # totals carry it too (keeps fused <= unfused).
+            total_unfused_elems += elems
+            total_unfused_bytes += elems * bpe
+            if self.debug:
+                print(f"Debug: declared output {k} ({op}) not produced by a traced "
+                      f"external write; charging {elems} elements")
+
         group_footprints = _group_footprints(
             external_read_groups, start_output_sizes, debug=self.debug
         )
