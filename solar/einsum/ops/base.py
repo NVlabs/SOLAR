@@ -197,6 +197,62 @@ def compute_cost_from_equation(equation: str, tensor_shapes: TensorShapes) -> in
     return int(total_ops)
 
 
+_CONV_POSITIONAL = ("stride", "padding", "dilation", "groups")
+
+
+def _as_int_tuple(value: Any) -> Optional[Tuple[int, ...]]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return (value,)
+    if isinstance(value, (tuple, list)) and value and all(isinstance(v, int) for v in value):
+        return tuple(int(v) for v in value)
+    return None
+
+
+def conv_call_kwargs(module_args: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Convolution call arguments: ``groups`` (int) and ``stride``/``padding``/``dilation`` (tuples).
+
+    ``nn.Conv*`` modules expose these directly in ``module_args``; functional
+    ``F.conv*d`` calls only carry them inside torchview's ``raw_attributes``
+    string, either as kwargs (``{groups: 2048, padding: 1}``) or positionally
+    after the tensor arguments (``conv1d(input, weight, bias, stride,
+    padding, dilation, groups)``).  Explicit ``module_args`` entries win.
+    Missing values are simply absent from the returned dict.
+    """
+    out: Dict[str, Any] = {}
+    module_args = module_args or {}
+    raw = module_args.get("raw_attributes", "") if isinstance(module_args, dict) else ""
+    if isinstance(raw, str) and raw:
+        # kwargs: bare keys, values are ints or int tuples
+        for m in re.finditer(r"\b(groups|stride|padding|dilation)\s*:\s*(\([^)]*\)|\[[^\]]*\]|-?\d+)", raw):
+            key, val = m.group(1), m.group(2).strip()
+            nums = [int(x) for x in re.findall(r"-?\d+", val)]
+            if not nums:
+                continue
+            out[key] = nums[0] if key == "groups" else tuple(nums)
+        # positional: scalars after the last Tensor(...) inside the args list
+        args_part = raw.split("], {", 1)[0] if "], {" in raw else raw
+        tail = args_part[args_part.rfind(")") + 1:] if "Tensor(" in args_part else ""
+        pos = [int(x) for x in re.findall(r"-?\d+", tail)] if tail else []
+        # stride, padding, dilation, groups may each be an int (tuples are rare positionally)
+        for key, val in zip(_CONV_POSITIONAL, pos):
+            out.setdefault(key, val if key == "groups" else (val,))
+    for key in _CONV_POSITIONAL:
+        if key in module_args and module_args[key] is not None:
+            v = module_args[key]
+            if key == "groups":
+                try:
+                    out[key] = int(v)
+                except (TypeError, ValueError):
+                    pass
+            else:
+                t = _as_int_tuple(v)
+                if t is not None:
+                    out[key] = t
+    return out
+
+
 class EinsumOpHandler(ABC):
     """Abstract base class for einsum operation handlers.
     

@@ -59,6 +59,12 @@ def main() -> None:
         help="Do not copy analysis.yaml into the output directory.",
     )
     parser.add_argument(
+        "--dtype-bytes",
+        action="store_true",
+        help="Price memory traffic at each tensor's own dtype width (bool 1 B, fp32 4 B, fp8 1 B ...) "
+             "instead of one bytes_per_element for the whole graph; --precision then only picks the MAC rate.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug output.",
@@ -71,7 +77,7 @@ def main() -> None:
         sys.exit(2)
 
     output_dir = ensure_directory(args.output_dir)
-    model = EinsumGraphPerfModel(debug=args.debug)
+    model = EinsumGraphPerfModel(debug=args.debug, dtype_bytes=args.dtype_bytes)
     perf = model.predict(
         analysis_path,
         output_dir,
