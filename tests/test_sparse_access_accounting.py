@@ -161,7 +161,8 @@ def test_declared_output_with_untraced_producer_is_written_once(tmp_path):
     assert PyTorchToEinsum().convert(str(graph_path), str(einsum_dir)) is not None
     eg = yaml_safe_load((einsum_dir / "einsum_graph_renamed.yaml").read_text())
     assert eg["model_outputs"] == [{"op": None, "tensor": "Model.hidden-tensor_acc.Output",
-                                    "shape": [8, 64, 32], "dtype": "torch.float32"}]
+                                    "is_input": False, "shape": [8, 64, 32],
+                                    "dtype": "torch.float32"}]
     analysis_dir = tmp_path / "analysis"; analysis_dir.mkdir()
     assert EinsumGraphAnalyzer().analyze_graph(
         str(einsum_dir / "einsum_graph_renamed.yaml"), str(analysis_dir), precision="fp32") is not None

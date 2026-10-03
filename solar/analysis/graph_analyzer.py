@@ -553,6 +553,7 @@ class EinsumGraphAnalyzer:
             if found and only_gathers:
                 lazy_read_cap[lid] = total
         external_output_layers: Set[str] = set()
+        external_output_written: Set[str] = set()   # ... with a non-zero DRAM write
 
         if self.debug:
             print(f"Debug: Found {len(intermediate_tensors)} intermediate tensors")
@@ -759,6 +760,11 @@ class EinsumGraphAnalyzer:
                 "__setitem__", "scatter", "scatter_",
                 "index_copy", "index_copy_",
                 "index_put", "index_put_",
+                # Accumulating scatters touch only the indexed rows of the
+                # target (read-modify-write of the source footprint).
+                "index_add", "index_add_", "scatter_add", "scatter_add_",
+                "scatter_reduce", "scatter_reduce_", "index_reduce",
+                "index_reduce_", "masked_scatter", "masked_scatter_", "put_",
             }
 
             # For embedding (table lookup), only the gathered rows are read
@@ -838,11 +844,7 @@ class EinsumGraphAnalyzer:
             # Standalone if (not elif) so it overrides any prior op-type branch.
             if layer_id in _dead_end_layers and input_layer_ids:
                 _is_orphan = False
-                _SCATTER_TARGET_OPS_INLINE = {
-                    "__setitem__", "scatter", "scatter_",
-                    "index_copy", "index_copy_",
-                    "index_put", "index_put_",
-                }
+                _SCATTER_TARGET_OPS_INLINE = _SCATTER_OPS
 
                 def _source_is_orphan(cid: str) -> bool:
                     src = _trace_source_through_views(cid) if cid in transparent_layer_ids else cid
@@ -997,7 +999,8 @@ class EinsumGraphAnalyzer:
             # once per output, overcounting DRAM writes and breaking the
             # SOL lower bound.
             if not output_is_intermediate:
-                external_output_layers.add(layer_id)
+                if layer_id not in transparent_layer_ids:
+                    external_output_layers.add(layer_id)
                 for oi, oname in enumerate(output_name_list):
                     write_elems = (
                         int(memory_writes[oi]) if oi < len(memory_writes) else 0
@@ -1005,6 +1008,8 @@ class EinsumGraphAnalyzer:
                     unique_external_outputs[oname] = max(
                         unique_external_outputs.get(oname, 0), write_elems
                     )
+                    if write_elems > 0:
+                        external_output_written.add(layer_id)
                     unique_external_output_bpe[oname] = max(
                         unique_external_output_bpe.get(oname, 0.0),
                         out_bpe[oi] if oi < len(out_bpe) else element_size,
@@ -1073,7 +1078,17 @@ class EinsumGraphAnalyzer:
         for k, mo in enumerate(model_outputs):
             op = mo.get("op")
             shape = mo.get("shape")
-            if op in external_output_layers or not isinstance(shape, list):
+            if mo.get("is_input") or not isinstance(shape, list):
+                # A model input returned after in-place updates: only the
+                # traced writes into it count, never the whole buffer.
+                continue
+            # Skip only if some layer actually wrote this output: a view or
+            # slice at the end of an untraced chain is "external" but writes
+            # nothing, so the declared output would otherwise be lost.
+            src = op
+            if op in transparent_layer_ids:
+                src = _trace_source_through_views(op)
+            if op in external_output_written or src in external_output_written:
                 continue
             elems = _product(shape)
             if elems <= 0:

@@ -1438,6 +1438,8 @@ class PyTorchToEinsum:
                 # whose producer torchview lost (orphan accumulators).
                 first_src = node_id_remap.get(src, src)
                 tensor_name = f"{first_src}.Output"
+                first_type = str((pt_layers.get(src) or {}).get("type", "")).lower()
+                is_input = first_type in ("input-tensor", "auxiliary-tensor")
                 # The output may be reached through tensor nodes
                 # (``hidden-tensor``) rather than directly from the op;
                 # follow them to the producing op, taking the (repaired)
@@ -1459,6 +1461,7 @@ class PyTorchToEinsum:
                 model_outputs.append({
                     "op": src if src in result["layers"] else None,
                     "tensor": tensor_name,
+                    "is_input": is_input,
                     "shape": list(shapes[i]) if i < len(shapes) and isinstance(shapes[i], (list, tuple)) else None,
                     "dtype": dtype,
                 })
