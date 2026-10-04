@@ -44,6 +44,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+import re
+
 import yaml
 
 from solar.einsum import EinsumAnalyzer
@@ -90,6 +92,262 @@ _LAZY_UNARY_OPS = frozenset({
 _GATHER_CONSUMER_OPS = frozenset(SLICE_VIEW_OPS) | frozenset({
     "index_select", "gather", "take", "take_along_dim", "embedding",
 })
+
+
+# --------------------------------------------------------------------------- #
+# Structured sparsity (triangular / masked operands)
+# --------------------------------------------------------------------------- #
+_RAW_TENSOR_RE = re.compile(r"Tensor\(shape=\(([^)]*)\),\s*dtype=torch\.\w+\)")
+_SPARSE_VIEW_OPS = frozenset({
+    "view", "reshape", "permute", "transpose", "t", "expand", "expand_as",
+    "unsqueeze", "squeeze", "flatten", "unflatten", "contiguous", "clone",
+    "detach", "to", "float", "half", "bfloat16", "type", "type_as", "repeat",
+    "broadcast_to", "movedim", "swapaxes",
+})
+_ZERO_PRESERVING_UNARY = frozenset({
+    "abs", "neg", "__neg__", "relu", "silu", "gelu", "tanh", "sqrt", "rsqrt_zero",
+    "square", "sign", "sin", "sinh", "asinh", "atan", "erf", "round", "floor",
+    "ceil", "trunc", "dropout", "leaky_relu", "hardtanh", "relu6", "mish",
+})
+_MASK_FILL_OPS = frozenset({"masked_fill", "masked_fill_"})
+_NOT_OPS = frozenset({"__invert__", "logical_not", "bitwise_not"})
+_MUL_OPS = frozenset({"mul", "__mul__", "__rmul__", "multiply"})
+_DIV_OPS = frozenset({"div", "__truediv__", "divide", "true_divide"})
+_ADD_OPS = frozenset({"add", "__add__", "__radd__", "sub", "__sub__", "__rsub__", "subtract"})
+_NEG_FILL_THRESHOLD = -1e4   # finfo.min / -1e9 style fills vanish under exp/softmax
+
+
+def _raw_call_tokens(raw: Any) -> Tuple[List[Any], Dict[str, str]]:
+    """Top-level positional tokens ('T' for a tensor, else the literal) and kwargs."""
+    text = str(raw or "")
+    if not text:
+        return [], {}
+    if "], {" in text:
+        args_part, kw_part = text.rsplit("], {", 1)
+    else:
+        args_part, kw_part = text, ""
+    args_part = _RAW_TENSOR_RE.sub(" T ", args_part)
+    args_part = args_part.strip().lstrip("[").lstrip("[")
+    tokens: List[Any] = []
+    depth = 0
+    cur = ""
+    for ch in args_part:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth <= 0:
+            if cur.strip():
+                tokens.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        tokens.append(cur.strip().rstrip("]"))
+    kwargs: Dict[str, str] = {}
+    for m in re.finditer(r"(\w+)\s*:\s*([^,}]+)", kw_part):
+        kwargs[m.group(1)] = m.group(2).strip()
+    return tokens, kwargs
+
+
+def _scalar_kind(tok: Optional[str]) -> Optional[str]:
+    """'Z' for a zero literal, 'N' for -inf / very negative, None otherwise."""
+    if tok is None:
+        return None
+    t = str(tok).strip().strip("'\"").replace("float(", "").replace(")", "")
+    if t in ("T",):
+        return None
+    try:
+        v = float(t)
+    except ValueError:
+        if "inf" in t and t.startswith("-"):
+            return "N"
+        return None
+    if v == 0.0:
+        return "Z"
+    if v <= _NEG_FILL_THRESHOLD:
+        return "N"
+    return None
+
+
+def _triangular_density(shape: List[Any], op: str, diagonal: int) -> float:
+    if not isinstance(shape, list) or len(shape) < 2:
+        return 1.0
+    n, m = int(shape[-2]), int(shape[-1])
+    if n <= 0 or m <= 0:
+        return 1.0
+    kept = 0
+    for i in range(n):
+        if op == "tril":
+            kept += min(m, max(0, i + diagonal + 1))
+        else:
+            kept += max(0, m - max(0, i + diagonal))
+    return max(0.0, min(1.0, kept / float(n * m)))
+
+
+def _structured_sparsity(
+    layers_in: Dict[str, Any],
+    tensor_producers: Dict[str, str],
+    tensor_consumers: Dict[str, Set[str]],
+) -> Dict[str, float]:
+    """MAC fraction per einsum layer implied by triangular / masked operands.
+
+    Tracks, per tensor, the density of "live" entries and the kind of the
+    dead ones: ``Z`` (exact zeros, from ``tril``/``triu``/``masked_fill(0)``
+    /``x * mask``) or ``N`` (``-inf`` / finfo.min fills, which ``exp`` and
+    ``softmax`` turn into zeros). Every MAC of an einsum uses exactly one
+    element of each operand, so an operand with live density d lets a
+    kernel skip the fraction 1 - d of the MACs; likewise an output that is
+    only ever multiplied by a mask of density d (``(C B^T) * L`` in the
+    Mamba chunk scan, ``softmax(QK^T + causal)``) only needs the fraction d
+    of its entries. The fraction is the minimum over the sparse operands
+    and the needed output density; dense graphs are unaffected.
+    """
+    dens: Dict[str, Tuple[str, float]] = {}   # tensor name -> (kind, live density)
+
+    def get(name: Optional[str]) -> Optional[Tuple[str, float]]:
+        return dens.get(name) if name else None
+
+    for _ in range(2):   # tolerate non-topological layer order
+        for lid, layer in layers_in.items():
+            op = str(layer.get("type", "")).lower()
+            names = layer.get("tensor_names") or {}
+            ins = list(names.get("inputs") or [])
+            outs = list(names.get("outputs") or [])
+            shapes = (layer.get("tensor_shapes") or {}).get("outputs") or []
+            if not outs:
+                continue
+            toks, kw = _raw_call_tokens(_layer_raw_attributes(layer))
+            scalars = [t for t in toks if t != "T"]
+            res: Optional[Tuple[str, float]] = None
+            if op in ("tril", "triu"):
+                diag = 0
+                if "diagonal" in kw:
+                    try:
+                        diag = int(float(kw["diagonal"]))
+                    except ValueError:
+                        diag = 0
+                elif scalars:
+                    try:
+                        diag = int(float(scalars[0]))
+                    except ValueError:
+                        diag = 0
+                res = ("Z", _triangular_density(shapes[0] if shapes else None, op, diag))
+            elif op in _NOT_OPS:
+                a = get(ins[0] if ins else None)
+                if a and a[0] == "Z":
+                    res = ("Z", 1.0 - a[1])
+            elif op in _MASK_FILL_OPS and len(ins) >= 2:
+                mask = get(ins[1])
+                fill = _scalar_kind(kw.get("value") or (scalars[0] if scalars else None))
+                if mask and mask[0] == "Z" and fill:
+                    x = get(ins[0])
+                    d = 1.0 - mask[1]
+                    if x and x[0] == fill:
+                        d = min(d, x[1])
+                    res = (fill, d)
+            elif op == "where" and len(toks) >= 3:
+                cond = get(ins[0]) if ins else None
+                if cond and cond[0] == "Z":
+                    a_kind = _scalar_kind(toks[1]) if toks[1] != "T" else None
+                    b_kind = _scalar_kind(toks[2]) if toks[2] != "T" else None
+                    if b_kind:            # where(cond, x, 0): live where cond is True
+                        res = (b_kind, cond[1])
+                    elif a_kind:          # where(cond, 0, x): live where cond is False
+                        res = (a_kind, 1.0 - cond[1])
+            elif op in _MUL_OPS:
+                tens = [get(n) for n in ins]
+                zs = [t for t in tens if t and t[0] == "Z"]
+                ns = [t for t in tens if t and t[0] == "N"]
+                if zs:
+                    res = ("Z", min(t[1] for t in zs))
+                elif ns and len(ins) == 1:
+                    res = ns[0]           # -inf * scalar keeps the pattern
+            elif op in _DIV_OPS:
+                a = get(ins[0] if ins else None)
+                if a:
+                    res = a
+            elif op in _ADD_OPS:
+                tens = [get(n) for n in ins]
+                ns = [t for t in tens if t and t[0] == "N"]
+                if ns and len(ins) == 1:
+                    res = ns[0]           # x + c keeps -inf
+                elif ns and len(ins) >= 2 and all(t is None or t[0] == "N" or True for t in tens):
+                    # -inf + finite = -inf: the union of the -inf patterns
+                    res = ("N", min(t[1] for t in ns))
+            elif op in ("exp", "softmax", "log_softmax", "exp_", "softmax_"):
+                a = get(ins[0] if ins else None)
+                if a and a[0] == "N":
+                    res = ("Z", a[1])
+            elif op in _SPARSE_VIEW_OPS:
+                a = get(ins[0] if ins else None)
+                if a:
+                    res = a
+            elif op in _ZERO_PRESERVING_UNARY:
+                a = get(ins[0] if ins else None)
+                if a and a[0] == "Z":
+                    res = a
+            for o in outs:
+                if res is not None:
+                    dens[o] = res
+                else:
+                    dens.pop(o, None)
+
+    def needed_density(tensor: str, depth: int = 0) -> float:
+        """Fraction of ``tensor`` entries some consumer actually uses."""
+        consumers = tensor_consumers.get(tensor) or set()
+        if not consumers or depth > 6:
+            return 1.0
+        need = 0.0
+        for cid in consumers:
+            c = layers_in.get(cid) or {}
+            cop = str(c.get("type", "")).lower()
+            cins = list((c.get("tensor_names") or {}).get("inputs") or [])
+            couts = list((c.get("tensor_names") or {}).get("outputs") or [])
+            frac = 1.0
+            if cop in _SPARSE_VIEW_OPS:
+                frac = max(needed_density(o, depth + 1) for o in couts) if couts else 1.0
+            elif cop in _MUL_OPS and len(cins) >= 2:
+                others = [get(n) for n in cins if n != tensor]
+                zs = [t for t in others if t and t[0] == "Z"]
+                frac = min(t[1] for t in zs) if zs else 1.0
+            elif cop in _MASK_FILL_OPS and len(cins) >= 2 and cins[0] == tensor:
+                toks, kw = _raw_call_tokens(_layer_raw_attributes(c))
+                scalars = [t for t in toks if t != "T"]
+                mask = get(cins[1])
+                fill = _scalar_kind(kw.get("value") or (scalars[0] if scalars else None))
+                frac = 1.0 - mask[1] if (mask and mask[0] == "Z" and fill) else 1.0
+            elif cop == "where" and len(cins) >= 2 and cins[0] != tensor:
+                cond = get(cins[0])
+                toks, _ = _raw_call_tokens(_layer_raw_attributes(c))
+                if cond and cond[0] == "Z" and len(toks) >= 3:
+                    pos = [i for i, t in enumerate(toks) if t == "T"]
+                    # tensor is the 2nd tensor arg (x) or the 3rd (y)
+                    idx = cins.index(tensor)
+                    if idx == 1 and len(toks) > 2 and toks[2] != "T" and _scalar_kind(toks[2]):
+                        frac = cond[1]
+                    elif idx == 2 and toks[1] != "T" and _scalar_kind(toks[1]):
+                        frac = 1.0 - cond[1]
+            need = max(need, frac)
+            if need >= 1.0:
+                return 1.0
+        return need
+
+    fractions: Dict[str, float] = {}
+    for lid, layer in layers_in.items():
+        if not layer.get("is_real_einsum"):
+            continue
+        names = layer.get("tensor_names") or {}
+        frac = 1.0
+        for n in names.get("inputs") or []:
+            t = get(n)
+            if t and t[0] == "Z":
+                frac = min(frac, t[1])
+        for o in names.get("outputs") or []:
+            frac = min(frac, needed_density(o))
+        if frac < 1.0:
+            fractions[lid] = max(frac, 0.0)
+    return fractions
 
 
 def _canonical_external_tensor(
@@ -552,6 +810,11 @@ class EinsumGraphAnalyzer:
                             break
             if found and only_gathers:
                 lazy_read_cap[lid] = total
+        # Structured sparsity: triangular / masked operands let a kernel skip
+        # MACs (Mamba chunk scan, causal attention). Fraction per einsum layer.
+        mac_fraction = _structured_sparsity(layers_in, tensor_producers, tensor_consumers)
+        if self.debug and mac_fraction:
+            print(f"Debug: structured-sparsity MAC fractions: {mac_fraction}")
         external_output_layers: Set[str] = set()
         external_output_written: Set[str] = set()   # ... with a non-zero DRAM write
 
@@ -714,8 +977,10 @@ class EinsumGraphAnalyzer:
                 ops_cost = 0
                 is_real_einsum = False
 
+            macs_dense = ops_cost if is_real_einsum else 0
+            sparsity_fraction = mac_fraction.get(layer_id, 1.0)
             if is_real_einsum:
-                macs = ops_cost
+                macs = int(round(ops_cost * sparsity_fraction))
                 other_ops = 0
             else:
                 macs = 0
@@ -1023,6 +1288,8 @@ class EinsumGraphAnalyzer:
                 "einsum_equation": equation,
                 "is_real_einsum": is_real_einsum,
                 "macs": macs,
+                "macs_dense": macs_dense,
+                "mac_sparsity_fraction": sparsity_fraction,
                 "other_ops": other_ops,
                 "flops": flops,
                 "unfused_elements": unfused_elems,
