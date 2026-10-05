@@ -44,6 +44,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+import math
 import re
 
 import yaml
@@ -299,18 +300,45 @@ def _structured_sparsity(
         if not consumers or depth > 6:
             return 1.0
         need = 0.0
+        gather_need = 0.0
         for cid in consumers:
             c = layers_in.get(cid) or {}
             cop = str(c.get("type", "")).lower()
             cins = list((c.get("tensor_names") or {}).get("inputs") or [])
             couts = list((c.get("tensor_names") or {}).get("outputs") or [])
             frac = 1.0
+            if cop in _GATHER_CONSUMER_OPS and cins and cins[0] == tensor:
+                # Only the gathered / sliced rows of the product are used
+                # (projector applied to every window, 80 of 1720 rows kept).
+                src = _tensor_elems(layers_in, tensor_producers, tensor)
+                got = sum(_product(sh) for sh in ((c.get("tensor_shapes") or {}).get("outputs") or [])
+                          if isinstance(sh, list))
+                frac = min(1.0, got / src) if src > 0 and got > 0 else 1.0
+                # A slice that is itself gathered further on (y[i][pos]) only
+                # needs what its own consumers need.
+                if couts:
+                    frac *= max(needed_density(o, depth + 1) for o in couts)
+                gather_need += frac
+                continue
+            cshapes_in = (c.get("tensor_shapes") or {}).get("inputs") or []
+            cshape_out = ((c.get("tensor_shapes") or {}).get("outputs") or [None])[0]
+            my_shape = None
+            for n_, sh_ in zip(cins, cshapes_in):
+                if n_ == tensor:
+                    my_shape = sh_
+            full_operand = my_shape is not None and my_shape == cshape_out
             if cop in _SPARSE_VIEW_OPS:
                 frac = max(needed_density(o, depth + 1) for o in couts) if couts else 1.0
             elif cop in _MUL_OPS and len(cins) >= 2:
                 others = [get(n) for n in cins if n != tensor]
                 zs = [t for t in others if t and t[0] == "Z"]
-                frac = min(t[1] for t in zs) if zs else 1.0
+                frac = min(t[1] for t in zs) if zs else (
+                    max(needed_density(o, depth + 1) for o in couts) if couts and full_operand else 1.0)
+            elif (cop in _ADD_OPS or cop in _DIV_OPS or cop in _MUL_OPS or cop in _ZERO_PRESERVING_UNARY
+                  or cop in ("sigmoid", "log", "rsqrt", "pow", "__pow__", "clamp", "clip")) and full_operand:
+                # Elementwise: element j of the input feeds element j of the output only
+                # (bias add after a linear whose rows are then gathered).
+                frac = max(needed_density(o, depth + 1) for o in couts) if couts else 1.0
             elif cop in _MASK_FILL_OPS and len(cins) >= 2 and cins[0] == tensor:
                 toks, kw = _raw_call_tokens(_layer_raw_attributes(c))
                 scalars = [t for t in toks if t != "T"]
@@ -331,8 +359,9 @@ def _structured_sparsity(
             need = max(need, frac)
             if need >= 1.0:
                 return 1.0
-        return need
+        return min(1.0, max(need, gather_need))
 
+    replicated = _replicated_dims(layers_in, tensor_producers)
     fractions: Dict[str, float] = {}
     for lid, layer in layers_in.items():
         if not layer.get("is_real_einsum"):
@@ -345,9 +374,304 @@ def _structured_sparsity(
                 frac = min(frac, t[1])
         for o in names.get("outputs") or []:
             frac = min(frac, needed_density(o))
+        frac /= _einsum_redundancy(layer, replicated)
         if frac < 1.0:
             fractions[lid] = max(frac, 0.0)
     return fractions
+
+
+def _tensor_elems(layers_in: Dict[str, Any], tensor_producers: Dict[str, str], tensor: str) -> int:
+    pid = tensor_producers.get(tensor)
+    layer = layers_in.get(pid) or {}
+    names = (layer.get("tensor_names") or {}).get("outputs") or []
+    shapes = (layer.get("tensor_shapes") or {}).get("outputs") or []
+    for n, sh in zip(names, shapes):
+        if n == tensor and isinstance(sh, list):
+            return _product(sh)
+    return 0
+
+
+_EXPAND_OPS = frozenset({"expand", "expand_as", "broadcast_to"})
+_REPL_PASSTHRU = frozenset({
+    "to", "float", "half", "bfloat16", "double", "type", "type_as", "clone",
+    "contiguous", "detach", "abs", "neg", "exp", "relu", "silu", "gelu", "tanh",
+    "sigmoid", "sqrt", "rsqrt", "square", "log", "softmax", "cumsum",
+})
+_REPL_BINARY = frozenset({"mul", "__mul__", "__rmul__", "add", "__add__", "__radd__",
+                          "sub", "__sub__", "__rsub__", "div", "__truediv__", "where",
+                          "masked_fill", "maximum", "minimum", "pow", "__pow__"})
+_EINSUM_TOKEN_RE = re.compile(r"[A-Za-z]\d*")
+
+
+def _reshape_dim_map(in_shape: List[int], out_shape: List[int]) -> Dict[int, int]:
+    """Input dim -> output dim for dims that survive a reshape one-to-one."""
+    m: Dict[int, int] = {}
+    i = j = 0
+    while i < len(in_shape) and j < len(out_shape):
+        pi, pj = int(in_shape[i]), int(out_shape[j])
+        i0, j0 = i, j
+        while pi != pj:
+            if pi < pj:
+                i += 1
+                if i >= len(in_shape):
+                    return m
+                pi *= int(in_shape[i])
+            else:
+                j += 1
+                if j >= len(out_shape):
+                    return m
+                pj *= int(out_shape[j])
+        if i == i0 and j == j0:
+            m[i] = j
+        i += 1
+        j += 1
+    return m
+
+
+def _replicated_dims(
+    layers_in: Dict[str, Any], tensor_producers: Dict[str, str]
+) -> Dict[str, Dict[int, int]]:
+    """Per tensor: {dim: replication factor} for dims that only repeat values.
+
+    ``expand`` of a size-1 dim, ``repeat`` / ``repeat_interleave`` create
+    dims along which every slice is a copy (GQA K/V repeated per group,
+    Mamba-2 B/C expanded from one group to every head). The map follows
+    casts, elementwise ops whose every operand is replicated the same way,
+    unsqueeze/squeeze/permute/transpose and reshapes that keep the dim.
+    """
+    rep: Dict[str, Dict[int, int]] = {}
+
+    def shp(layer, key, i=0):
+        shapes = (layer.get("tensor_shapes") or {}).get(key) or []
+        return [int(x) for x in shapes[i]] if i < len(shapes) and isinstance(shapes[i], list) else None
+
+    for _ in range(2):
+        for lid, layer in layers_in.items():
+            op = str(layer.get("type", "")).lower()
+            names = layer.get("tensor_names") or {}
+            ins = list(names.get("inputs") or [])
+            outs = list(names.get("outputs") or [])
+            if not outs:
+                continue
+            out_shape = shp(layer, "outputs")
+            in_shape = shp(layer, "inputs")
+            res: Dict[int, int] = {}
+            toks, kw = _raw_call_tokens(_layer_raw_attributes(layer))
+            scalars = []
+            for t in toks:
+                if t == "T":
+                    continue
+                try:
+                    v = float(t)
+                except ValueError:
+                    continue
+                if math.isfinite(v):
+                    scalars.append(int(v))
+            src = rep.get(ins[0], {}) if ins else {}
+            if op in _EXPAND_OPS and in_shape is not None and out_shape is not None:
+                off = len(out_shape) - len(in_shape)
+                for j, oj in enumerate(out_shape):
+                    i = j - off
+                    if i < 0:
+                        if oj > 1:
+                            res[j] = oj
+                    elif in_shape[i] == 1 and oj > 1:
+                        res[j] = oj
+                    elif i in src:
+                        res[j] = src[i]
+            elif op == "repeat_interleave" and in_shape is not None and out_shape is not None:
+                dim = kw.get("dim")
+                try:
+                    dim = int(float(dim)) if dim is not None else (scalars[1] if len(scalars) > 1 else None)
+                except (ValueError, OverflowError):
+                    dim = None
+                reps = scalars[0] if scalars else None
+                if dim is not None and reps and len(in_shape) == len(out_shape):
+                    dim = dim % len(out_shape)
+                    res = dict(src)
+                    res[dim] = res.get(dim, 1) * reps
+            elif op == "repeat" and in_shape is not None and out_shape is not None and scalars:
+                off = len(out_shape) - len(in_shape)
+                for j, oj in enumerate(out_shape):
+                    k = j - (len(out_shape) - len(scalars))
+                    f = scalars[k] if 0 <= k < len(scalars) else 1
+                    i = j - off
+                    base = src.get(i, 1) if i >= 0 else 1
+                    if f > 1 or base > 1:
+                        res[j] = base * f
+            elif op in ("unsqueeze",) and in_shape is not None and out_shape is not None and scalars:
+                d = scalars[0] % len(out_shape)
+                res = {(i + 1 if i >= d else i): f for i, f in src.items()}
+            elif op in ("squeeze",) and in_shape is not None and out_shape is not None:
+                kept = [i for i, x in enumerate(in_shape) if x != 1 or len(in_shape) == len(out_shape)]
+                if len(kept) == len(out_shape):
+                    pos = {i: j for j, i in enumerate(kept)}
+                    res = {pos[i]: f for i, f in src.items() if i in pos}
+            elif op in ("permute",) and len(scalars) == len(out_shape or []):
+                perm = [d % len(out_shape) for d in scalars]
+                res = {j: src[i] for j, i in enumerate(perm) if i in src}
+            elif op in ("transpose", "swapaxes", "swapdims") and len(scalars) >= 2 and out_shape is not None:
+                a, b = scalars[0] % len(out_shape), scalars[1] % len(out_shape)
+                res = {}
+                for i, f in src.items():
+                    res[b if i == a else a if i == b else i] = f
+            elif op == "t" and out_shape is not None and len(out_shape) == 2:
+                res = {1 - i: f for i, f in src.items()}
+            elif op in ("view", "reshape", "flatten", "unflatten") and in_shape is not None and out_shape is not None:
+                m = _reshape_dim_map(in_shape, out_shape)
+                res = {m[i]: f for i, f in src.items() if i in m}
+            elif op in _REPL_PASSTHRU and len(ins) >= 1:
+                res = dict(src)
+            elif op in _REPL_BINARY and out_shape is not None and len(ins) >= 1:
+                res = {}
+                for j, oj in enumerate(out_shape):
+                    fs = []
+                    ok = True
+                    for k, n in enumerate(ins):
+                        ish = shp(layer, "inputs", k)
+                        if ish is None:
+                            ok = False
+                            break
+                        i = j - (len(out_shape) - len(ish))
+                        if i < 0 or ish[i] == 1:
+                            fs.append(oj)          # broadcast operand: trivially replicated
+                        elif i in rep.get(n, {}):
+                            fs.append(rep[n][i])
+                        else:
+                            ok = False
+                            break
+                    if ok and fs and min(fs) > 1 and oj > 1:
+                        res[j] = min(fs)
+            for o in outs:
+                if res:
+                    rep[o] = res
+                else:
+                    rep.pop(o, None)
+    return rep
+
+
+def _einsum_redundancy(layer: Dict[str, Any], replicated: Dict[str, Dict[int, int]]) -> float:
+    """Factor by which an einsum's MACs repeat identical work.
+
+    For every index letter whose every operand is replicated along it with
+    the same factor, the products along that index are copies: a kernel
+    computes them once (Mamba-2 ``C B^T`` with one B/C group expanded to 16
+    heads is 16x redundant). Returns the product of such factors (>= 1).
+    """
+    eq = str(layer.get("einsum_equation") or "")
+    if "->" not in eq:
+        return 1.0
+    lhs = eq.split("->")[0]
+    subs = [_EINSUM_TOKEN_RE.findall(part) for part in lhs.split(",")]
+    names = (layer.get("tensor_names") or {}).get("inputs") or []
+    shapes = (layer.get("tensor_shapes") or {}).get("inputs") or []
+    if len(subs) != len(names) or len(subs) != len(shapes):
+        return 1.0
+    per_letter: Dict[str, List[Optional[int]]] = {}
+    for toks, name, sh in zip(subs, names, shapes):
+        if not isinstance(sh, list) or len(toks) != len(sh):
+            return 1.0
+        r = replicated.get(name, {})
+        for d, tok in enumerate(toks):
+            if int(sh[d]) <= 1:
+                continue
+            per_letter.setdefault(tok, []).append(r.get(d))
+    factor = 1.0
+    for tok, fs in per_letter.items():
+        if fs and all(f is not None for f in fs) and len(set(fs)) == 1:
+            factor *= fs[0]
+    return max(factor, 1.0)
+
+
+_WRITE_PASSTHRU = frozenset({
+    "to", "float", "half", "bfloat16", "double", "type", "type_as", "clone",
+    "contiguous", "detach", "view", "reshape", "permute", "transpose", "t",
+    "unsqueeze", "squeeze", "flatten", "unflatten",
+})
+_CREATION_OUTPUT_OPS = frozenset({"zeros_like", "zeros", "full_like", "full", "empty_like",
+                                  "empty", "ones_like", "ones", "new_zeros", "new_full"})
+
+
+def _output_write_caps(
+    layers_in: Dict[str, Any], tensor_producers: Dict[str, str]
+) -> Dict[str, int]:
+    """Smaller-than-shape write footprints for layers that end an output.
+
+    * ``mask.expand(B, H, T, S).contiguous()``: the reference materialises a
+      broadcast; the minimal implementation returns the view and writes only
+      the base ``[T, S]`` tensor.
+    * ``grad = zeros(...); grad.index_add_(rows); grad.to(bf16)``: a sparse
+      update of a zero-initialised buffer; only the updated rows are written
+      (the benchmark harness provides the zeroed buffer).
+    Returned values cap the external-output write of the given layer.
+    """
+    caps: Dict[str, int] = {}
+
+    def first_input_layer(layer):
+        ins = (layer.get("tensor_names") or {}).get("inputs") or []
+        return tensor_producers.get(ins[0]) if ins else None
+
+    def in_sizes(layer):
+        return [_product(sh) for sh in ((layer.get("tensor_shapes") or {}).get("inputs") or [])
+                if isinstance(sh, list)]
+
+    def passthru(layer) -> bool:
+        t = str(layer.get("type", "")).lower()
+        if t in _WRITE_PASSTHRU or t in _ZERO_PRESERVING_UNARY:
+            return True
+        # Elementwise op with a single tensor operand (scalar multiply/add):
+        # same footprint in and out.
+        if t in _MUL_OPS or t in _ADD_OPS or t in _DIV_OPS:
+            return len((layer.get("tensor_names") or {}).get("inputs") or []) == 1
+        return False
+
+    for lid, layer in layers_in.items():
+        op = str(layer.get("type", "")).lower()
+        cur_id, cur = lid, layer
+        hops = 0
+        while cur is not None and passthru(cur) and hops < 12:
+            nid = first_input_layer(cur)
+            cur_id, cur = nid, layers_in.get(nid)
+            hops += 1
+        if cur is None:
+            continue
+        ctype = str(cur.get("type", "")).lower()
+        if ctype in _EXPAND_OPS and (cur_id != lid or op in _EXPAND_OPS):
+            sizes = in_sizes(cur)
+            if sizes:
+                caps[lid] = sizes[0]
+            continue
+        # Sparse update chain: scatters into a creation-op buffer.
+        total = 0
+        seen = 0
+        while hops < 64:
+            if cur is None:
+                # Producer-less target (torchview orphan of the zero buffer,
+                # or a model input updated in place): only the scattered
+                # rows are written.
+                if seen:
+                    caps[lid] = total
+                break
+            t = str(cur.get("type", "")).lower()
+            if passthru(cur):
+                pass
+            elif t in ("__setitem__", "scatter", "scatter_", "index_copy", "index_copy_",
+                       "index_put", "index_put_", "index_add", "index_add_", "scatter_add",
+                       "scatter_add_", "scatter_reduce", "scatter_reduce_", "masked_scatter",
+                       "masked_scatter_", "put_"):
+                sizes = in_sizes(cur)
+                total += max(sorted(sizes)[:-1]) if len(sizes) >= 2 else (sizes[0] if sizes else 0)
+                seen += 1
+            elif t in _CREATION_OUTPUT_OPS:
+                if seen:
+                    caps[lid] = total
+                break
+            else:
+                break
+            nid = first_input_layer(cur)
+            cur = layers_in.get(nid)
+            hops += 1
+    return caps
 
 
 def _canonical_external_tensor(
@@ -813,6 +1137,7 @@ class EinsumGraphAnalyzer:
         # Structured sparsity: triangular / masked operands let a kernel skip
         # MACs (Mamba chunk scan, causal attention). Fraction per einsum layer.
         mac_fraction = _structured_sparsity(layers_in, tensor_producers, tensor_consumers)
+        write_caps = _output_write_caps(layers_in, tensor_producers)
         if self.debug and mac_fraction:
             print(f"Debug: structured-sparsity MAC fractions: {mac_fraction}")
         external_output_layers: Set[str] = set()
@@ -1270,6 +1595,8 @@ class EinsumGraphAnalyzer:
                     write_elems = (
                         int(memory_writes[oi]) if oi < len(memory_writes) else 0
                     )
+                    if layer_id in write_caps:
+                        write_elems = min(write_elems, int(write_caps[layer_id]))
                     unique_external_outputs[oname] = max(
                         unique_external_outputs.get(oname, 0), write_elems
                     )
@@ -1358,6 +1685,8 @@ class EinsumGraphAnalyzer:
             if op in external_output_written or src in external_output_written:
                 continue
             elems = _product(shape)
+            if op in write_caps:
+                elems = min(elems, int(write_caps[op]))
             if elems <= 0:
                 continue
             key = f"declared_output_{k}"
