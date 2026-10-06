@@ -221,7 +221,13 @@ def _structured_sparsity(
             toks, kw = _raw_call_tokens(_layer_raw_attributes(layer))
             scalars = [t for t in toks if t != "T"]
             res: Optional[Tuple[str, float]] = None
-            if op in ("tril", "triu"):
+            if op in ("zeros", "zeros_like", "new_zeros"):
+                res = ("Z", 0.0)                       # nothing live yet
+            elif op in ("full", "full_like", "new_full"):
+                fill = _scalar_kind(kw.get("fill_value") or (scalars[-1] if scalars else None))
+                if fill:
+                    res = (fill, 0.0)                  # e.g. full((S, S), -inf)
+            elif op in ("tril", "triu"):
                 diag = 0
                 if "diagonal" in kw:
                     try:
@@ -231,9 +237,27 @@ def _structured_sparsity(
                 elif scalars:
                     try:
                         diag = int(float(scalars[0]))
-                    except ValueError:
+                    except (ValueError, OverflowError):
                         diag = 0
-                res = ("Z", _triangular_density(shapes[0] if shapes else None, op, diag))
+                kept = _triangular_density(shapes[0] if shapes else None, op, diag)
+                src = get(ins[0] if ins else None)
+                orphan_input = bool(ins) and ins[0] not in tensor_producers
+                consumers = {str((layers_in.get(c) or {}).get("type", "")).lower()
+                             for o in outs for c in (tensor_consumers.get(o) or ())}
+                if src and src[0] == "N" and src[1] == 0.0:
+                    # triu(full(-inf), 1): the zeroed triangle is the live
+                    # part of an additive mask; the kept -inf entries kill.
+                    res = ("N", 1.0 - kept)
+                elif (orphan_input and consumers and consumers <= _ADD_OPS):
+                    # The filled constant (torch.full(..., -inf)) is built in
+                    # forward and not traced; a triangular constant that is
+                    # only ever ADDED to scores is the HF-style additive
+                    # causal mask, whose kept triangle is the -inf part.
+                    res = ("N", 1.0 - kept)
+                elif src and src[0] == "Z":
+                    res = ("Z", min(src[1], kept))
+                else:
+                    res = ("Z", kept)
             elif op in _NOT_OPS:
                 a = get(ins[0] if ins else None)
                 if a and a[0] == "Z":
@@ -334,6 +358,12 @@ def _structured_sparsity(
                 zs = [t for t in others if t and t[0] == "Z"]
                 frac = min(t[1] for t in zs) if zs else (
                     max(needed_density(o, depth + 1) for o in couts) if couts and full_operand else 1.0)
+            elif cop in _ADD_OPS and len(cins) >= 2 and any(
+                    (get(n) or ("", 1.0))[0] == "N" for n in cins if n != tensor):
+                # scores + causal_mask(-inf): entries that become -inf are
+                # never needed.
+                ns = [get(n) for n in cins if n != tensor and get(n) and get(n)[0] == "N"]
+                frac = min(t[1] for t in ns)
             elif (cop in _ADD_OPS or cop in _DIV_OPS or cop in _MUL_OPS or cop in _ZERO_PRESERVING_UNARY
                   or cop in ("sigmoid", "log", "rsqrt", "pow", "__pow__", "clamp", "clip")) and full_operand:
                 # Elementwise: element j of the input feeds element j of the output only

@@ -142,3 +142,33 @@ def test_dense_graph_unchanged(tmp_path):
     a = _analyze(tmp_path, src)
     l = [l for l in a["layers"].values() if l["type"] == "matmul"][0]
     assert l["mac_sparsity_fraction"] == 1.0 and l["macs"] == l["macs_dense"]
+
+
+ADDITIVE_CAUSAL = """
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, q, k, v):
+            # q, k, v: [2, 4, 128, 64]; the HF-style additive causal mask
+            scores = torch.matmul(q, k.transpose(-1, -2))
+            causal = torch.triu(torch.full((128, 128), float('-inf')), diagonal=1)
+            scores = scores + causal
+            p = torch.softmax(scores, dim=-1)
+            return torch.matmul(p, v)
+
+    def get_inputs():
+        return [torch.randn(2, 4, 128, 64), torch.randn(2, 4, 128, 64), torch.randn(2, 4, 128, 64)]
+
+    def get_init_inputs():
+        return []
+"""
+
+
+def test_additive_triu_inf_mask_counts_half_the_macs(tmp_path):
+    a = _analyze(tmp_path, ADDITIVE_CAUSAL)
+    mm = [l for l in a["layers"].values() if l["type"] == "matmul"]
+    assert len(mm) == 2
+    live = 1 - (128 * 127 / 2) / (128 * 128)   # zeroed lower triangle incl. diagonal
+    for l in mm:
+        assert abs(l["mac_sparsity_fraction"] - live) < 1e-9, l
