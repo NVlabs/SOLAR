@@ -53,7 +53,8 @@ ref_fields = list(ref_rows[0].keys())
 compare_fields = ref_fields + [
     "solar_sol_fused_ms", "solar_sol_fused_plus_floor_ms", "solar_sol_unfused_ms",
     "solar_sol_fused_prefetched_ms", "solar_macs", "solar_fused_bytes", "solar_unfused_bytes",
-    "solar_bottleneck", "solar_precision", "solar_fp32_policy", "solar_quant_dtypes",
+    "solar_bottleneck", "solar_precision", "solar_fp32_policy", "solar_setup", "solar_precision_override",
+    "solar_quant_dtypes",
     "solar_scalars_only_fallback", "ratio_fused_over_ref", "ratio_fused_plus_floor_over_ref",
     "status",
 ]
@@ -94,6 +95,8 @@ for r in ref_rows:
             "solar_bottleneck": d["bottleneck"]["fused"],
             "solar_precision": d.get("precision"),
             "solar_fp32_policy": d.get("fp32_policy", "fp32"),
+            "solar_setup": ((d.get("setup_config") or {}).get("name") or ""),
+            "solar_precision_override": (((d.get("setup_config") or {}).get("precision_override") or {}).get("precision") or ""),
             "solar_quant_dtypes": ",".join(d.get("quant_dtypes") or []),
             "solar_scalars_only_fallback": int(bool(d.get("scalars_only_fallback"))),
             "ratio_fused_over_ref": f"{ratio:.4f}",

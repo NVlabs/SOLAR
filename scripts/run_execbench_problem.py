@@ -252,6 +252,35 @@ def write_quant_metadata(out_base: Path, quant_dtypes: List[str]) -> None:
 # --------------------------------------------------------------------------- #
 # Model-file generation
 # --------------------------------------------------------------------------- #
+
+def load_setup_config(path: Optional[Path]) -> Dict[str, Any]:
+    """Read a setup YAML (see configs/execbench/leaderboard_b200.yaml).
+
+    Returns ``{}`` when no path is given. The returned dict carries the file's
+    ``name``, ``sha256`` and ``path`` so results can cite exactly which policy
+    produced them.
+    """
+    if path is None:
+        return {}
+    import hashlib
+    text = Path(path).read_text()
+    cfg = yaml.safe_load(text) or {}
+    cfg["_path"] = str(Path(path).resolve())
+    cfg["_sha256"] = hashlib.sha256(text.encode()).hexdigest()[:16]
+    cfg.setdefault("name", Path(path).stem)
+    cfg.setdefault("problem_overrides", {}) 
+    return cfg
+
+
+def problem_override(cfg: Dict[str, Any], problem: str) -> Dict[str, Any]:
+    """Per-problem entry of the setup config (exact name or unique prefix)."""
+    overrides = cfg.get("problem_overrides") or {}
+    if problem in overrides:
+        return dict(overrides[problem] or {})
+    hits = [k for k in overrides if problem.startswith(k) or k.startswith(problem)]
+    return dict(overrides[hits[0]] or {}) if len(hits) == 1 else {}
+
+
 def pick_precision(definition: Dict[str, Any], override: str | None) -> str:
     if override:
         return override
@@ -581,17 +610,21 @@ def main() -> None:
                         help=f"SOL-ExecBench data/benchmark dir (default: {DEFAULT_BENCH_ROOT})")
     parser.add_argument("--workload-index", type=int, default=0, help="Line index into workload.jsonl (default 0)")
     parser.add_argument("--workload-uuid", help="Select workload by uuid instead of index")
-    parser.add_argument("--arch-config", default="B200",
+    parser.add_argument("--setup-config", type=Path,
+                        help="Setup YAML (arch, fp32 policy, byte accounting, per-problem precision overrides); "
+                             "see configs/execbench/leaderboard_b200.yaml. Explicit CLI flags take precedence. "
+                             "Name, sha256 and the effective settings are recorded in sol_summary.json.")
+    parser.add_argument("--arch-config", default=None,
                         help="SOLAR arch config name under configs/arch or a YAML path (default: B200, "
-                             "the SOL-ExecBench leaderboard target)")
+                             "the SOL-ExecBench leaderboard target, or the setup config's arch_config)")
     parser.add_argument("--precision", help="Override SOLAR precision key (fp16, bf16, fp8, ...). "
                                             "Default: inferred from the definition's input dtypes.")
-    parser.add_argument("--fp32-as", default="fp32", choices=["fp32", "tf32", "fp16"],
+    parser.add_argument("--fp32-as", default=None, choices=["fp32", "tf32", "fp16"],
                         help="How to price problems whose inferred precision is fp32. 'fp32' (default) uses "
                              "4 B/elem and the CUDA-core rate; 'tf32' the TF32 tensor-core rate with 4 B/elem; "
                              "'fp16' reproduces the leaderboard reference table, which priced every non-quant "
                              "problem at 16-bit tensor-core rate and 2 B/elem.")
-    parser.add_argument("--uniform-bytes", action="store_true",
+    parser.add_argument("--uniform-bytes", action="store_true", default=None,
                         help="Legacy byte accounting: one bytes_per_element for every tensor. Default prices each "
                              "tensor at its own dtype width (bool masks 1 B, fp32 outputs of fp8 problems 4 B ...).")
     parser.add_argument("--reuse-from", type=Path,
@@ -616,8 +649,24 @@ def main() -> None:
     workload = load_workload(problem_dir, args.workload_index, args.workload_uuid)
     axes = resolve_axes(definition, workload)
     scalars = scalar_inputs(definition, workload)
+
+    # Effective setup: setup config supplies defaults, explicit CLI flags win,
+    # per-problem overrides in the config apply unless --precision was given.
+    setup = load_setup_config(args.setup_config)
+    override = problem_override(setup, definition["name"]) if setup else {}
+    if args.arch_config is None:
+        args.arch_config = setup.get("arch_config", "B200")
+    if args.fp32_as is None:
+        args.fp32_as = override.get("fp32_as", setup.get("fp32_as", "fp32"))
+    if args.uniform_bytes is None:
+        args.uniform_bytes = (setup.get("bytes_accounting", "per-tensor-dtype") == "uniform")
+    inferred_precision = pick_precision(definition, None)
     precision = pick_precision(definition, args.precision)
-    if args.precision is None and precision == "fp32" and args.fp32_as != "fp32":
+    override_applied = None
+    if args.precision is None and override.get("precision"):
+        precision = str(override["precision"])
+        override_applied = {"precision": precision, "reason": override.get("reason", "")}
+    elif args.precision is None and precision == "fp32" and args.fp32_as != "fp32":
         precision = args.fp32_as
 
     out_root = args.out_root or (SOLAR_ROOT / "out" / "execbench")
@@ -628,7 +677,10 @@ def main() -> None:
     print(f"Dir     : {problem_dir}")
     print(f"Workload: {workload.get('uuid')}  axes={workload['axes']}")
     print(f"Resolved axes: {axes}")
-    print(f"Precision: {precision}   Arch: {args.arch_config}")
+    print(f"Precision: {precision} (inferred {inferred_precision}, fp32-as {args.fp32_as}"
+          + (f", override: {override_applied['precision']}" if override_applied else "") + f")   Arch: {args.arch_config}")
+    if setup:
+        print(f"Setup   : {setup.get('name')} ({setup.get('_sha256')}) {setup.get('_path')}")
     print(f"Output  : {out_base}")
 
     quant_dtypes = detect_quant_dtypes(definition)
@@ -663,7 +715,14 @@ def main() -> None:
         "resolved_axes": axes,
         "arch": perf.get("arch", {}).get("name", args.arch_config),
         "precision": precision,
+        "inferred_precision": inferred_precision,
         "fp32_policy": args.fp32_as,
+        "setup_config": {
+            "name": setup.get("name"), "sha256": setup.get("_sha256"), "path": setup.get("_path"),
+            "arch_config": args.arch_config, "fp32_as": args.fp32_as,
+            "bytes_accounting": "uniform" if args.uniform_bytes else "per-tensor-dtype",
+            "precision_override": override_applied,
+        } if setup else None,
         "scalars_only_fallback": not any(sp["shape"] is not None for sp in definition["inputs"].values()),
         "quant_dtypes": quant_dtypes,
         "perf_mac_key": perf.get("arch", {}).get("mac_per_cycle_key"),
