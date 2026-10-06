@@ -738,12 +738,13 @@ class EinsumGraphAnalyzer:
             # ── Step 4: Classify inputs as external vs graph-internal ──
             # Uses memory_reads (already corrected) so no re-scanning needed.
             # Classify each input tensor:
-            #   - "weight"        → always external (DRAM read every time)
-            #   - graph-internal  → intermediate activation (fusable, skip in fused model)
-            #   - other           → external model input (DRAM read)
+            #   - graph-internal  → intermediate (fusable, skip in fused model)
+            #   - other           → external: weights and model inputs (DRAM read)
             #
-            # graph-internal = not a weight AND produced by a non-view op in
-            # the graph. Transparent views are traced back to their source.
+            # graph-internal = produced by a non-view op in the graph.
+            # Transparent views are traced back to their source. The tensor
+            # type is not consulted: an operand in a weight role can still be
+            # computed in the graph, e.g. F.linear(x, w * 2).
             input_name_list = tensor_names.get("inputs") or []
             graph_internal_input_elems = 0   # intermediate activations from other ops
             external_input_elems = 0         # weights + model-level inputs (always DRAM)
@@ -751,12 +752,9 @@ class EinsumGraphAnalyzer:
             for i, mem_read in enumerate(memory_reads):
                 if mem_read <= 0:
                     continue
-                itype = input_type_list[i] if i < len(input_type_list) else "weight"
                 iname = input_name_list[i] if i < len(input_name_list) else ""
 
-                if itype == "weight":
-                    is_graph_internal = False
-                elif iname in tensor_producers:
+                if iname in tensor_producers:
                     producer_id = tensor_producers[iname]
                     source_id = _trace_source_through_views(producer_id)
                     is_graph_internal = source_id in all_layer_ids and source_id not in transparent_layer_ids

@@ -56,10 +56,17 @@ index 53b3a37..856b21c 100644
  
      def check_node(self, node: COMPUTATION_NODES) -> None:
 diff --git a/src/torchview/recorder_tensor.py b/src/torchview/recorder_tensor.py
-index c0e2aee..f6ecf1a 100644
+index c0e2aee..1ec8e5a 100644
 --- a/src/torchview/recorder_tensor.py
 +++ b/src/torchview/recorder_tensor.py
-@@ -236,7 +236,8 @@ class RecorderTensor(torch.Tensor):
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import inspect
+ from typing import Any, Iterable, Mapping, TypeVar
+ from collections.abc import Callable
+ 
+@@ -236,7 +237,8 @@ class RecorderTensor(torch.Tensor):
          if kwargs is None:
              kwargs = {}
  
@@ -69,7 +76,7 @@ index c0e2aee..f6ecf1a 100644
              reduce_data_info([args, kwargs], collect_tensor_node, NodeContainer())
          )
  
-@@ -245,32 +246,69 @@ class RecorderTensor(torch.Tensor):
+@@ -245,32 +247,69 @@ class RecorderTensor(torch.Tensor):
              out = nn.parameter.Parameter.__torch_function__(
                  func, types, args, kwargs).as_subclass(RecorderTensor)
          else:
@@ -102,7 +109,7 @@ index c0e2aee..f6ecf1a 100644
 +        all_input_shapes: list[tuple[int, ...]] = []
 +        _seen_param_ids: set[int] = set()
 +
-+        for arg in _flatten_args(args):
++        for arg in _flatten_args(_linear_args(func, args, kwargs)):
 +            if not isinstance(arg, torch.Tensor) or not hasattr(arg, 'shape') or len(arg.shape) == 0:
 +                continue
 +
@@ -147,7 +154,7 @@ index c0e2aee..f6ecf1a 100644
  
          for i in args_nodes:
              i.add_child(cur_node)
-@@ -284,19 +322,23 @@ class RecorderTensor(torch.Tensor):
+@@ -284,19 +323,32 @@ class RecorderTensor(torch.Tensor):
          }
          traverse_data_inplace(out, attach_node(attach_kwargs))
  
@@ -165,6 +172,15 @@ index c0e2aee..f6ecf1a 100644
          return out
  
  
++def _linear_args(func: Any, args: Any, kwargs: dict[str, Any]) -> Any:
++    """Arguments of F.linear in signature order, so F.linear(x, bias=b, weight=w)
++    records (x, w, b), the same as F.linear(x, w, b)."""
++    if func is not F.linear or not kwargs:
++        return args
++    signature = inspect.signature(lambda input, weight, bias=None: None)
++    return tuple(signature.bind(*args, **kwargs).arguments.values())
++
++
 +def _flatten_args(args: Any) -> list[Any]:
 +    """Flatten nested args (tuples/lists) into a flat list of leaf values."""
 +    result: list[Any] = []
