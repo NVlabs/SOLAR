@@ -2423,59 +2423,27 @@ class PyTorchToEinsum:
         final_node_id = gates_id
         return subgraph, final_node_id, input_mapping
 
+    def _linear_operands(self, node_data: Dict[str, Any]) -> Optional[Tuple[int, int, int]]:
+        """Input slots of ``linear(input, weight, bias)``, or None if there is no bias.
+
+        The tracer records arguments in signature order, so position
+        identifies each operand; labels only say whether a tensor is a
+        parameter. Shapes that contradict the roles return None, so the node
+        is converted unsplit rather than mis-split.
+        """
+        if str(node_data.get("type", "")).lower() != "linear":
+            return None
+        shapes = node_data.get("input_shapes") or []
+        if len(shapes) != 3:
+            return None
+        x, weight, bias = shapes
+        if len(weight) != 2 or len(bias) != 1 or x[-1:] != weight[1:] or bias != weight[:1]:
+            return None
+        return 0, 1, 2
+
     def _should_split_linear_with_bias(self, node_data: Dict[str, Any]) -> bool:
         """Check if this is a linear layer with bias that should be split."""
-        node_type = node_data.get("type", "")
-        if isinstance(node_type, str):
-            node_type = node_type.lower()
-        else:
-            node_type = str(node_type).lower()
-
-        if node_type != "linear":
-            return False
-
-        input_shapes = node_data.get("input_shapes") or []
-        input_types = [str(t).lower() for t in (node_data.get("input_types") or [])]
-
-        # Prefer explicit tensor typing: one activation + at least two weight inputs,
-        # with at least one rank-1 weight as bias.
-        if input_types:
-            weight_indices = [i for i, t in enumerate(input_types) if t == "weight"]
-            input_indices = [i for i, t in enumerate(input_types) if t == "input"]
-            has_rank1_weight = any(
-                i < len(input_shapes) and isinstance(input_shapes[i], list) and len(input_shapes[i]) == 1
-                for i in weight_indices
-            )
-            if len(input_indices) >= 1 and len(weight_indices) >= 2 and has_rank1_weight:
-                return True
-            # Don't early-return False here; input_types can be incomplete
-            # in some traced graphs. Fall through to fallback checks.
-
-        # Fallback without input_types: x, weight, bias by shape rank pattern.
-        if len(input_shapes) >= 3:
-            has_rank1 = any(isinstance(s, list) and len(s) == 1 for s in input_shapes)
-            has_rank2_or_more = any(isinstance(s, list) and len(s) >= 2 for s in input_shapes)
-            if has_rank1 and has_rank2_or_more:
-                return True
-
-        # Fallback: infer from metadata/notes text when shape info is incomplete.
-        module_args = node_data.get("module_args") or {}
-        if bool(module_args.get("bias", False)):
-            return True
-
-        notes_blob = " ".join(
-            str(v)
-            for v in (
-                node_data.get("notes"),
-                module_args.get("raw_attributes"),
-                module_args.get("function_name"),
-            )
-            if v is not None
-        ).lower()
-        if "bias" in notes_blob:
-            return True
-
-        return False
+        return self._linear_operands(node_data) is not None
 
     def _validate_input_types_alignment(self, node_id: str, node_data: Dict[str, Any]) -> None:
         """Ensure input_types aligns 1:1 with input_shapes for op nodes.
@@ -2519,24 +2487,26 @@ class PyTorchToEinsum:
         input_shapes = node_data.get("input_shapes") or []
         output_shapes = node_data.get("output_shapes") or []
 
-        # Keep original input order from PyTorch graph; don't sort.
-        node_connections = (node_data.get("connections") or {}).get("inputs") or []
-        input_connections = list(node_connections)
-        for pred in op_graph.predecessors(node_id):
-            if pred not in input_connections:
-                input_connections.append(pred)
-        for info in start_nodes_info:
-            if node_id in info.get("consumers", []):
-                start_id = start_node_id_map.get(info["original_id"])
-                if start_id and start_id not in input_connections:
-                    input_connections.append(start_id)
-
-        # Use collapsed op-graph successors so tensor nodes (e.g. hidden-tensor)
-        # are not emitted in einsum connections.
-        output_connections = list(op_graph.successors(node_id))
-        if not output_connections:
-            raw_output_connections = list((node_data.get("connections") or {}).get("outputs") or [])
-            output_connections = [c for c in raw_output_connections if c in op_graph.nodes]
+        # Resolve every operand the way any other op is resolved (start nodes,
+        # producer ops and their output slots), then pick x, weight and bias
+        # by position. Entries are (slot, tensor name, shape, type, producer);
+        # producer is None for parameters.
+        linear = self._convert_operation(
+            node_id, node_data, op_graph, start_nodes_info, start_node_id_map
+        )
+        producers = iter(linear["connections"]["inputs"])
+        entries = [
+            (i, name, shape, itype, None if itype == "weight" else next(producers))
+            for i, (name, shape, itype) in enumerate(zip(
+                linear["tensor_names"]["inputs"],
+                linear["tensor_shapes"]["inputs"],
+                linear["tensor_types"]["inputs"],
+            ))
+        ]
+        activation_entry, weight_entry, bias_entry = (
+            entries[i] for i in self._linear_operands(node_data)
+        )
+        output_connections = linear["connections"]["outputs"]
 
         # Extract dtypes from the original node for propagation to sub-nodes.
         input_types = node_data.get("input_types") or []
@@ -2549,62 +2519,6 @@ class PyTorchToEinsum:
             act_dtype,
         )
         out_dtype = output_dtypes[0] if output_dtypes else act_dtype
-
-        # Infer x/weight/bias from ordered inputs + input_shapes.
-        typed_inputs: List[Tuple[int, str, Any, str]] = []
-        for idx, conn in enumerate(input_connections):
-            ishape = input_shapes[idx] if idx < len(input_shapes) else None
-            itype = input_types[idx] if idx < len(input_types) else "input"
-            typed_inputs.append((idx, conn, ishape, str(itype)))
-
-        activation_entry: Optional[Tuple[int, str, Any, str]] = None
-        weight_entries: List[Tuple[int, str, Any, str]] = []
-        for entry in typed_inputs:
-            _, conn, _, itype = entry
-            if itype == "weight" or "parameter-tensor" in conn:
-                weight_entries.append(entry)
-            elif activation_entry is None:
-                activation_entry = entry
-
-        if activation_entry is None and typed_inputs:
-            activation_entry = typed_inputs[0]
-
-        # F.linear on plain or computed tensors labels them "input", so the
-        # loop above can miss the weight or bias. If more than one traced
-        # argument is unlabelled, the first is the activation and the rest are
-        # weight/bias; later entries are op-graph aliases.
-        traced_args = typed_inputs[:len(input_shapes)] if input_shapes else typed_inputs
-        unlabelled = [e for e in traced_args if e not in weight_entries]
-        if len(unlabelled) > 1 and len(traced_args) <= 3:
-            activation_entry = unlabelled[0]
-            weight_entries = [e for e in traced_args if e is not activation_entry]
-
-        # Bias is normally rank-1 among weight inputs.
-        bias_entry: Optional[Tuple[int, str, Any, str]] = None
-        for entry in weight_entries:
-            ishape = entry[2]
-            if isinstance(ishape, list) and len(ishape) == 1:
-                bias_entry = entry
-                break
-
-        # Fallback when rank-based inference fails: last weight is bias.
-        if bias_entry is None and len(weight_entries) >= 2:
-            bias_entry = weight_entries[-1]
-
-        # Weight matrix is a non-bias weight, preferring rank-2.
-        weight_entry: Optional[Tuple[int, str, Any, str]] = None
-        for entry in weight_entries:
-            if bias_entry is not None and entry[1] == bias_entry[1]:
-                continue
-            ishape = entry[2]
-            if isinstance(ishape, list) and len(ishape) >= 2:
-                weight_entry = entry
-                break
-        if weight_entry is None:
-            for entry in weight_entries:
-                if bias_entry is None or entry[1] != bias_entry[1]:
-                    weight_entry = entry
-                    break
 
         weight_shape = list(weight_entry[2]) if (weight_entry and isinstance(weight_entry[2], list)) else None
         bias_shape = list(bias_entry[2]) if (bias_entry and isinstance(bias_entry[2], list)) else None
@@ -2650,27 +2564,18 @@ class PyTorchToEinsum:
         matmul_input_shapes_list: List[List[Any]] = []
         matmul_connection_inputs: List[str] = []
 
-        if activation_entry:
-            activation_conn_id = activation_entry[1]
-            # Activation tensors should reference the canonical start node IDs
-            # (e.g. start/start_1) after tensor-node collapse.
-            activation_einsum_id = start_node_id_map.get(activation_conn_id, activation_conn_id)
-            matmul_input_names.append(f"{activation_einsum_id}.Output")
-            if isinstance(activation_entry[2], list):
-                matmul_input_shapes_list.append(list(activation_entry[2]))
-            matmul_connection_inputs.append(activation_einsum_id)
-        if weight_entry:
-            matmul_input_names.append(f"{weight_entry[1]}.Output")
-            if isinstance(weight_entry[2], list):
-                matmul_input_shapes_list.append(list(weight_entry[2]))
-            matmul_connection_inputs.append(weight_entry[1])
+        for _, name, shape, _, producer in (activation_entry, weight_entry):
+            matmul_input_names.append(name)
+            matmul_input_shapes_list.append(list(shape))
+            if producer is not None:
+                matmul_connection_inputs.append(producer)
 
         matmul_tensor_names = {
             "inputs": matmul_input_names,
             "outputs": [f"{node_id}.Output"],
         }
         matmul_tensor_types = {
-            "inputs": ["input" if i == 0 else "weight" for i in range(len(matmul_input_names))],
+            "inputs": [activation_entry[3], weight_entry[3]],
             "outputs": ["output"],
         }
         matmul_tensor_shapes = {
@@ -2733,16 +2638,17 @@ class PyTorchToEinsum:
         add_connection_inputs = [node_id]
 
         if bias_entry and bias_shape:
-            add_input_names.append(f"{bias_entry[1]}.Output")
+            add_input_names.append(bias_entry[1])
             add_input_shapes_list.append(list(bias_shape))
-            add_connection_inputs.append(bias_entry[1])
+            if bias_entry[4] is not None:
+                add_connection_inputs.append(bias_entry[4])
 
         add_tensor_names = {
             "inputs": add_input_names,
             "outputs": [f"{add_node_id}.Output"],
         }
         add_tensor_types = {
-            "inputs": ["input"] + (["weight"] if len(add_input_names) > 1 else []),
+            "inputs": ["input"] + ([bias_entry[3]] if len(add_input_names) > 1 else []),
             "outputs": ["output"],
         }
         add_tensor_shapes = {
