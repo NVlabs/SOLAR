@@ -15,12 +15,15 @@ ap.add_argument("--subsets", nargs="+", default=["L1", "L2", "Quant", "FlashInfe
 ap.add_argument("--workload-index", type=int, default=0)
 ap.add_argument("--all-workloads", action="store_true", help="Run every line of each problem's workload.jsonl, not just --workload-index")
 ap.add_argument("--jobs", type=int, default=1, help="Parallel problem runs (each is its own process; size --mem-gb so jobs*mem-gb fits in RAM)")
-ap.add_argument("--arch-config", default="B200")
+ap.add_argument("--arch-config", default=None, help="Passed to the runner when given; otherwise the runner/setup-config default (B200)")
 ap.add_argument("--timeout", type=int, default=900)
 ap.add_argument("--limit", type=int)
 ap.add_argument("--resume", type=Path, help="Skip problems already marked ok in a previous sweep .jsonl")
 ap.add_argument("--out-root", type=Path, help="Passed to the runner: artifact root (default SOLAR/out/execbench)")
 ap.add_argument("--runner-args", default="", help="Extra arguments appended to every run_execbench_problem.py call, e.g. '--fp32-as fp16'")
+ap.add_argument("--setup-config", type=Path,
+                help="Setup YAML passed to every runner call (configs/execbench/*.yaml); its name/sha256 "
+                     "are recorded in every sweep row")
 ap.add_argument("--only-problems", nargs="*", default=[],
                 help="Restrict the sweep to these problem names (or unique prefixes like 031_)")
 ap.add_argument("--skip-problems", nargs="*", default=[],
@@ -86,9 +89,13 @@ print(f"{len(tasks)} runs queued ({args.jobs} parallel, cap {args.mem_gb} GB eac
 def run_task(subset, p, idx):
     t0 = time.time()
     cmd = [sys.executable, str(ROOT / "scripts/run_execbench_problem.py"), str(p),
-           "--workload-index", str(idx), "--arch-config", args.arch_config]
+           "--workload-index", str(idx)]
+    if args.arch_config:
+        cmd += ["--arch-config", args.arch_config]
     if args.out_root:
         cmd += ["--out-root", str(args.out_root)]
+    if args.setup_config:
+        cmd += ["--setup-config", str(args.setup_config)]
     if args.runner_args.strip():
         cmd += args.runner_args.split()
     try:
@@ -110,7 +117,11 @@ def run_task(subset, p, idx):
         if summ:
             row.update(uuid=summ["workload_uuid"], sol_fused_ms=summ["sol_ms"]["fused"],
                        sol_unfused_ms=summ["sol_ms"]["unfused"], macs=summ["total_macs"],
-                       precision=summ["precision"])
+                       precision=summ["precision"], fp32_policy=summ.get("fp32_policy"))
+            sc = summ.get("setup_config")
+            if sc:
+                row.update(setup=sc.get("name"), setup_sha256=sc.get("sha256"),
+                           precision_override=(sc.get("precision_override") or {}).get("precision"))
     else:
         tail = [l for l in (out + "\n" + err).splitlines() if l.strip()]
         row["error"] = " | ".join(tail[-6:])[-600:]
