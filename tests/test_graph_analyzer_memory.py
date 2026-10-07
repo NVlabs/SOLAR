@@ -24,6 +24,7 @@ Verifies that:
 """
 
 import pytest
+import yaml
 from pathlib import Path
 from textwrap import dedent
 
@@ -399,6 +400,68 @@ class TestLinearBiasFusedElements:
                 continue
             types = (layer.get("tensor_types") or {}).get("inputs", [])
             assert "weight" in types, f"{lid}: bias_add should have 'weight' input type"
+
+
+class TestLinearOperands:
+    """linear(x, weight, bias) split into matmul + bias_add. Each operand must
+    reference its real source (start node, producer op, or parameter) and the
+    fused estimate must count reads of x, weight and bias plus the output
+    write. A computed weight or bias (w * 2) is fused away."""
+
+    # forward args, forward body, AccelForge reads of matmul and bias_add
+    CASES = {
+        "nn_linear": ("", "self.fc(x)", ["start", "W1"], ["Model_linear", "W2"]),
+        "plain": ("w, b", "F.linear(x, w, b)", ["start", "start_1"], ["Model_linear", "start_2"]),
+        "kwargs": ("w, b", "F.linear(x, bias=b, weight=w)", ["start", "start_1"], ["Model_linear", "start_2"]),
+        "computed_weight": ("w, b", "F.linear(x, w * 2, b)", ["start", "Model_mul"], ["Model_linear", "start_2"]),
+        "computed_bias": ("w, b", "F.linear(x, w, b * 2)", ["start", "start_1"], ["Model_linear", "Model_mul"]),
+        "mixed": ("b", "F.linear(x, self.fc.weight, b)", ["start", "W1"], ["Model_linear", "start_1"]),
+        "no_bias": ("w", "F.linear(x, w * 2)", ["start", "Model_mul"], None),
+    }
+
+    @pytest.mark.parametrize("name", list(CASES))
+    def test_linear_operands(self, tmp_path, name):
+        args, body, matmul_reads, bias_reads = self.CASES[name]
+        inputs = {"w": "torch.randn(32, 64)", "b": "torch.randn(32)"}
+        arg_list = [a.strip() for a in args.split(",") if a.strip()]
+        fc = "self.fc = nn.Linear(64, 32)" if "self.fc" in body else "pass"
+        analysis = _run_full_pipeline(tmp_path, f"""\
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                {fc}
+
+            def forward(self, x{"".join(", " + a for a in arg_list)}):
+                return {body}
+
+        def get_inputs():
+            return [torch.randn(2, 16, 64){"".join(", " + inputs[a] for a in arg_list)}]
+
+        def get_init_inputs():
+            return []
+        """)
+
+        x, w, b, out = 2 * 16 * 64, 32 * 64, 32, 2 * 16 * 32
+        assert analysis["total"]["fused_elements"] == x + w + (b if bias_reads else 0) + out
+
+        # Every non-weight input is a tensor some layer produces.
+        layers = yaml.safe_load((tmp_path / "einsum" / "einsum_graph.yaml").read_text())["layers"]
+        produced = {n for l in layers.values() for n in l["tensor_names"]["outputs"]}
+        for lid, l in layers.items():
+            names, types = l["tensor_names"]["inputs"], l["tensor_types"]["inputs"]
+            assert {n for n, t in zip(names, types) if t != "weight"} <= produced, lid
+
+        af = yaml.safe_load((tmp_path / "einsum" / "af_einsum_graph.yaml").read_text())
+        reads = {
+            e["name"]: [t["name"] for t in e["tensor_accesses"] if not t.get("output")]
+            for e in af["workload"]["einsums"]
+        }
+        assert reads["Model_linear"] == matmul_reads
+        assert reads.get("Model_linear_bias_add") == bias_reads
 
 
 # ---------------------------------------------------------------------------
