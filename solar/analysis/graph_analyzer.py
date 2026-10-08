@@ -54,6 +54,7 @@ from solar.analysis.access_regions import (
     PARTITION_OPS,
     SLICE_VIEW_OPS,
     Box,
+    access_entry_to_boxes,
     box_size,
     partition_output_box,
     slice_op_boxes,
@@ -76,6 +77,59 @@ def _layer_raw_attributes(layer: Dict[str, Any]) -> Any:
     if raw is None:
         raw = (layer.get("module_args") or {}).get("raw_attributes")
     return raw
+
+
+def _layer_access_entry(
+    layer: Dict[str, Any],
+    direction: str,
+    slot_index: int,
+) -> Optional[Dict[str, Any]]:
+    """Return one structured ``access`` entry for an input/output slot."""
+    access = layer.get("access")
+    if not isinstance(access, dict):
+        return None
+    entries = access.get(direction)
+    if isinstance(entries, dict):
+        entry = entries.get(slot_index)
+        if entry is None:
+            entry = entries.get(str(slot_index))
+        return entry if isinstance(entry, dict) else None
+    if not isinstance(entries, list):
+        return None
+
+    has_explicit_index = any(isinstance(entry, dict) and "index" in entry for entry in entries)
+    if has_explicit_index:
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("index") == slot_index:
+                return entry
+        return None
+
+    if 0 <= slot_index < len(entries) and isinstance(entries[slot_index], dict):
+        return entries[slot_index]
+    return None
+
+
+def _access_base_size(access: Dict[str, Any]) -> int:
+    base_shape = access.get("base_shape")
+    if not isinstance(base_shape, list):
+        return 0
+    try:
+        return _product([int(dim) for dim in base_shape])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _canonical_access_boxes(
+    access: Optional[Dict[str, Any]],
+    canonical: str,
+    expected_elems: int,
+) -> Optional[List[Box]]:
+    if not isinstance(access, dict):
+        return None
+    base_tensor = access.get("base_tensor")
+    if base_tensor is not None and str(base_tensor) != canonical:
+        return None
+    return access_entry_to_boxes(access, expected_elems=expected_elems)
 
 
 def _canonical_external_tensor(
@@ -159,8 +213,12 @@ def _resolve_read_region(
     if tensor_name not in tensor_producers:
         # Direct read of the base tensor: its recorded size is the base size.
         full_candidate = int(input_sizes[input_index]) if input_index < len(input_sizes) else 0
-        boxes: Optional[List[Box]] = None
-        if op_type in SLICE_VIEW_OPS and input_index == 0:
+        boxes = _canonical_access_boxes(
+            _layer_access_entry(layer, "inputs", input_index),
+            canonical,
+            int(mem_read),
+        )
+        if boxes is None and op_type in SLICE_VIEW_OPS and input_index == 0:
             base_shape = input_shapes[0] if input_shapes else None
             if isinstance(base_shape, list):
                 boxes = slice_op_boxes(
@@ -194,6 +252,12 @@ def _resolve_read_region(
         ):
             output_index = _partition_output_index(output_names, tensor_name)
             if output_index is not None:
+                access = _layer_access_entry(producer, "outputs", output_index)
+                boxes = _canonical_access_boxes(access, canonical, int(mem_read))
+                if boxes is not None:
+                    full_size = _access_base_size(access) if access is not None else 0
+                    return canonical, boxes, full_size or _product(base_shape)
+
                 box = partition_output_box(
                     producer_type,
                     _layer_raw_attributes(producer),
