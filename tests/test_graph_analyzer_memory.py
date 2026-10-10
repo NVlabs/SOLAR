@@ -1538,7 +1538,11 @@ class TestExpandReadCappedAtBase:
 
     def test_fused_read_capped_at_base(self, analysis):
         reads = 1 * 64  # base tensor size, not the expanded 8 * 64
-        writes = 8 * 64
+        # The output is a scalar multiple of a broadcast: the minimal
+        # implementation computes the 64-element base and returns the
+        # expanded view, so the write is the base footprint as well
+        # (see _output_write_caps; SOL-ExecBench mask preparation).
+        writes = 1 * 64
         assert analysis["total"]["fused_elements"] == reads + writes
 
 

@@ -285,3 +285,65 @@ solar/
 ## License
 
 MIT License
+
+## Reproducing the SOL-ExecBench results
+
+The leaderboard SOL table (`sol_latency_ms` in SOL-ExecBench's `sol_latencies.csv`) is produced by the
+scripts under `scripts/` with the setup in `configs/execbench/leaderboard_b200.yaml`. Everything below
+is recorded in each result's `sol_summary.json` (setup name, sha256, effective precision, arch), so a
+number can be traced back to the policy that produced it.
+
+**Setup.** Install Solar (`install.sh` also applies `patches/torchview-parameter-tensors.patch` to
+torchview; the F.linear keyword-argument handling needs it) and check out SOL-ExecBench next to this
+repo with its data downloaded (`SOL-ExecBench/data/benchmark/<subset>/<problem>/{definition.json,workload.jsonl}`).
+Solar traces on the meta device / CPU; no GPU is needed.
+
+**Pricing policy (`configs/execbench/leaderboard_b200.yaml`).** B200 arch config; memory bytes at each
+tensor's own dtype (`bool` 1 B, fp8 1 B, bf16 2 B, fp32 4 B); the MAC rate class is inferred from the
+problem's declared input dtypes (narrowest floating class wins, fp8/nvfp4 from the quant metadata), and
+problems whose inputs are all float32 are priced at the **16-bit tensor-core rate** (`fp32_as: fp16`,
+also the runner default): the optimized kernels of the fp32 attention/decoder problems run bf16 math,
+and a SOL must stay below every implementation. Memory stays 4 B per fp32 element. Use `fp32_as: tf32`
+or `fp32` for the TF32 or CUDA-core rate; per-problem overrides (`problem_overrides`, each with a
+`reason`) are supported but none are used.
+
+```bash
+# One problem, one workload shape (writes out/execbench/<problem>/<uuid>/sol_summary.json)
+python scripts/run_execbench_problem.py ../SOL-ExecBench/data/benchmark/L1/044_moe_expert_computation \
+    --workload-index 0 --setup-config configs/execbench/leaderboard_b200.yaml
+
+# Every problem, every shape, one at a time (a 60 GB host; RLIMIT_AS cap per run, GPU hidden)
+python scripts/sweep_execbench.py --all-workloads --jobs 1 --mem-gb 55 --timeout 3600 \
+    --setup-config configs/execbench/leaderboard_b200.yaml --out-root out/execbench_full
+
+# Re-analyse with a changed converter/analyzer but the same traces (stage 1 is the expensive, policy-
+# independent part): --reuse-from reuses <root>/<problem>/<uuid>/graph/pytorch_graph.yaml;
+# --reuse-einsum also reuses the einsum graph; --in-process skips ~6 s of torch import per stage.
+python scripts/sweep_execbench.py --all-workloads --jobs 1 --mem-gb 55 --timeout 3600 \
+    --setup-config configs/execbench/leaderboard_b200.yaml --out-root out/execbench_v2 \
+    --runner-args "--reuse-from out/execbench_full --in-process"
+
+# Change only the pricing policy or the arch: re-run the perf stage alone (seconds per shape)
+python scripts/reprice_execbench.py --from-root out/execbench_v2 --to-root out/execbench_v3 \
+    --setup-config configs/execbench/leaderboard_b200.yaml
+
+# Compare with / export the leaderboard table (later roots override earlier ones for the same shape)
+python scripts/export_execbench_csv.py --ref ../SOL-ExecBench/.../sol_latencies.csv \
+    --results-root out/execbench_full --results-root out/execbench_v3 -o out/execbench_v3/sol_latencies
+```
+
+`export_execbench_csv.py` writes `<prefix>_compare.csv` (reference columns plus Solar's fused /
+unfused SOL, MACs, bytes, bottleneck, precision, setup, ratio and status) and `<prefix>_solar.csv`, a
+drop-in replacement for `sol_latencies.csv` whose `sol_latency_ms` is Solar's fused SOL. The `fused`
+SOL is the fully fused lower bound (each external byte read once, intermediates on chip); `unfused`
+charges every op's inputs and outputs.
+
+Reproducibility notes:
+* Run sweeps sequentially (`--jobs 1`); a dozen parallel traces exhausted a 60 GB host.
+* Traces of large shapes are slow (minutes to ~40 min for the biggest MLA prefill shape) but are
+  reused by every later re-analysis; never re-trace to change a policy.
+* One shape does not convert on a 60 GB host: FlashInfer-Bench/014 #11 (18 sequences, 291k pages;
+  the trace is 1.5 GB / 1.4 M nodes). `export_execbench_csv.py` keeps the reference value for it and
+  flags it in `sol_source`.
+* `scripts/crosscheck_execbench_ref.py`, `judge_execbench_deviations.py` and
+  `summarize_execbench_sweep.py` produce the per-shape comparison, verdicts and sweep summaries.

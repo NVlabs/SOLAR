@@ -1,0 +1,29 @@
+# SOL-ExecBench setup for the leaderboard SOL table (B200).
+#
+# Every sol_summary.json produced under this setup records the file's name,
+# sha256 and the effective per-problem settings, so a result can be
+# reproduced from the problem definition + traced graph + this file alone.
+#
+#   python scripts/run_execbench_problem.py <problem_dir> --setup-config configs/execbench/leaderboard_b200.yaml
+#   python scripts/sweep_execbench.py --all-workloads --setup-config configs/execbench/leaderboard_b200.yaml ...
+#   python scripts/reprice_execbench.py --from-root out/<prev> --to-root out/<new> --setup-config configs/execbench/leaderboard_b200.yaml
+#
+# Explicit CLI flags (--arch-config, --fp32-as, --precision, --uniform-bytes)
+# take precedence over this file.
+name: leaderboard_b200
+arch_config: B200
+
+# Problems whose inputs are all float32: price multiply-accumulate at the
+# 16-bit tensor-core rate. The measured optimized baselines of the fp32
+# attention/decoder problems (L1/067, L2/019, L2/002) sustain 1.2-1.6 PFLOPS
+# on fp32 inputs, above any TF32 peak, i.e. they run bf16/fp16 math; a SOL
+# that is a true lower bound for every implementation must use that rate.
+# Memory bytes always follow each tensor's own dtype (4 B per fp32 element).
+# Alternatives: tf32 (TF32 tensor-core rate), fp32 (CUDA-core rate).
+fp32_as: fp16
+bytes_accounting: per-tensor-dtype
+
+# Per-problem overrides: {problem_name: {precision: <rate class>, fp32_as: ..., reason: "..."}}.
+# `precision` sets the MAC-rate class for the whole problem (memory bytes are
+# unaffected). Each override must state why. None needed under the fp16 policy.
+problem_overrides: {}
