@@ -75,3 +75,12 @@ def test_pick_precision_still_infers_from_definition(runner):
     assert runner.pick_precision(definition, "bf16") == "bf16"
     definition["inputs"]["w"]["dtype"] = "bfloat16"
     assert runner.pick_precision(definition, None) == "bf16"   # narrowest floating class wins
+
+
+def test_default_fp32_policy_is_fp16_without_config(runner):
+    # No setup config: the runner/reprice fall back to the 16-bit MAC rate for
+    # all-fp32 problems (memory still 4 B/elem), the same as the shipped config.
+    import inspect
+    src = inspect.getsource(runner)
+    assert 'setup.get("fp32_as", "fp16")' in src
+

@@ -50,7 +50,7 @@ from solar.perf import EinsumGraphPerfModel  # noqa: E402
 
 setup = runner.load_setup_config(args.setup_config)
 arch = args.arch_config or setup.get("arch_config", "B200")
-fp32_as_default = args.fp32_as or setup.get("fp32_as", "fp32")
+fp32_as_default = args.fp32_as or setup.get("fp32_as", "fp16")
 dtype_bytes = setup.get("bytes_accounting", "per-tensor-dtype") != "uniform"
 
 defs: dict = {}

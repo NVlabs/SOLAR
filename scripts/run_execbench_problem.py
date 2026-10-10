@@ -620,10 +620,11 @@ def main() -> None:
     parser.add_argument("--precision", help="Override SOLAR precision key (fp16, bf16, fp8, ...). "
                                             "Default: inferred from the definition's input dtypes.")
     parser.add_argument("--fp32-as", default=None, choices=["fp32", "tf32", "fp16"],
-                        help="How to price problems whose inferred precision is fp32. 'fp32' (default) uses "
-                             "4 B/elem and the CUDA-core rate; 'tf32' the TF32 tensor-core rate with 4 B/elem; "
-                             "'fp16' reproduces the leaderboard reference table, which priced every non-quant "
-                             "problem at 16-bit tensor-core rate and 2 B/elem.")
+                        help="MAC-rate class for problems whose inputs are all float32 (memory bytes always "
+                             "follow each tensor's own dtype, 4 B per fp32 element). Default 'fp16': the 16-bit "
+                             "tensor-core rate, because optimized kernels for fp32 problems run bf16/fp16 math and "
+                             "a SOL must lower-bound every implementation. 'tf32': TF32 tensor-core rate. "
+                             "'fp32': CUDA-core rate. A --setup-config may set this; the flag overrides it.")
     parser.add_argument("--uniform-bytes", action="store_true", default=None,
                         help="Legacy byte accounting: one bytes_per_element for every tensor. Default prices each "
                              "tensor at its own dtype width (bool masks 1 B, fp32 outputs of fp8 problems 4 B ...).")
@@ -657,7 +658,7 @@ def main() -> None:
     if args.arch_config is None:
         args.arch_config = setup.get("arch_config", "B200")
     if args.fp32_as is None:
-        args.fp32_as = override.get("fp32_as", setup.get("fp32_as", "fp32"))
+        args.fp32_as = override.get("fp32_as", setup.get("fp32_as", "fp16"))
     if args.uniform_bytes is None:
         args.uniform_bytes = (setup.get("bytes_accounting", "per-tensor-dtype") == "uniform")
     inferred_precision = pick_precision(definition, None)
