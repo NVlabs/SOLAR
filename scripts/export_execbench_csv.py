@@ -39,7 +39,14 @@ ap.add_argument("--ref", type=Path, required=True)
 ap.add_argument("--results-root", type=Path, action="append", required=True)
 ap.add_argument("-o", "--out-prefix", type=Path, required=True)
 ap.add_argument("--tol", type=float, default=0.10)
+ap.add_argument("--confidence", type=Path,
+                help="confidence.csv from scripts/confidence_execbench.py; adds solar_confidence columns")
 args = ap.parse_args()
+
+confidence = {}
+if args.confidence and args.confidence.exists():
+    for r in csv.DictReader(open(args.confidence)):
+        confidence[(r["artifact_id"], r["workload_uuid"])] = (r["confidence"], r["confidence_reason"])
 
 ours = {}
 for root in args.results_root:
@@ -56,7 +63,7 @@ compare_fields = ref_fields + [
     "solar_bottleneck", "solar_precision", "solar_fp32_policy", "solar_setup", "solar_precision_override",
     "solar_quant_dtypes",
     "solar_scalars_only_fallback", "ratio_fused_over_ref", "ratio_fused_plus_floor_over_ref",
-    "status",
+    "status", "solar_confidence", "solar_confidence_reason",
 ]
 compare_rows, solar_rows = [], []
 ratios = []
@@ -71,6 +78,7 @@ for r in ref_rows:
         row.update({k: "" for k in compare_fields if k not in r})
         row["status"] = "no-solar-result"
         srow["sol_source"] = "reference (SOLAR result missing)"
+        srow["sol_confidence"] = ""
     else:
         ref_ms = float(r["sol_latency_ms"]) if r["sol_latency_ms"] else float("nan")
         fused = d["sol_ms"]["fused"]
@@ -102,9 +110,12 @@ for r in ref_rows:
             "ratio_fused_over_ref": f"{ratio:.4f}",
             "ratio_fused_plus_floor_over_ref": f"{ratio_f:.4f}",
             "status": status,
+            "solar_confidence": confidence.get(key, ("", ""))[0],
+            "solar_confidence_reason": confidence.get(key, ("", ""))[1],
         })
         srow["sol_latency_ms"] = f"{fused:.6g}"
         srow["sol_source"] = "SOLAR fused (no launch floor)"
+        srow["sol_confidence"] = confidence.get(key, ("", ""))[0]
     compare_rows.append(row)
     solar_rows.append(srow)
 
@@ -114,7 +125,7 @@ with open(cmp_path, "w", newline="") as fh:
     w.writeheader(); w.writerows(compare_rows)
 sol_path = Path(f"{args.out_prefix}_solar.csv")
 with open(sol_path, "w", newline="") as fh:
-    w = csv.DictWriter(fh, fieldnames=ref_fields + ["sol_source"])
+    w = csv.DictWriter(fh, fieldnames=ref_fields + ["sol_source", "sol_confidence"])
     w.writeheader(); w.writerows(solar_rows)
 
 n = len(ref_rows)
