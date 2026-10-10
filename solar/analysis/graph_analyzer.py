@@ -379,7 +379,6 @@ def _structured_sparsity(
                 cond = get(cins[0])
                 toks, _ = _raw_call_tokens(_layer_raw_attributes(c))
                 if cond and cond[0] == "Z" and len(toks) >= 3:
-                    pos = [i for i, t in enumerate(toks) if t == "T"]
                     # tensor is the 2nd tensor arg (x) or the 3rd (y)
                     idx = cins.index(tensor)
                     if idx == 1 and len(toks) > 2 and toks[2] != "T" and _scalar_kind(toks[2]):
