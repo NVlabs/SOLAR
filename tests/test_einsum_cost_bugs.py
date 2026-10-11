@@ -148,7 +148,15 @@ class TestMHAExpansion:
                          ],
                          output_shapes=[[S, B, D], [B, S, S]],
                          input_types=["input", "input", "input",
-                                     "weight", "weight", "weight", "weight"])
+                                     "weight", "weight", "weight", "weight"],
+                         module_args={"raw_attributes": (
+                             f"[[Tensor(shape=({S}, {B}, {D}), dtype=torch.float32), "
+                             f"Tensor(shape=({S}, {B}, {D}), dtype=torch.float32), "
+                             f"Tensor(shape=({S}, {B}, {D}), dtype=torch.float32), {D}, 1, "
+                             f"Tensor(shape=({3 * D}, {D}), dtype=torch.float32), "
+                             f"Tensor(shape=({3 * D},), dtype=torch.float32), None, None, False, 0.0, "
+                             f"Tensor(shape=({D}, {D}), dtype=torch.float32), "
+                             f"Tensor(shape=({D},), dtype=torch.float32)], {{}}]")})
         op_graph.add_edge("start_0", "mha")
 
         start_nodes_info = [{
