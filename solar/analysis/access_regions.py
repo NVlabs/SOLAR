@@ -207,6 +207,83 @@ def _is_static_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+
+def box_to_list(box: Box) -> List[List[int]]:
+    """Serialize a region box to YAML-friendly ``[[lo, hi], ...]`` form."""
+    return [[int(lo), int(hi)] for lo, hi in box]
+
+
+def boxes_to_list(boxes: Sequence[Box]) -> List[List[List[int]]]:
+    """Serialize region boxes to YAML-friendly lists."""
+    return [box_to_list(box) for box in boxes]
+
+
+def access_entry_to_boxes(
+    access: Any,
+    expected_elems: Optional[int] = None,
+) -> Optional[List[Box]]:
+    """Validate and deserialize one ``access`` metadata entry.
+
+    The converter stores boxes as ``[[lo, hi], ...]`` lists so the regions
+    survive YAML round-trips. This helper accepts only internally
+    consistent boxes whose total read multiplicity matches
+    ``expected_elems`` when provided; invalid or missing metadata returns
+    None so callers can fall back to legacy raw-attribute parsing.
+    """
+    if not isinstance(access, dict):
+        return None
+    raw_boxes = access.get("boxes")
+    if not isinstance(raw_boxes, (list, tuple)) or not raw_boxes:
+        return None
+
+    raw_base_shape = access.get("base_shape")
+    base_shape: Optional[List[int]] = None
+    if raw_base_shape is not None:
+        if not isinstance(raw_base_shape, (list, tuple)):
+            return None
+        base_shape = []
+        for dim in raw_base_shape:
+            if not _is_static_int(dim) or dim < 0:
+                return None
+            base_shape.append(int(dim))
+
+    boxes: List[Box] = []
+    rank: Optional[int] = None
+    for raw_box in raw_boxes:
+        if not isinstance(raw_box, (list, tuple)):
+            return None
+        if rank is None:
+            rank = len(raw_box)
+        elif len(raw_box) != rank:
+            return None
+        if base_shape is not None and len(raw_box) != len(base_shape):
+            return None
+
+        intervals: List[Tuple[int, int]] = []
+        for axis, raw_interval in enumerate(raw_box):
+            if not isinstance(raw_interval, (list, tuple)) or len(raw_interval) != 2:
+                return None
+            lo, hi = raw_interval
+            if not (_is_static_int(lo) and _is_static_int(hi)):
+                return None
+            lo_i, hi_i = int(lo), int(hi)
+            if lo_i < 0 or lo_i >= hi_i:
+                return None
+            if base_shape is not None:
+                dim_size = base_shape[axis]
+                if dim_size <= 0 or hi_i > dim_size:
+                    return None
+            intervals.append((lo_i, hi_i))
+        boxes.append(tuple(intervals))
+
+    if expected_elems is not None:
+        if not _is_static_int(expected_elems) or expected_elems <= 0:
+            return None
+        if sum(box_size(box) for box in boxes) != int(expected_elems):
+            return None
+
+    return boxes
+
 def _normalize_int_index(index: int, dim_size: int) -> Optional[int]:
     if index < 0:
         index += dim_size
