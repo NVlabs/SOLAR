@@ -56,7 +56,7 @@ index 53b3a37..856b21c 100644
  
      def check_node(self, node: COMPUTATION_NODES) -> None:
 diff --git a/src/torchview/recorder_tensor.py b/src/torchview/recorder_tensor.py
-index c0e2aee..1ec8e5a 100644
+index c0e2aee..b67fb53 100644
 --- a/src/torchview/recorder_tensor.py
 +++ b/src/torchview/recorder_tensor.py
 @@ -1,5 +1,6 @@
@@ -109,7 +109,7 @@ index c0e2aee..1ec8e5a 100644
 +        all_input_shapes: list[tuple[int, ...]] = []
 +        _seen_param_ids: set[int] = set()
 +
-+        for arg in _flatten_args(_linear_args(func, args, kwargs)):
++        for arg in _flatten_args(_signature_args(func, args, kwargs)):
 +            if not isinstance(arg, torch.Tensor) or not hasattr(arg, 'shape') or len(arg.shape) == 0:
 +                continue
 +
@@ -154,7 +154,7 @@ index c0e2aee..1ec8e5a 100644
  
          for i in args_nodes:
              i.add_child(cur_node)
-@@ -284,19 +323,32 @@ class RecorderTensor(torch.Tensor):
+@@ -284,19 +323,72 @@ class RecorderTensor(torch.Tensor):
          }
          traverse_data_inplace(out, attach_node(attach_kwargs))
  
@@ -172,13 +172,50 @@ index c0e2aee..1ec8e5a 100644
          return out
  
  
-+def _linear_args(func: Any, args: Any, kwargs: dict[str, Any]) -> Any:
-+    """Arguments of F.linear in signature order, so F.linear(x, bias=b, weight=w)
-+    records (x, w, b), the same as F.linear(x, w, b)."""
-+    if func is not F.linear or not kwargs:
++# Signatures of C-implemented torch functions, which ``inspect.signature``
++# cannot see.  Python-level functionals (F.multi_head_attention_forward,
++# F.layer_norm, ...) are introspected directly.
++_BUILTIN_SIGNATURES: dict[Any, inspect.Signature] = {
++    F.linear: inspect.signature(lambda input, weight, bias=None: None),
++    F.scaled_dot_product_attention: inspect.signature(
++        lambda query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
++        scale=None, enable_gqa=False: None
++    ),
++}
++
++
++def _contains_tensor(value: Any) -> bool:
++    if isinstance(value, torch.Tensor):
++        return True
++    if isinstance(value, (list, tuple)):
++        return any(_contains_tensor(v) for v in value)
++    if isinstance(value, dict):
++        return any(_contains_tensor(v) for v in value.values())
++    return False
++
++
++def _signature_args(func: Any, args: Any, kwargs: dict[str, Any]) -> Any:
++    """Arguments of ``func`` in signature order, keyword tensors included.
++
++    ``F.linear(x, bias=b, weight=w)`` records ``(x, w, b)`` exactly like
++    ``F.linear(x, w, b)``, and ``F.scaled_dot_product_attention(q, k, v,
++    attn_mask=m)`` records the mask as its fourth tensor.  Calls whose
++    keyword arguments carry no tensor are returned unchanged, as are calls
++    to functions without a known signature.
++    """
++    if not kwargs or not _contains_tensor(kwargs):
 +        return args
-+    signature = inspect.signature(lambda input, weight, bias=None: None)
-+    return tuple(signature.bind(*args, **kwargs).arguments.values())
++    signature = _BUILTIN_SIGNATURES.get(func)
++    if signature is None:
++        try:
++            signature = inspect.signature(func)
++        except (TypeError, ValueError):
++            return args
++    try:
++        bound = signature.bind(*args, **kwargs)
++    except TypeError:
++        return args
++    return tuple(bound.arguments.values())
 +
 +
 +def _flatten_args(args: Any) -> list[Any]:
@@ -186,6 +223,9 @@ index c0e2aee..1ec8e5a 100644
 +    result: list[Any] = []
 +    if isinstance(args, (tuple, list)):
 +        for item in args:
++            result.extend(_flatten_args(item))
++    elif isinstance(args, dict):
++        for item in args.values():
 +            result.extend(_flatten_args(item))
 +    else:
 +        result.append(args)
