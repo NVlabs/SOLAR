@@ -130,14 +130,14 @@ code{{font-family:var(--mono);font-size:12.5px;background:var(--bg);border:1px s
 
 <div class="eyebrow">Solar · SOL-ExecBench · B200 · {esc(D.get('label') or '')}</div>
 <h1>Solar SOL for SOL-ExecBench</h1>
-<p class="lede">Speed-of-light latency for every problem and workload shape in SOL-ExecBench, produced by Solar's traced einsum roofline model under the <code>{esc(args.setup)}</code> setup. Each shape is compared with the user-supplied comparison table and with the two measured implementations in that table (the reference implementation and the optimized baseline). A SOL is a lower bound, so it must never exceed a measured kernel.</p>
+<p class="lede">Speed-of-light latency for every problem and workload shape in SOL-ExecBench, produced by Solar's traced einsum roofline model under the <code>{esc(args.setup)}</code> setup. Each shape is compared with the per-workload SOL in the comparison CSV supplied to <code>export_execbench_csv.py --ref</code> and, when that CSV carries them, with its measured latencies (<code>reference_latency_ms</code>, <code>optimized_baseline_latency_ms</code>). A SOL is a lower bound, so any shape whose SOL exceeds a measured latency is reported below.</p>
 
 <div class="strip">
   <div class="tile"><div class="v">{n:,}</div><div class="k">workload shapes with a SOL (of {D['shapes_total']:,})</div></div>
-  <div class="tile"><div class="v">{D['median_ratio']:.3f}</div><div class="k">median SOL / leaderboard SOL</div></div>
-  <div class="tile"><div class="v">{pct(D['buckets'][0]['shapes'])}</div><div class="k">shapes within ±10 % of the leaderboard SOL</div></div>
-  <div class="tile ok"><div class="v">{viol['reference_impl']}</div><div class="k">shapes with SOL above the measured reference implementation</div></div>
-  <div class="tile ok"><div class="v">{viol['optimized_baseline']}</div><div class="k">shapes with SOL above the measured optimized baseline</div></div>
+  <div class="tile"><div class="v">{D['median_ratio']:.3f}</div><div class="k">median SOL / comparison SOL</div></div>
+  <div class="tile"><div class="v">{pct(D['buckets'][0]['shapes'])}</div><div class="k">shapes within ±10 % of the comparison SOL</div></div>
+  <div class="tile ok"><div class="v">{'n/a' if viol['reference_impl'] is None else viol['reference_impl']}</div><div class="k">shapes with SOL above <code>reference_latency_ms</code>{' (not in the comparison CSV)' if viol['reference_impl'] is None else ''}</div></div>
+  <div class="tile ok"><div class="v">{'n/a' if viol['optimized_baseline'] is None else viol['optimized_baseline']}</div><div class="k">shapes with SOL above <code>optimized_baseline_latency_ms</code>{' (not in the comparison CSV)' if viol['optimized_baseline'] is None else ''}</div></div>
   <div class="tile"><div class="v">{conf.get('high',0)} / {conf.get('medium',0)} / {conf.get('low',0)}</div><div class="k">shapes at high / medium / low confidence</div></div>
 </div>
 
@@ -153,12 +153,12 @@ code{{font-family:var(--mono);font-size:12.5px;background:var(--bg);border:1px s
 
 <h2>Key assumptions of the SOL model</h2>
 <ul class="assume">
-  <li><b>Precision.</b> The MAC-rate class comes from the problem's declared input dtypes (narrowest floating class wins; fp8 and nvfp4 from the quant metadata). Problems whose inputs are all float32, and anything with no dtype specified, are priced at the <b>16-bit tensor-core rate</b>: optimized kernels for those problems run bf16/fp16 math, and the bound has to hold for them. Memory bytes always use each tensor's own width (bool 1 B, fp8 1 B, bf16 2 B, fp32 4 B, complex64 8 B).</li>
-  <li><b>Architecture.</b> B200 at the sustained clocks of <code>configs/arch/B200.yaml</code>: 0.906 PFLOPS TF32, 1.81 PFLOPS fp16/bf16, 3.62 PFLOPS fp8, 7.25 PFLOPS nvfp4 dense; 8 TB/s HBM. No launch floor is added to Solar's numbers (the leaderboard table adds about 0.4 µs; the comparison accepts either).</li>
+  <li><b>Precision.</b> The MAC-rate class comes from the problem's declared input dtypes (narrowest floating class wins; fp8 and nvfp4 from the quant metadata). Problems whose inputs are all float32, and anything with no dtype specified, are priced at the <b>16-bit tensor-core rate</b> (<code>fp32_as: fp16</code>), this setup's explicit modeling policy so that the SOL also lower-bounds reduced-precision tensor-core implementations. Memory bytes always use each tensor's own width (bool 1 B, fp8 1 B, bf16 2 B, fp32 4 B, complex64 8 B).</li>
+  <li><b>Architecture.</b> B200 at the sustained clocks of <code>configs/arch/B200.yaml</code>: 0.906 PFLOPS TF32, 1.81 PFLOPS fp16/bf16, 3.62 PFLOPS fp8, 7.25 PFLOPS nvfp4 dense; 8 TB/s HBM. No launch floor is added to Solar's numbers (if the comparison table includes one, the ratio accepts either form).</li>
   <li><b>Fusion.</b> The reported SOL is the fully fused bound: every external byte is read from HBM at most once (access regions deduplicated per tensor), intermediates stay on chip, declared outputs are written once. The unfused figure (every op's inputs and outputs) is kept in the CSV.</li>
   <li><b>Only touched memory is charged.</b> Paged and ragged attention read the gathered pages, MoE expert loops read each expert slice once, a cast or copy that only feeds a gather reads the gathered footprint, creation ops read nothing, broadcast outputs are views, and sparse scatters into zero buffers write only the touched rows.</li>
   <li><b>Only needed work is charged.</b> Triangular and additive -inf masks halve the attention and chunk-scan einsums they mask, products whose output is only partly gathered are computed for those rows, and einsums over operands that are pure replications (one group expanded to all heads) are computed once.</li>
-  <li><b>Reference conventions kept.</b> Packed FP4 pairs count as two MACs; dense declared outputs are written in full unless the reference itself updates them sparsely; masks that arrive as input data are not discounted.</li>
+  <li><b>Benchmark conventions.</b> Packed FP4 pairs count as two MACs; dense declared outputs are written in full unless the problem's reference code itself updates them sparsely; masks that arrive as input data are not discounted.</li>
 </ul>
 
 <h2>Confidence of each SOL</h2>
@@ -176,22 +176,22 @@ code{{font-family:var(--mono);font-size:12.5px;background:var(--bg);border:1px s
 {subset_rows}
 </table></div>
 
-<h2>Problems whose median SOL is above the leaderboard SOL by more than 10 % ({len(rows_above)} of {len(problems)})</h2>
-<p>Each has a hand-checked cause. None of them exceeds a measured kernel.</p>
+<h2>Problems whose median SOL is above the comparison SOL by more than 10 % ({len(rows_above)} of {len(problems)})</h2>
+<p>{sum(1 for p in rows_above if p["cause"])} of {len(rows_above)} carry a cause from the optional <code>--notes</code> file; {sum(1 for p in rows_above if p.get("max_sol_over_measured") and p["max_sol_over_measured"] > 1)} exceed a measured latency where one is given.</p>
 <div class="scroll"><table>
-<tr><th>subset</th><th>problem</th><th class="num">shapes</th><th class="num">median SOL (µs)</th><th class="num">leaderboard SOL (µs)</th><th class="num">best measured (µs)</th><th class="num">SOL / ref</th><th>confidence</th><th>cause</th></tr>
+<tr><th>subset</th><th>problem</th><th class="num">shapes</th><th class="num">median SOL (µs)</th><th class="num">comparison SOL (µs)</th><th class="num">best measured (µs)</th><th class="num">SOL / ref</th><th>confidence</th><th>cause</th></tr>
 {problem_rows(rows_above)}
 </table></div>
 
-<h2>Problems whose median SOL is below the leaderboard SOL by more than 10 % ({len(rows_below)})</h2>
+<h2>Problems whose median SOL is below the comparison SOL by more than 10 % ({len(rows_below)})</h2>
 <div class="scroll"><table>
-<tr><th>subset</th><th>problem</th><th class="num">shapes</th><th class="num">median SOL (µs)</th><th class="num">leaderboard SOL (µs)</th><th class="num">best measured (µs)</th><th class="num">SOL / ref</th><th>confidence</th><th>cause</th></tr>
+<tr><th>subset</th><th>problem</th><th class="num">shapes</th><th class="num">median SOL (µs)</th><th class="num">comparison SOL (µs)</th><th class="num">best measured (µs)</th><th class="num">SOL / ref</th><th>confidence</th><th>cause</th></tr>
 {problem_rows(rows_below)}
 </table></div>
 
 <details><summary>All {len(problems)} problems (medians over their shapes)</summary>
 <div class="scroll"><table>
-<tr><th>subset</th><th>problem</th><th class="num">shapes</th><th class="num">median SOL (µs)</th><th class="num">leaderboard SOL (µs)</th><th class="num">best measured (µs)</th><th class="num">SOL / ref</th><th class="num">max SOL / measured</th><th>precision</th><th>bottleneck</th><th>confidence</th></tr>
+<tr><th>subset</th><th>problem</th><th class="num">shapes</th><th class="num">median SOL (µs)</th><th class="num">comparison SOL (µs)</th><th class="num">best measured (µs)</th><th class="num">SOL / ref</th><th class="num">max SOL / measured</th><th>precision</th><th>bottleneck</th><th>confidence</th></tr>
 {all_problem_rows}
 </table></div>
 </details>
@@ -201,9 +201,9 @@ code{{font-family:var(--mono);font-size:12.5px;background:var(--bg);border:1px s
 <pre style="font-family:var(--mono);font-size:12.5px;overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px">python scripts/sweep_execbench.py --all-workloads --jobs 1 --mem-gb 55 --timeout 3600 \\
     --setup-config configs/execbench/leaderboard_b200.yaml --out-root out/execbench_full
 python scripts/confidence_execbench.py --results-root out/execbench_full -o out/execbench_full/confidence.csv
-python scripts/export_execbench_csv.py --ref &lt;comparison.csv&gt; --results-root out/execbench_full \\
-    --confidence out/execbench_full/confidence.csv -o out/execbench_full/comparison
-python scripts/report_execbench.py out/execbench_full/comparison_compare.csv --label full
+python scripts/export_execbench_csv.py --ref &lt;your comparison csv&gt; --results-root out/execbench_full \\
+    --confidence out/execbench_full/confidence.csv -o out/execbench_full/sol_table
+python scripts/report_execbench.py out/execbench_full/sol_table_compare.csv --label full
 python scripts/execbench_report_html.py out/execbench_full/report_data.json -o out/execbench_full/sol_report.html</pre>
 <p>Changing only the pricing policy or the arch is a perf-stage re-run: <code>scripts/reprice_execbench.py</code>. See the README section "Reproducing the SOL-ExecBench results".</p>
 <div id="tip" hidden></div>
@@ -259,7 +259,7 @@ function draw(){{
   el.insertAdjacentHTML("beforeend", `<div class="dim" style="font-size:12.5px;margin-top:6px">${{n.toLocaleString()}} shapes shown · ${{above}} above the measured runtime</div>`);
   el.querySelectorAll("circle").forEach(cn=>{{
     cn.addEventListener("mousemove",ev=>{{ const p=pts[+cn.dataset.i];
-      tip.innerHTML=`<b>${{p[0]}}/${{p[1]}}</b><br>SOL ${{fmt(p[2])}} µs · best measured ${{fmt(p[3])}} µs (${{(p[3]/p[2]).toFixed(1)}}× headroom)<br>leaderboard SOL ${{fmt(p[4])}} µs · confidence ${{p[5]}}`;
+      tip.innerHTML=`<b>${{p[0]}}/${{p[1]}}</b><br>SOL ${{fmt(p[2])}} µs · best measured ${{fmt(p[3])}} µs (${{(p[3]/p[2]).toFixed(1)}}× headroom)<br>comparison SOL ${{fmt(p[4])}} µs · confidence ${{p[5]}}`;
       tip.hidden=false; tip.style.left=Math.min(ev.clientX+14, window.innerWidth-340)+"px"; tip.style.top=(ev.clientY+14)+"px"; }});
     cn.addEventListener("mouseleave",()=>{{ tip.hidden=true; }});
   }});

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Summaries of a SOL-ExecBench comparison CSV (from export_execbench_csv.py).
+"""Summaries of a SOL-ExecBench comparison CSV (``<out>_compare.csv`` from export_execbench_csv.py --ref).
 
 Writes next to the CSV:
 * ``SUMMARY.md``                 shape-level buckets, per-subset agreement, problems above/below the
-                                 user-supplied comparison table with causes, and the lower-bound check against
-                                 the measured implementations (reference impl, optimized baseline);
+                                 comparison SOL with optional causes, and the lower-bound check against
+                                 measured latencies when the comparison CSV carries them
+                                 (``reference_latency_ms``, ``optimized_baseline_latency_ms``);
 * ``report_data.json``           the same numbers plus per-shape points for plotting.
 
-    python scripts/report_execbench.py out/execbench_final/comparison_compare.csv --label "final"
+    python scripts/report_execbench.py out/execbench_full/sol_table_compare.csv --label "full" [--notes causes.json]
 """
 from __future__ import annotations
 
@@ -21,8 +22,8 @@ import math
 import statistics as st
 from pathlib import Path
 
-# Optional problem notes; no comparison dataset is bundled.
-NOTES = {}
+# Optional hand-checked causes per problem, loaded from --notes (JSON: {"<problem>": "<cause>"}).
+NOTES: dict = {}
 
 
 def best_ratio(r):
@@ -35,7 +36,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("compare_csv", type=Path)
     ap.add_argument("--label", default="")
+    ap.add_argument("--notes", type=Path, help='optional JSON {"<problem>": "<cause>"} shown in the cause column')
     args = ap.parse_args()
+    if args.notes:
+        NOTES.update(json.loads(args.notes.read_text()))
     out_dir = args.compare_csv.parent
     rows = list(csv.DictReader(open(args.compare_csv)))
     have = [r for r in rows if r["status"] != "no-solar-result"]
@@ -73,6 +77,8 @@ def main():
         }
     viol_ref = [r for r in have if not math.isnan(r["ref_impl"]) and r["sol"] > r["ref_impl"]]
     viol_base = [r for r in have if not math.isnan(r["baseline"]) and r["sol"] > r["baseline"]]
+    has_ref_impl = any(not math.isnan(r["ref_impl"]) for r in have)
+    has_baseline = any(not math.isnan(r["baseline"]) for r in have)
     conf = collections.Counter(r.get("solar_confidence") or "n/a" for r in have)
 
     per = collections.defaultdict(list)
@@ -102,8 +108,8 @@ def main():
     # ---- SUMMARY.md ---------------------------------------------------------
     L = []
     L.append(f"# SOL-ExecBench x Solar — {args.label or args.compare_csv.parent.name}\n")
-    L.append(f"Shapes with a SOL: {n} of {len(rows)}. Ratio = Solar fused SOL / leaderboard SOL, whichever of (with, without the 0.4 us launch floor) is closer to 1.\n")
-    L.append("## Agreement with the user-supplied comparison table\n")
+    L.append(f"Shapes with a SOL: {n} of {len(rows)}. Ratio = Solar fused SOL / comparison SOL, whichever of (with, without the launch floor) is closer to 1.\n")
+    L.append("## Agreement with the comparison SOL table\n")
     L.append("| | value |\n|---|---|")
     L.append(f"| median ours/ref over shapes | {st.median(r['best'] for r in have):.3f} |")
     for name, c in buckets:
@@ -114,9 +120,13 @@ def main():
         d = per_subset[s]
         L.append(f"| {s} | {d['shapes']} | {d['median']:.3f} | {d['within10']} ({100*d['within10']/d['shapes']:.0f} %) | {d['above10']} | {d['above50']} | {d['below10']} |")
     L.append("")
-    L.append("## Lower-bound check against the measured implementations\n")
-    L.append(f"* SOL above the measured reference implementation: **{len(viol_ref)}** shapes")
-    L.append(f"* SOL above the measured optimized baseline: **{len(viol_base)}** shapes")
+    L.append("## Lower-bound check against measured latencies in the comparison CSV\n")
+    if not (has_ref_impl or has_baseline):
+        L.append("* n/a: the comparison CSV has no `reference_latency_ms` / `optimized_baseline_latency_ms` columns")
+    if has_ref_impl:
+        L.append(f"* SOL above `reference_latency_ms`: **{len(viol_ref)}** shapes")
+    if has_baseline:
+        L.append(f"* SOL above `optimized_baseline_latency_ms`: **{len(viol_base)}** shapes")
     for r in sorted(viol_base, key=lambda r: -(r["sol"] / r["baseline"]))[:30]:
         L.append(f"  * {r['subset']}/{r['artifact_id']} {r['workload_uuid'][:8]}: SOL {r['sol']*1e3:.1f} us vs baseline {r['baseline']*1e3:.1f} us")
     L.append("")
@@ -126,12 +136,12 @@ def main():
     L.append(f"| medium | {conf.get('medium', 0)} | structural sparsity (triangular / masked operands, broadcast or gathered-output shortcuts) discounted statically |")
     L.append(f"| low | {conf.get('low', 0)} | data-dependent behaviour (index/mask inputs, gathers, scatters, top-k) or in-kernel quantization; the trace fixes one input instance |")
     L.append("")
-    L.append(f"## Problems with median above the leaderboard SOL by more than 10 % ({len(above)} of {len(problems)})\n")
+    L.append(f"## Problems with median above the comparison SOL by more than 10 % ({len(above)} of {len(problems)})\n")
     L.append("| subset | problem | shapes | median | min | max | bottleneck | precision | confidence | cause |\n|---|---|---|---|---|---|---|---|---|---|")
     for t in above:
         L.append(f"| {t['subset']} | {t['problem']} | {t['shapes']} | {t['median_ratio']:.2f} | {t['min_ratio']:.2f} | {t['max_ratio']:.2f} | {t['bottleneck']} | {t['precision']} | {t['confidence']} | {t['cause']} |")
     L.append("")
-    L.append(f"## Problems with median below the leaderboard SOL by more than 10 % ({len(below)})\n")
+    L.append(f"## Problems with median below the comparison SOL by more than 10 % ({len(below)})\n")
     L.append("| subset | problem | shapes | median | min | max | bottleneck | precision | confidence | cause |\n|---|---|---|---|---|---|---|---|---|---|")
     for t in below:
         L.append(f"| {t['subset']} | {t['problem']} | {t['shapes']} | {t['median_ratio']:.2f} | {t['min_ratio']:.2f} | {t['max_ratio']:.2f} | {t['bottleneck']} | {t['precision']} | {t['confidence']} | {t['cause']} |")
@@ -152,13 +162,14 @@ def main():
         "median_ratio": st.median(r["best"] for r in have),
         "buckets": [{"name": name, "shapes": frac(c)[0], "pct": frac(c)[1]} for name, c in buckets],
         "per_subset": per_subset,
-        "violations": {"reference_impl": len(viol_ref), "optimized_baseline": len(viol_base)},
+        "violations": {"reference_impl": len(viol_ref) if has_ref_impl else None,
+                       "optimized_baseline": len(viol_base) if has_baseline else None},
         "confidence": dict(conf),
         "problems": problems, "points": points,
     }
     (out_dir / "report_data.json").write_text(json.dumps(data))
     print(f"shapes {n}; median {data['median_ratio']:.3f}; within10 {frac(buckets[0][1])[0]}; "
-          f"violations ref={len(viol_ref)} base={len(viol_base)}; confidence {dict(conf)}; "
+          f"violations ref={len(viol_ref) if has_ref_impl else 'n/a'} base={len(viol_base) if has_baseline else 'n/a'}; confidence {dict(conf)}; "
           f"above>10% {len(above)} problems; wrote {out_dir/'SUMMARY.md'} and report_data.json")
 
 
