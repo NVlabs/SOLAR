@@ -15,8 +15,8 @@
 
 """Work the reference code does that a minimal kernel does not.
 
-Found by checking SOLAR's SOL against the measured implementations in the
-SOL-ExecBench leaderboard table (a SOL must never exceed a real kernel):
+Found by checking SOLAR's SOL against measured SOL-ExecBench kernel latencies
+(a SOL must never exceed a real kernel):
 
 * Mamba-2 expands one B/C group to every head before ``C B^T``: the einsum
   is 16x redundant; a kernel computes the product once per group.

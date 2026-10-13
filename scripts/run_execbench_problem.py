@@ -622,8 +622,8 @@ def main() -> None:
     parser.add_argument("--fp32-as", default=None, choices=["fp32", "tf32", "fp16"],
                         help="MAC-rate class for problems whose inputs are all float32 (memory bytes always "
                              "follow each tensor's own dtype, 4 B per fp32 element). Default 'fp16': the 16-bit "
-                             "tensor-core rate, because optimized kernels for fp32 problems run bf16/fp16 math and "
-                             "a SOL must lower-bound every implementation. 'tf32': TF32 tensor-core rate. "
+                             "tensor-core rate, the explicit modeling policy so the SOL also lower-bounds "
+                             "reduced-precision tensor-core implementations. 'tf32': TF32 tensor-core rate. "
                              "'fp32': CUDA-core rate. A --setup-config may set this; the flag overrides it.")
     parser.add_argument("--uniform-bytes", action="store_true", default=None,
                         help="Legacy byte accounting: one bytes_per_element for every tensor. Default prices each "

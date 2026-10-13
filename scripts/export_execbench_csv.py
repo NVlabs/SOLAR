@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Export SOLAR's SOL-ExecBench results next to the leaderboard reference table.
+"""Export SOLAR's SOL-ExecBench results as a per-workload SOL table, optionally next to a comparison CSV.
 
 Reads every ``<problem>/<uuid>/sol_summary.json`` under ``--results-root`` (one or more
-roots; later roots override earlier ones for the same (problem, uuid)) and the reference
-``comparison.csv`` (columns ``artifact_id,workload_uuid,subset,reference_latency_ms,
-optimized_baseline_latency_ms,sol_latency_ms``) and writes two files:
+roots; later roots override earlier ones for the same (problem, uuid)) and writes:
 
-* ``<out>_compare.csv`` — one row per reference workload: all reference columns plus
-  SOLAR's fused / unfused / prefetched SOL, MACs, bytes, bottleneck, precision, the
-  ours/ref ratio (with and without the reference's ~0.4 us launch floor) and a status.
-* ``<out>_solar.csv`` — a drop-in replacement for ``comparison.csv`` whose
-  ``sol_latency_ms`` is SOLAR's fused SOL (no floor added); rows SOLAR could not produce
-  keep the reference value and are flagged in ``sol_source``.
+* ``<out>_solar.csv`` — one row per SOLAR result: ``artifact_id, workload_uuid, subset,
+  sol_latency_ms`` (SOLAR's fused SOL, no launch floor added), ``sol_source`` and
+  ``sol_confidence`` (when ``--confidence`` is given).
+
+With ``--ref <csv>`` (a CSV *you* provide, with at least ``artifact_id, workload_uuid, subset,
+sol_latency_ms``; ``reference_latency_ms`` and ``optimized_baseline_latency_ms`` are used when
+present) it additionally writes ``<out>_compare.csv``: every comparison row plus SOLAR's
+fused / unfused / prefetched SOL, MACs, bytes, bottleneck, precision, the SOLAR/comparison
+ratio (with and without ``--floor-ms``) and a status; rows without a SOLAR result keep the
+comparison value in ``<out>_solar.csv`` and are flagged in ``sol_source``. The comparison CSV
+is whatever table you want to check against; nothing is shipped with this repository.
 
 Usage::
 
-    python scripts/export_execbench_csv.py \
-        --ref ../SOLAR/sol-bench/data/comparison.csv \
-        --results-root out/execbench_allshapes -o out/execbench_allshapes/comparison
+    python scripts/export_execbench_csv.py --results-root out/execbench_full -o out/execbench_full/sol_table
+    python scripts/export_execbench_csv.py --ref my_comparison.csv \
+        --results-root out/execbench_full -o out/execbench_full/sol_table
 """
 from __future__ import annotations
 
@@ -32,13 +35,15 @@ import statistics
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FLOOR = 0.0004
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--ref", type=Path, required=True)
+ap.add_argument("--ref", type=Path, help="optional comparison CSV (see module docstring); enables <out>_compare.csv")
 ap.add_argument("--results-root", type=Path, action="append", required=True)
 ap.add_argument("-o", "--out-prefix", type=Path, required=True)
 ap.add_argument("--tol", type=float, default=0.10)
+ap.add_argument("--floor-ms", type=float, default=0.0,
+                help="fixed launch latency (ms) added to SOLAR's SOL for the *_plus_floor columns, if the comparison "
+                     "table includes one (default 0)")
 ap.add_argument("--confidence", type=Path,
                 help="confidence.csv from scripts/confidence_execbench.py; adds solar_confidence columns")
 args = ap.parse_args()
@@ -54,8 +59,22 @@ for root in args.results_root:
         d = json.loads(Path(f).read_text())
         ours[(d["problem"], d["workload_uuid"])] = d
 
-ref_rows = list(csv.DictReader(open(args.ref)))
-ref_fields = list(ref_rows[0].keys())
+FLOOR = args.floor_ms
+if args.ref:
+    ref_rows = list(csv.DictReader(open(args.ref)))
+    ref_fields = list(ref_rows[0].keys()) if ref_rows else []
+    missing_cols = [c for c in ("artifact_id", "workload_uuid", "subset", "sol_latency_ms") if c not in ref_fields]
+    if not ref_rows or missing_cols:
+        raise SystemExit(f"--ref {args.ref}: expected columns artifact_id, workload_uuid, subset, sol_latency_ms"
+                         f" (missing: {missing_cols or 'all, file is empty'}); see the module docstring")
+else:
+    # No comparison table: one row per SOLAR result, in a stable order.
+    ref_fields = ["artifact_id", "workload_uuid", "subset", "sol_latency_ms"]
+    def _subset(d):  # <bench>/<subset>/<problem> is recorded as problem_dir
+        return d.get("subset") or Path(d.get("problem_dir", "")).parent.name
+    ref_rows = [{"artifact_id": d["problem"], "workload_uuid": d["workload_uuid"],
+                 "subset": _subset(d), "sol_latency_ms": ""}
+                for _, d in sorted(ours.items(), key=lambda kv: (_subset(kv[1]), kv[0]))]
 
 compare_fields = ref_fields + [
     "solar_sol_fused_ms", "solar_sol_fused_plus_floor_ms", "solar_sol_unfused_ms",
@@ -77,10 +96,10 @@ for r in ref_rows:
         n_missing += 1
         row.update({k: "" for k in compare_fields if k not in r})
         row["status"] = "no-solar-result"
-        srow["sol_source"] = "reference (SOLAR result missing)"
+        srow["sol_source"] = "comparison table (SOLAR result missing)"
         srow["sol_confidence"] = ""
     else:
-        ref_ms = float(r["sol_latency_ms"]) if r["sol_latency_ms"] else float("nan")
+        ref_ms = float(r["sol_latency_ms"]) if r.get("sol_latency_ms") else float("nan")
         fused = d["sol_ms"]["fused"]
         ratio = fused / ref_ms if ref_ms > 0 else float("inf")
         ratio_f = (fused + FLOOR) / ref_ms if ref_ms > 0 else float("inf")
@@ -119,20 +138,22 @@ for r in ref_rows:
     compare_rows.append(row)
     solar_rows.append(srow)
 
-cmp_path = Path(f"{args.out_prefix}_compare.csv")
-with open(cmp_path, "w", newline="") as fh:
-    w = csv.DictWriter(fh, fieldnames=compare_fields)
-    w.writeheader(); w.writerows(compare_rows)
+cmp_path = None
+if args.ref:
+    cmp_path = Path(f"{args.out_prefix}_compare.csv")
+    with open(cmp_path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=compare_fields)
+        w.writeheader(); w.writerows(compare_rows)
 sol_path = Path(f"{args.out_prefix}_solar.csv")
 with open(sol_path, "w", newline="") as fh:
     w = csv.DictWriter(fh, fieldnames=ref_fields + ["sol_source", "sol_confidence"])
     w.writeheader(); w.writerows(solar_rows)
 
 n = len(ref_rows)
-print(f"{n} reference workloads; SOLAR results for {n - n_missing}, missing {n_missing}")
-if ratios:
+print(f"{n} workloads; SOLAR results for {n - n_missing}, missing {n_missing}")
+if args.ref and ratios:
     logs = [math.log(x) for x in ratios if 0 < x < math.inf]
-    print(f"ours/ref (floor accepted either way): median {statistics.median(ratios):.3f}, "
+    print(f"SOLAR/comparison (floor accepted either way): median {statistics.median(ratios):.3f}, "
           f"geo-mean {math.exp(statistics.mean(logs)):.3f}")
     from collections import Counter
     c = Counter(r["status"] for r in compare_rows)
@@ -142,4 +163,4 @@ if ratios:
     for r, x in zip([r for r in compare_rows if r["status"] != "no-solar-result"], ratios):
         per.setdefault(r["subset"], []).append(x)
     print("per subset median ratio:", {k: round(statistics.median(v), 3) for k, v in sorted(per.items())})
-print(f"wrote {cmp_path}\nwrote {sol_path}")
+print(f"wrote {sol_path}" + (f"\nwrote {cmp_path}" if cmp_path else ""))

@@ -249,7 +249,7 @@ solar/
 │   └── cli/           # Command-line interfaces
 ├── tests/             # Comprehensive test suite
 ├── examples/          # Example models (Attention, BERT, sparse attention variants)
-└── configs/           # Architecture configs (H100_PCIe.yaml, A6000.yaml)
+└── configs/           # Architecture configs (configs/arch: A6000, B200, H100_PCIe, H100_SXM, H200_SXM, Jetson_Thor_T5000, L40S)
 ```
 
 ## Key Components

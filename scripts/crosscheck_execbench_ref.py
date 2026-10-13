@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Cross-check SOLAR SOL estimates from run_execbench_problem.py against a reference table.
+"""Cross-check SOLAR SOL estimates from run_execbench_problem.py against a comparison table you provide.
 
-The reference is a CSV with columns
-``artifact_id,workload_uuid,subset,reference_latency_ms,optimized_baseline_latency_ms,sol_latency_ms``
-(the SOL-ExecBench leaderboard's per-workload SOL table). Every ``sol_summary.json`` under
-``--results-root`` is matched on (problem name, workload uuid) and the fused SOL is compared.
+``--ref`` is a CSV with at least ``artifact_id, workload_uuid, subset, sol_latency_ms``;
+``reference_latency_ms`` and ``optimized_baseline_latency_ms`` are carried through when present.
+Nothing is shipped with this repository: the table is whatever per-workload SOL you want to check
+against. Every ``sol_summary.json`` under ``--results-root`` is matched on (problem name, workload
+uuid) and the fused SOL is compared.
 
 Usage::
 
     python scripts/crosscheck_execbench_ref.py \
-        --ref ../SOLAR/sol-bench/data/comparison.csv \
+        --ref my_comparison.csv \
         --results-root out/execbench -o out/execbench/crosscheck.csv
 """
 from __future__ import annotations
@@ -26,20 +27,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--ref", type=Path, required=True)
+ap.add_argument("--ref", type=Path, required=True, help="comparison CSV (see module docstring)")
 ap.add_argument("--results-root", type=Path, action="append",
                 help="Root(s) holding <problem>/<uuid>/sol_summary.json. May be given several times; later "
                      "roots override earlier ones for the same (problem, uuid). Default: out/execbench")
 ap.add_argument("--floor-ms", type=float, default=0.0,
-                help="Fixed latency added to our SOL before comparing (the leaderboard table adds a ~0.0004 ms "
-                     "launch floor to most rows).")
+                help="Fixed latency (ms) added to our SOL before comparing, if the comparison table "
+                     "includes a launch floor (default 0).")
 ap.add_argument("-o", "--output", type=Path)
 ap.add_argument("--tol", type=float, default=0.10, help="relative tolerance for 'match' (default 10%%)")
 ap.add_argument("--mode", default="fused", choices=["fused", "unfused", "fused_prefetched"])
 args = ap.parse_args()
 
 ref = {}
-for r in csv.DictReader(open(args.ref)):
+_ref_reader = csv.DictReader(open(args.ref))
+_missing = [c for c in ("artifact_id", "workload_uuid", "subset", "sol_latency_ms") if c not in (_ref_reader.fieldnames or [])]
+if _missing:
+    raise SystemExit(f"--ref {args.ref}: expected columns artifact_id, workload_uuid, subset, sol_latency_ms (missing: {_missing})")
+for r in _ref_reader:
     if r.get("sol_latency_ms"):
         ref[(r["artifact_id"], r["workload_uuid"])] = (r["subset"], float(r["sol_latency_ms"]),
                                                        r.get("optimized_baseline_latency_ms"),
