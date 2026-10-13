@@ -35,7 +35,7 @@ from typing import Any, Dict, Optional, Union
 import yaml
 
 from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
-from solar.common.utils import ensure_directory, NoAliasDumper
+from solar.common.utils import ensure_directory, NoAliasDumper, yaml_safe_load
 
 
 PathLike = Union[str, Path]
@@ -50,8 +50,14 @@ class EinsumGraphPerfModel:
     - fused_prefetched: Single roofline for entire graph (best case)
     """
 
-    def __init__(self, debug: bool = False) -> None:
+    def __init__(self, debug: bool = False, dtype_bytes: bool = False) -> None:
         self.debug = debug
+        # When True and the analysis carries per-tensor-dtype byte totals,
+        # price memory traffic at each tensor's own width (bool 1 B, fp32 4 B,
+        # fp8 1 B ...) instead of one bytes_per_element for the whole graph.
+        # Default False keeps the "precision is a modelling knob" behaviour
+        # (e.g. pricing an fp32-traced model as fp16 end to end).
+        self.dtype_bytes = dtype_bytes
 
     def predict(
         self,
@@ -84,7 +90,7 @@ class EinsumGraphPerfModel:
 
         try:
             with open(analysis_path) as f:
-                analysis = yaml.safe_load(f) or {}
+                analysis = yaml_safe_load(f) or {}
         except Exception as exc:
             if self.debug:
                 print(f"Debug: failed reading analysis: {exc}")
@@ -134,6 +140,15 @@ class EinsumGraphPerfModel:
         total_flops = float(total.get("flops", 0))
         
         # Parse elements from new format, with fallback to old bytes format
+        # With dtype_bytes=True and an analysis that carries per-tensor-dtype
+        # byte totals (metadata bytes_accounting == "per-tensor-dtype"), memory
+        # traffic is priced at those widths and ``precision`` only selects the
+        # MAC rate. Otherwise every tensor is priced at bytes_per_element.
+        dtype_bytes = (
+            getattr(self, "dtype_bytes", False)
+            and metadata.get("bytes_accounting") == "per-tensor-dtype"
+            and total.get("fused_bytes") is not None
+        )
         # New format uses unfused_elements, old format uses orojenesis_elements or _bytes suffix
         unfused_val = total.get("unfused_elements") or total.get("orojenesis_elements")
         if unfused_val is not None:
@@ -228,6 +243,25 @@ class EinsumGraphPerfModel:
         fused_ai = total_macs / total_fused_bytes if total_fused_bytes > 0 else float('inf')
         fused_prefetched_ai = total_macs / total_fused_prefetched_bytes if total_fused_prefetched_bytes > 0 else float('inf')
 
+        if dtype_bytes:
+            total_orojenesis_bytes = float(total.get("unfused_bytes", total_orojenesis_bytes))
+            total_fused_bytes = float(total.get("fused_bytes", total_fused_bytes))
+            total_fused_prefetched_bytes = float(
+                total.get("fused_prefetched_bytes", total_fused_bytes))
+            total_intermediate_bytes = float(total.get("intermediate_bytes", total_intermediate_bytes))
+            total_model_io_bytes = float(total.get("external_input_bytes", 0)) + float(
+                total.get("external_output_bytes", 0))
+            total_weight_bytes = 0.0  # folded into external inputs at their own widths
+            unfused_mem_cycles = total_orojenesis_bytes / dram_bw if dram_bw > 0 else 0.0
+            fused_mem_cycles = total_fused_bytes / dram_bw if dram_bw > 0 else 0.0
+            fused_prefetched_mem_cycles = total_fused_prefetched_bytes / dram_bw if dram_bw > 0 else 0.0
+            unfused_total_cycles = max(compute_cycles, unfused_mem_cycles)
+            fused_total_cycles = max(compute_cycles, fused_mem_cycles)
+            fused_prefetched_total_cycles = max(compute_cycles, fused_prefetched_mem_cycles)
+            unfused_ai = total_macs / total_orojenesis_bytes if total_orojenesis_bytes > 0 else float('inf')
+            fused_ai = total_macs / total_fused_bytes if total_fused_bytes > 0 else float('inf')
+            fused_prefetched_ai = total_macs / total_fused_prefetched_bytes if total_fused_prefetched_bytes > 0 else float('inf')
+
         # Ridge point: where compute-bound meets memory-bound
         ridge_point = mac_per_cycle / dram_bw if dram_bw > 0 else 0.0
 
@@ -245,7 +279,8 @@ class EinsumGraphPerfModel:
                 "total_macs": int(total_macs),
                 "total_other_ops": int(total_other_ops),
                 "total_flops": int(total_flops),
-                "bytes_per_element": bytes_per_element,
+                "bytes_per_element": "per-tensor-dtype" if dtype_bytes else bytes_per_element,
+                "mac_rate_bytes_per_element": bytes_per_element,
                 **({"quant_orig_dtype": quant_label} if quant_label else {}),
             },
             "unfused": {

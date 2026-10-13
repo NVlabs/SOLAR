@@ -59,11 +59,13 @@ from solar.common.utils import (
     validate_tensor_names_match_shapes,
     LocalDumper,
     flowify,
+    yaml_safe_load,
 )
 from solar.einsum.af_graph_builder import build_af_graph_from_dict
 from solar.einsum.analyzer import EinsumAnalyzer
 from solar.einsum.einsum_rank_renamer import EinsumRankRenamer
 from solar.einsum.einsum_to_taco import add_taco_expressions
+from solar.einsum.ops.base import conv_call_kwargs
 from solar.einsum.ops.base import EinsumOp, EinsumOperand
 from solar.einsum.ops.registry import get_global_registry
 
@@ -401,6 +403,28 @@ class PyTorchToEinsum:
         "view_as", "reshape_as", "broadcast_to", "expand_as",
         "detach", "alias", "ravel", "unbind", "diagonal",
     }
+    # Ops whose recorded output dtype must be kept as-is by the dtype repair.
+    _CAST_OP_TYPES: "set[str]" = {
+        "to", "type", "type_as", "float", "double", "half", "bfloat16",
+        "int", "long", "short", "bool", "byte", "char",
+        # Creation / index ops choose their dtype independently of their
+        # inputs (``zeros_like(x, dtype=uint8)``, ``argmax`` -> int64).
+        "zeros_like", "ones_like", "full_like", "empty_like", "rand_like",
+        "randn_like", "randint_like", "zeros", "ones", "full", "empty",
+        "arange", "linspace", "argmax", "argmin", "argsort", "nonzero",
+        "bucketize", "searchsorted", "one_hot",
+    }
+    # Comparison / logical ops always produce ``torch.bool`` (1 B); the
+    # widest-input rule would price an fp32 mask at 4 B.
+    _BOOL_OP_TYPES: "set[str]" = {
+        "eq", "ne", "gt", "lt", "ge", "le",
+        "__eq__", "__ne__", "__gt__", "__lt__", "__ge__", "__le__",
+        "__and__", "__or__", "__xor__", "__invert__",
+        "__rand__", "__ror__", "__rxor__",
+        "logical_and", "logical_or", "logical_not", "logical_xor",
+        "isnan", "isinf", "isfinite", "isclose", "isin", "signbit",
+        "any", "all", "equal", "allclose",
+    }
     _DTYPE_BITS: "dict[str, int]" = {
         "float64": 64, "double": 64, "complex128": 128, "complex64": 64,
         "float32": 32, "tf32": 32,
@@ -418,11 +442,22 @@ class PyTorchToEinsum:
             str(dtype_str).replace("torch.", "").lower(), 32
         )
 
+    # Ops whose tensor operands are all "real" (weights / activations): a
+    # tensor argument recorded in ``raw_attributes`` but absent from the
+    # traced edges is an untraced constant (e.g. a Sobel kernel built with
+    # ``torch.tensor`` inside ``forward``) and must still be read from DRAM.
+    _CONST_OPERAND_OPS: "set[str]" = {
+        "conv1d", "conv2d", "conv3d",
+        "conv_transpose1d", "conv_transpose2d", "conv_transpose3d",
+        "linear", "matmul", "bmm", "addmm", "mm", "embedding",
+    }
+
     def _repair_torchview_quirks(
         self,
         layers: Dict[str, Any],
         op_ids: List[str],
         tensor_ids: List[str],
+        auxiliary_ids: Optional[List[str]] = None,
     ) -> None:
         """Single pass repairing every known torchview tracing quirk.
 
@@ -499,7 +534,10 @@ class PyTorchToEinsum:
             key = (sh, dt)
             if not producers_ and consumers_:
                 orphans_by_key[key].append(tensor_id)
-            elif len(producers_) == 1 and not consumers_:
+            elif (len(producers_) == 1 and not consumers_
+                  and (tdata.get("type") or "").lower() != "output-tensor"):
+                # Model outputs legitimately end the graph; they are not
+                # the dead-end half of a split tensor node.
                 dangling_by_key[key].append((tensor_id, producers_[0]))
                 if (tdata.get("type") or "").lower() == "hidden-tensor":
                     hidden_dangling_by_shape[sh].append((tensor_id, producers_[0], dt))
@@ -519,11 +557,23 @@ class PyTorchToEinsum:
                 continue
             in_dtypes = odata.get("input_dtypes") or []
             default_dt = str(in_dtypes[0]) if in_dtypes else "torch.float32"
+            op_type_l = (odata.get("type") or "").lower()
             for sh, cnt in missing.items():
                 for _ in range(cnt):
                     candidates = [(t, p, d) for (t, p, d)
                                   in hidden_dangling_by_shape.get(sh, [])
                                   if (t, p) not in consumed]
+                    if (not candidates and len(sh) >= 1
+                            and op_type_l in self._CONST_OPERAND_OPS):
+                        # (A') No traced tensor anywhere carries this
+                        # operand: it is an untraced constant. Synthesize an
+                        # auxiliary-tensor source so the op keeps its full
+                        # arity (conv keeps its kernel, matmul its weight)
+                        # and the bytes are counted as a model input.
+                        self._synthesize_constant_operand(
+                            layers, op_id, odata, list(sh), default_dt,
+                            auxiliary_ids)
+                        continue
                     if len(candidates) != 1:
                         continue  # ambiguous or none
                     tensor_id, producer_op, dt = candidates[0]
@@ -542,65 +592,247 @@ class PyTorchToEinsum:
                         tout.append(op_id)
 
         # --- (B) Split tensor-node pairs ----------------------------------
+        # torchview records the result of a creation op (``zeros_like``) or
+        # an in-place update as one dead-end node and hands consumers a
+        # second, producer-less node of the same shape. One orphan / one
+        # dead-end is the common case; several accumulators of one shape
+        # (``grad_w = zeros_like(w)`` per expert weight) produce equal-size
+        # groups, which are paired in trace order (the dead-end precedes
+        # the orphan that replaces it).
         for key, orphan_ids in orphans_by_key.items():
             de_list = [(t, p) for (t, p) in dangling_by_key.get(key, [])
                        if (t, p) not in consumed]
-            if len(orphan_ids) != 1 or len(de_list) != 1:
+            if not de_list or len(orphan_ids) != len(de_list):
                 continue
-            orphan_id = orphan_ids[0]
-            producer_op = de_list[0][1]
-            self._tensor_to_producer_op[orphan_id] = producer_op
-            # Rewire the orphan's ``connections.inputs`` to the producer so
-            # the normal edge build picks up producer→consumer naturally.
-            orphan_data = layers.get(orphan_id) or {}
-            ocon_in = orphan_data.setdefault("connections", {}).setdefault("inputs", [])
-            if producer_op not in ocon_in:
-                ocon_in.append(producer_op)
+            for orphan_id, (_, producer_op) in zip(orphan_ids, de_list):
+                self._tensor_to_producer_op[orphan_id] = producer_op
+                # Rewire the orphan's ``connections.inputs`` to the producer so
+                # the normal edge build picks up producer→consumer naturally.
+                orphan_data = layers.get(orphan_id) or {}
+                ocon_in = orphan_data.setdefault("connections", {}).setdefault("inputs", [])
+                if producer_op not in ocon_in:
+                    ocon_in.append(producer_op)
 
         # --- (C) Output-dtype correction ----------------------------------
-        # Seed the corrected-dtype map from every NON-OP node's declared
-        # dtype: regular tensor nodes (intermediates), auxiliary-tensor
-        # nodes (model inputs), and parameter-tensor nodes (weights). These
-        # are ground truth, recorded by torchview at trace time. Op-output
-        # dtypes get overwritten below as we walk the graph in topo order.
-        # ``_partition_nodes`` splits these into three lists; iterate every
-        # non-op layer (anything in ``layers`` that's not in ``op_id_set``)
-        # so we don't miss auxiliary/parameter tensors.
-        corrected_dtype: Dict[str, str] = {}
+        self._repair_dtypes(layers, op_id_set)
+
+    # ---- dtype repair -----------------------------------------------------
+    _TENSOR_ARG_RE = re.compile(r"Tensor\(shape=\(([^)]*)\),\s*dtype=(torch\.\w+)\)")
+    _DTYPE_TOKEN_RE = re.compile(r"(?<![\w.])(torch\.[a-z0-9_]+)\b")
+    _DTYPE_NAMES = {
+        "float64", "double", "float32", "float", "float16", "half", "bfloat16",
+        "float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz",
+        "float4_e2m1fn_x2", "int64", "long", "int32", "int", "int16", "short",
+        "int8", "uint8", "bool", "complex64", "complex128", "cfloat", "cdouble",
+    }
+    _DTYPE_ALIASES = {
+        "torch.float": "torch.float32", "torch.double": "torch.float64",
+        "torch.half": "torch.float16", "torch.long": "torch.int64",
+        "torch.int": "torch.int32", "torch.short": "torch.int16",
+        "torch.cfloat": "torch.complex64", "torch.cdouble": "torch.complex128",
+    }
+    _METHOD_CASTS = {
+        "float": "torch.float32", "double": "torch.float64", "half": "torch.float16",
+        "bfloat16": "torch.bfloat16", "int": "torch.int32", "long": "torch.int64",
+        "short": "torch.int16", "bool": "torch.bool", "byte": "torch.uint8",
+        "char": "torch.int8",
+    }
+    _GENERIC_CASTS = {"to", "type", "type_as", "astype"}
+    _CREATION_OPS = {
+        "zeros_like", "ones_like", "full_like", "empty_like", "rand_like",
+        "randn_like", "randint_like", "zeros", "ones", "full", "empty",
+        "arange", "linspace", "eye", "rand", "randn", "randint", "tensor",
+    }
+    _INDEX_OUTPUT_OPS = {"argmax", "argmin", "argsort", "nonzero", "bucketize",
+                         "searchsorted", "argwhere", "count_nonzero"}
+    _VALUE_INDEX_OPS = {"topk", "sort", "max", "min", "mode", "kthvalue", "median"}
+    _INT_DTYPES = {"torch.int64", "torch.int32", "torch.int16", "torch.int8",
+                   "torch.uint8", "torch.bool"}
+
+    @classmethod
+    def _norm_dtype(cls, d: Optional[str]) -> Optional[str]:
+        if not d:
+            return None
+        d = str(d)
+        if not d.startswith("torch."):
+            d = "torch." + d
+        return cls._DTYPE_ALIASES.get(d, d)
+
+    @classmethod
+    def _raw_call(cls, odata: Dict[str, Any]) -> Tuple[str, str, List[Tuple[Tuple[int, ...], str]]]:
+        """Split ``raw_attributes`` into (args text, kwargs text, tensor args)."""
+        raw = odata.get("raw_attributes")
+        if raw is None:
+            raw = (odata.get("module_args") or {}).get("raw_attributes")
+        raw = str(raw or "")
+        if not raw:
+            return "", "", []
+        if "], {" in raw:
+            args_part, kwargs_part = raw.rsplit("], {", 1)
+        else:
+            args_part, kwargs_part = raw, ""
+        tensors = []
+        for m in cls._TENSOR_ARG_RE.finditer(args_part):
+            shape = tuple(int(x) for x in re.findall(r"-?\d+", m.group(1)))
+            tensors.append((shape, cls._norm_dtype(m.group(2))))
+        return args_part, kwargs_part, tensors
+
+    @classmethod
+    def _kwarg_dtype(cls, kwargs_part: str) -> Optional[str]:
+        m = re.search(r"\bdtype\s*:\s*(torch\.[a-z0-9_]+)", kwargs_part)
+        return cls._norm_dtype(m.group(1)) if m else None
+
+    @classmethod
+    def _free_dtype_tokens(cls, args_part: str) -> List[str]:
+        """``torch.X`` dtype tokens in the args that are not inside ``Tensor(...)``."""
+        stripped = cls._TENSOR_ARG_RE.sub("T", args_part)
+        out = []
+        for m in cls._DTYPE_TOKEN_RE.finditer(stripped):
+            tok = m.group(1)
+            if tok[len("torch."):] in cls._DTYPE_NAMES:
+                out.append(cls._norm_dtype(tok))
+        return out
+
+    @classmethod
+    def _cast_target(cls, layer_type: str, args_part: str, kwargs_part: str,
+                     tensors: List[Tuple[Tuple[int, ...], str]]) -> Optional[str]:
+        """Target dtype of an explicit cast, or None for a device-only move."""
+        if layer_type in cls._METHOD_CASTS:
+            return cls._METHOD_CASTS[layer_type]
+        kw = cls._kwarg_dtype(kwargs_part)
+        if kw:
+            return kw
+        toks = cls._free_dtype_tokens(args_part)
+        if toks:
+            return toks[0]
+        if layer_type == "type_as" or (layer_type == "to" and len(tensors) >= 2):
+            # ``x.to(other)`` / ``x.type_as(other)`` adopt the other tensor's dtype.
+            return tensors[1][1]
+        return None
+
+    @classmethod
+    def _promote(cls, dtypes: List[str]) -> Optional[str]:
+        """PyTorch-style promotion: floats beat ints beat bool; widest wins."""
+        ds = [cls._norm_dtype(d) for d in dtypes if d]
+        if not ds:
+            return None
+        floats = [d for d in ds if d not in cls._INT_DTYPES]
+        if floats:
+            return max(floats, key=cls._bits_of_dtype)
+        ints = [d for d in ds if d != "torch.bool"]
+        if ints:
+            return max(ints, key=cls._bits_of_dtype)
+        return "torch.bool"
+
+    def _repair_dtypes(self, layers: Dict[str, Any], op_id_set: "set[str]") -> None:
+        """Rebuild every tensor dtype from the call arguments torchview recorded.
+
+        torchview's per-node ``input_dtypes`` / ``output_dtypes`` are not
+        trustworthy: for models without parameters (every SOL-ExecBench
+        problem) missing dtypes are padded with ``torch.float32``, so a
+        ``.to(torch.bfloat16)`` output, an fp16 model input or a bool mask
+        all read as 4 B tensors. The ``raw_attributes`` string, however,
+        carries each tensor argument as ``Tensor(shape=..., dtype=...)`` and
+        each cast target literally, so dtypes are rebuilt from it:
+
+        * op inputs: the raw tensor argument with the same shape (in order);
+          the matched source tensor node is corrected too, so model inputs
+          and weights get their real width;
+        * casts (``to``/``type``/``float``/``half``/...): the dtype kwarg,
+          a free ``torch.X`` token, the method name, or the other tensor's
+          dtype; a device-only ``.to(device)`` keeps the input dtype;
+        * creation ops (``zeros_like(x, dtype=...)``, ``arange``...): the
+          dtype kwarg, else the tensor argument's dtype;
+        * comparisons / logical ops: ``torch.bool``; index-producing ops:
+          ``torch.int64`` (second output of ``topk``/``sort``/``max(dim)``);
+        * everything else: PyTorch promotion over the inputs (floats beat
+          ints beat bool, widest wins), so ``embedding(ids, table)`` and
+          ``where(mask, a, b)`` take the data dtype, not the index width.
+        """
+        corrected: Dict[str, str] = {}
         for layer_id, ldata in layers.items():
             if layer_id in op_id_set:
                 continue
-            outd = (ldata.get("output_dtypes") or ldata.get("input_dtypes")
-                    or [])
+            outd = ldata.get("output_dtypes") or ldata.get("input_dtypes") or []
             if outd:
-                corrected_dtype[layer_id] = outd[0]
+                corrected[layer_id] = self._norm_dtype(outd[0])
+
+        def _set_tensor_dtype(tid: str, dtype: str) -> None:
+            corrected[tid] = dtype
+            tdata = layers.get(tid)
+            if tdata is None or tid in op_id_set:
+                return
+            for key in ("output_dtypes", "input_dtypes"):
+                n = len(tdata.get(key) or [])
+                if n:
+                    tdata[key] = [dtype] * n
 
         for layer_id, odata in layers.items():
             if layer_id not in op_id_set:
                 continue
+            layer_type = (odata.get("type") or "").lower()
             in_tensors = (odata.get("connections") or {}).get("inputs") or []
-            in_dtypes = list(odata.get("input_dtypes") or [])
+            in_shapes = [tuple(int(x) for x in s) if isinstance(s, (list, tuple)) else None
+                         for s in (odata.get("input_shapes") or [])]
+            in_dtypes = [self._norm_dtype(d) for d in (odata.get("input_dtypes") or [])]
+            while len(in_dtypes) < len(in_tensors):
+                in_dtypes.append(None)
+            args_part, kwargs_part, raw_tensors = self._raw_call(odata)
+
+            # (1) inputs: raw tensor args matched by shape, else propagated dtype.
+            used = [False] * len(raw_tensors)
             for i, tid in enumerate(in_tensors):
-                if tid in corrected_dtype and i < len(in_dtypes):
-                    in_dtypes[i] = corrected_dtype[tid]
+                shape = in_shapes[i] if i < len(in_shapes) else None
+                raw_dtype = None
+                if shape is not None:
+                    for j, (rshape, rdtype) in enumerate(raw_tensors):
+                        if not used[j] and rshape == shape:
+                            used[j] = True
+                            raw_dtype = rdtype
+                            break
+                if raw_dtype:
+                    in_dtypes[i] = raw_dtype
+                    if tid in layers and tid not in op_id_set:
+                        _set_tensor_dtype(tid, raw_dtype)
+                elif tid in corrected:
+                    in_dtypes[i] = corrected[tid]
+            in_dtypes = [d or "torch.float32" for d in in_dtypes]
             if in_dtypes:
                 odata["input_dtypes"] = in_dtypes
-            layer_type = (odata.get("type") or "").lower()
-            if layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
-                widest = (in_dtypes[0] if in_dtypes
-                          else (odata.get("output_dtypes") or ["torch.float32"])[0])
-            elif in_dtypes:
-                widest = max(in_dtypes, key=self._bits_of_dtype)
-            else:
-                widest = (odata.get("output_dtypes") or ["torch.float32"])[0]
+
+            # (2) outputs.
             n_out = len(odata.get("output_dtypes") or []) or 1
-            odata["output_dtypes"] = [widest] * n_out
-            for tid in (odata.get("connections") or {}).get("outputs") or []:
-                if tid in layers:
-                    tdata = layers[tid]
-                    n = len(tdata.get("output_dtypes") or []) or 1
-                    tdata["output_dtypes"] = [widest] * n
-                corrected_dtype[tid] = widest
+            recorded = [self._norm_dtype(d) for d in (odata.get("output_dtypes") or [])]
+            data_dtype = self._promote(in_dtypes) or (recorded[0] if recorded else "torch.float32")
+            out_dtypes: List[str]
+            if layer_type in self._METHOD_CASTS or layer_type in self._GENERIC_CASTS:
+                target = self._cast_target(layer_type, args_part, kwargs_part, raw_tensors)
+                out_dtypes = [target or (in_dtypes[0] if in_dtypes else data_dtype)] * n_out
+            elif layer_type in self._BOOL_OP_TYPES:
+                out_dtypes = ["torch.bool"] * n_out
+            elif layer_type in self._INDEX_OUTPUT_OPS:
+                out_dtypes = ["torch.int64"] * n_out
+            elif layer_type in self._VALUE_INDEX_OPS and n_out >= 2:
+                out_dtypes = [data_dtype] + ["torch.int64"] * (n_out - 1)
+            elif layer_type in self._CREATION_OPS:
+                kw = self._kwarg_dtype(kwargs_part) or (self._free_dtype_tokens(args_part) or [None])[0]
+                if kw:
+                    chosen = kw
+                elif raw_tensors:
+                    chosen = raw_tensors[0][1]
+                elif in_dtypes:
+                    chosen = in_dtypes[0]
+                else:
+                    chosen = recorded[0] if recorded else "torch.float32"
+                out_dtypes = [chosen] * n_out
+            elif layer_type in self._SHAPE_OP_TYPES_FOR_DTYPE:
+                out_dtypes = [in_dtypes[0] if in_dtypes else data_dtype] * n_out
+            else:
+                out_dtypes = [data_dtype] * n_out
+            odata["output_dtypes"] = out_dtypes
+            for k, tid in enumerate((odata.get("connections") or {}).get("outputs") or []):
+                d = out_dtypes[min(k, len(out_dtypes) - 1)]
+                _set_tensor_dtype(tid, d)
 
     def _validate_tensor_shape_consistency(
         self,
@@ -810,7 +1042,7 @@ class PyTorchToEinsum:
 
             if suffix in {".yaml", ".yml"}:
                 with open(path) as f:
-                    data = yaml.safe_load(f)
+                    data = yaml_safe_load(f)
             elif suffix == ".json":
                 with open(path) as f:
                     data = json.load(f)
@@ -881,11 +1113,15 @@ class PyTorchToEinsum:
         # scalar edges, orphan/dead-end tensor pairs, and fp32-overridden
         # output dtypes. After this call, ``layers`` is the cleaned source
         # of truth for downstream graph construction and handlers.
-        self._repair_torchview_quirks(layers, op_ids, tensor_ids)
+        self._repair_torchview_quirks(layers, op_ids, tensor_ids, auxiliary_ids)
 
         graph = nx.DiGraph()
         for op_id in op_ids:
             graph.add_node(op_id, **(layers.get(op_id) or {}))
+        # Membership tests below run once per tensor edge; a list makes the
+        # edge build O(tensors x ops), which dominated conversion time on
+        # traces with thousands of ops (per-batch-element loops).
+        op_id_set = set(op_ids)
 
         # Collect auxiliary tensor info for start nodes (model inputs only)
         start_nodes_info = self._collect_start_node_info(
@@ -903,7 +1139,7 @@ class PyTorchToEinsum:
             producers = list(conns.get("inputs") or [])
             consumers = list(conns.get("outputs") or [])
 
-            if len(producers) == 1 and producers[0] in op_ids:
+            if len(producers) == 1 and producers[0] in op_id_set:
                 self._tensor_to_producer_op[tensor_id] = producers[0]
                 producer_outputs = list(
                     ((layers.get(producers[0]) or {}).get("connections") or {}).get("outputs")
@@ -921,7 +1157,7 @@ class PyTorchToEinsum:
 
             for producer in producers:
                 for consumer in consumers:
-                    if producer in op_ids and consumer in op_ids:
+                    if producer in op_id_set and consumer in op_id_set:
                         if producer != consumer:
                             graph.add_edge(producer, consumer)
 
@@ -931,10 +1167,50 @@ class PyTorchToEinsum:
                 conns = (layers.get(op_id) or {}).get("connections") or {}
                 outputs = list(conns.get("outputs") or [])
                 for out_id in outputs:
-                    if out_id in op_ids and out_id != op_id:
+                    if out_id in op_id_set and out_id != op_id:
                         graph.add_edge(op_id, out_id)
 
         return graph, start_nodes_info, param_nodes_info
+
+    def _synthesize_constant_operand(
+        self,
+        layers: Dict[str, Any],
+        op_id: str,
+        odata: Dict[str, Any],
+        shape: List[int],
+        dtype: str,
+        auxiliary_ids: Optional[List[str]],
+    ) -> str:
+        """Add an ``auxiliary-tensor`` node feeding ``op_id`` for an untraced operand."""
+        k = 0
+        aux_id = f"{op_id}.const"
+        while aux_id in layers:
+            k += 1
+            aux_id = f"{op_id}.const_{k}"
+        layers[aux_id] = {
+            "type": "auxiliary-tensor",
+            "node_class": "TensorNode",
+            "input_shapes": [],
+            "output_shapes": [list(shape)],
+            "input_dtypes": [dtype],
+            "output_dtypes": [dtype],
+            "input_types": [],
+            "output_types": ["output"],
+            "module_args": {
+                "hierarchical_name": aux_id,
+                "synthesized": "untraced constant operand (from raw_attributes)",
+            },
+            "connections": {"inputs": [], "outputs": [op_id]},
+        }
+        odata.setdefault("input_shapes", []).append(list(shape))
+        odata.setdefault("input_dtypes", []).append(dtype)
+        odata.setdefault("input_types", []).append("input")
+        odata.setdefault("connections", {}).setdefault("inputs", []).append(aux_id)
+        if auxiliary_ids is not None:
+            auxiliary_ids.append(aux_id)
+        if self._debug:
+            print(f"  [repair A'] {op_id}: synthesized constant operand {aux_id} shape={shape}")
+        return aux_id
 
     def _partition_nodes(
         self,
@@ -980,6 +1256,7 @@ class PyTorchToEinsum:
     ) -> List[Dict[str, Any]]:
         """Collect information about auxiliary tensors to create start nodes."""
         start_nodes_info: List[Dict[str, Any]] = []
+        op_id_set = set(op_ids)
 
         for idx, aux_id in enumerate(auxiliary_ids):
             aux_data = layers.get(aux_id) or {}
@@ -987,7 +1264,7 @@ class PyTorchToEinsum:
             output_shapes = aux_data.get("output_shapes") or []
             consumers = list(conns.get("outputs") or [])
             # Filter to only include operation nodes
-            valid_consumers = [c for c in consumers if c in op_ids]
+            valid_consumers = [c for c in consumers if c in op_id_set]
 
             output_dtypes = aux_data.get("output_dtypes") or []
 
@@ -1033,6 +1310,7 @@ class PyTorchToEinsum:
         }
 
         # Add start nodes from auxiliary tensors (model inputs only)
+        self._start_node_targets = None
         start_node_id_map = self._add_start_nodes(result, start_nodes_info)
 
         # Combine start + param info for ID mapping in _convert_operation.
@@ -1049,6 +1327,11 @@ class PyTorchToEinsum:
         for tensor_id, producer_op in self._tensor_to_producer_op.items():
             if tensor_id not in start_node_id_map:
                 start_node_id_map[tensor_id] = producer_op
+        # ``x in start_node_id_map.values()`` is a linear scan over every
+        # tensor in the graph; done once per op input it made
+        # _convert_operation quadratic (93% of einsum-stage time on a
+        # 4.8k-node trace). Cache the value set for the per-op lookups.
+        self._start_node_targets = set(start_node_id_map.values())
 
         # Track node ID remapping for split/expanded operations
         # Maps original node_id -> final output node_id
@@ -1135,6 +1418,58 @@ class PyTorchToEinsum:
         # Fix connections for split/expanded operations
         self._fix_split_connections(result, node_id_remap, expanded_input_map)
 
+        # Record which einsum layers feed the model's declared outputs
+        # (torchview ``output-tensor`` nodes). An op whose result is neither
+        # consumed nor returned is dead code or has an untraced in-place
+        # consumer (``result[mask] = v``); the analyzer uses this list to
+        # avoid charging a DRAM write for such tensors.
+        output_ops: List[str] = []
+        model_outputs: List[Dict[str, Any]] = []
+        pt_layers = pytorch_graph.get("layers") or {}
+        for node_id, node_data in pt_layers.items():
+            if str(node_data.get("type", "")).lower() != "output-tensor":
+                continue
+            shapes = node_data.get("input_shapes") or []
+            dtypes = node_data.get("input_dtypes") or []
+            for i, src in enumerate((node_data.get("connections") or {}).get("inputs") or []):
+                dtype = dtypes[i] if i < len(dtypes) else None
+                # Einsum-side name of the tensor handed to the output: the
+                # analyzer uses it to recognise reads of an output buffer
+                # whose producer torchview lost (orphan accumulators).
+                first_src = node_id_remap.get(src, src)
+                tensor_name = f"{first_src}.Output"
+                first_type = str((pt_layers.get(src) or {}).get("type", "")).lower()
+                is_input = first_type in ("input-tensor", "auxiliary-tensor")
+                # The output may be reached through tensor nodes
+                # (``hidden-tensor``) rather than directly from the op;
+                # follow them to the producing op, taking the (repaired)
+                # dtype of the tensor on the way.
+                hops = 0
+                while src is not None and src not in result["layers"] and hops < 8:
+                    tnode = pt_layers.get(src)
+                    if tnode is None:
+                        break
+                    d = (tnode.get("output_dtypes") or tnode.get("input_dtypes") or [None])[0]
+                    if d:
+                        dtype = d
+                    ins = (tnode.get("connections") or {}).get("inputs") or []
+                    src = node_id_remap.get(ins[0], ins[0]) if ins else None
+                    hops += 1
+                src = node_id_remap.get(src, src) if src is not None else None
+                if src in result["layers"] and src not in output_ops:
+                    output_ops.append(src)
+                model_outputs.append({
+                    "op": src if src in result["layers"] else None,
+                    "tensor": tensor_name,
+                    "is_input": is_input,
+                    "shape": list(shapes[i]) if i < len(shapes) and isinstance(shapes[i], (list, tuple)) else None,
+                    "dtype": dtype,
+                })
+        if output_ops:
+            result["model_output_ops"] = output_ops
+        if model_outputs:
+            result["model_outputs"] = model_outputs
+
         return result
 
     def _should_expand_mha(self, node_data: Dict[str, Any]) -> bool:
@@ -1207,31 +1542,43 @@ class PyTorchToEinsum:
         if len(input_shapes) < 3:
             raise ValueError(f"SDPA requires 3 inputs (Q, K, V). Got: {input_shapes}")
 
-        query_shape = list(input_shapes[0])  # [B, H, Q, D]
-        key_shape = list(input_shapes[1])    # [B, H, K, D]
-        value_shape = list(input_shapes[2])  # [B, H, K, V]
+        query_shape = list(input_shapes[0])  # [..., Q, D]
+        key_shape = list(input_shapes[1])    # [..., K, D]
+        value_shape = list(input_shapes[2])  # [..., K, V]
         output_shape = list(output_shapes[0]) if output_shapes else None
 
-        # Infer dimensions
-        B = query_shape[0]  # batch
-        H = query_shape[1]  # heads
-        Q_len = query_shape[2]  # query sequence length
-        D = query_shape[3]  # embedding dim
-        K_len = key_shape[2]    # key sequence length
-        V_dim = value_shape[3]  # value embedding dim
+        if len(query_shape) < 2 or len(key_shape) < 2 or len(value_shape) < 2:
+            raise ValueError(f"SDPA inputs must be at least 2-D. Got: {input_shapes}")
+
+        # SDPA accepts any number of leading batch-like dims ([B, H, ...] is
+        # only the common case; 5-D [B, M, Nh, C, D] blocked attention is
+        # legal too). Everything but the last two dims is carried through
+        # unchanged; label them with single letters that don't clash with
+        # Q/K/D/V. The classic 4-D case keeps the historical "BH" labels.
+        lead_shape = query_shape[:-2]
+        n_lead = len(lead_shape)
+        _lead_pool = ["B", "H", "E", "F", "G", "I", "J", "L", "M", "N", "P", "R", "S", "T"]
+        if n_lead > len(_lead_pool):
+            raise ValueError(f"SDPA with {n_lead} leading dims is not supported: {input_shapes}")
+        lead = _lead_pool[:n_lead]
+        lead_eq = "".join(lead)
+
+        Q_len = query_shape[-2]  # query sequence length
+        D = query_shape[-1]      # embedding dim
+        K_len = key_shape[-2]    # key sequence length
+        V_dim = value_shape[-1]  # value embedding dim
 
         # Intermediate shapes
-        scores_shape = [B, H, Q_len, K_len]  # Q @ K^T
-        final_output_shape = output_shape if output_shape else [B, H, Q_len, V_dim]
+        scores_shape = lead_shape + [Q_len, K_len]  # Q @ K^T
+        final_output_shape = output_shape if output_shape else lead_shape + [Q_len, V_dim]
 
-        # Build input connections
-        input_connections = sorted(list(op_graph.predecessors(node_id)))
-        for info in start_nodes_info:
-            if node_id in info.get("consumers", []):
-                start_id = start_node_id_map.get(info["original_id"])
-                if start_id and start_id not in input_connections:
-                    input_connections.append(start_id)
-        input_connections = sorted(input_connections)
+        # Build input connections in *argument* order (Q, K, V[, attn_mask]).
+        # Sorting predecessor names here used to make an ``attn_mask``
+        # producer that sorts early (``Model.to`` < ``Model.transpose``)
+        # take the Q slot.
+        input_connections = self._ordered_input_producers(
+            node_id, node_data, op_graph, start_nodes_info, start_node_id_map
+        )
 
         output_connections = sorted(list(op_graph.successors(node_id)))
 
@@ -1254,10 +1601,10 @@ class PyTorchToEinsum:
         }
 
         # 1. Q @ K^T -> attention scores
-        # Einsum: BHQD,BHKD->BHQK (D is contracted)
+        # Einsum: <lead>QD,<lead>KD-><lead>QK (D is contracted)
         subgraph[qk_node_id] = {
             "type": "matmul",
-            "einsum_equation": "BHQD,BHKD->BHQK",
+            "einsum_equation": f"{lead_eq}QD,{lead_eq}KD->{lead_eq}QK",
             "elementwise_op": "mul",
             "reduction_op": "add",
             "is_real_einsum": True,
@@ -1280,9 +1627,9 @@ class PyTorchToEinsum:
             # Operands drive the AF graph builder; without them the
             # layer is silently dropped (cf. commit 8162f29 for linear).
             "operands": {
-                "Input":  ["B", "H", "Q", "D"],
-                "Weight": ["B", "H", "K", "D"],
-                "Output": ["B", "H", "Q", "K"],
+                "Input":  lead + ["Q", "D"],
+                "Weight": lead + ["K", "D"],
+                "Output": lead + ["Q", "K"],
             },
             "tensor_dtypes": {
                 "inputs": [act_dtype, act_dtype],
@@ -1297,7 +1644,7 @@ class PyTorchToEinsum:
         # 2. Scale by 1/sqrt(d_k)
         subgraph[scale_node_id] = {
             "type": "mul",
-            "einsum_equation": "BHQK->BHQK",
+            "einsum_equation": f"{lead_eq}QK->{lead_eq}QK",
             "elementwise_op": "mul",
             "reduction_op": "none",
             "is_real_einsum": False,
@@ -1315,8 +1662,8 @@ class PyTorchToEinsum:
                 "outputs": [scores_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Output": ["B", "H", "Q", "K"],
+                "Input":  lead + ["Q", "K"],
+                "Output": lead + ["Q", "K"],
             },
             "tensor_dtypes": {
                 "inputs": [act_dtype],
@@ -1334,7 +1681,7 @@ class PyTorchToEinsum:
         # 3. Softmax over K dimension (dim=-1)
         subgraph[softmax_node_id] = {
             "type": "softmax",
-            "einsum_equation": "BHQK->BHQK",
+            "einsum_equation": f"{lead_eq}QK->{lead_eq}QK",
             "elementwise_op": "softmax",
             "reduction_op": "none",
             "is_real_einsum": False,
@@ -1352,8 +1699,8 @@ class PyTorchToEinsum:
                 "outputs": [scores_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Output": ["B", "H", "Q", "K"],
+                "Input":  lead + ["Q", "K"],
+                "Output": lead + ["Q", "K"],
             },
             "tensor_dtypes": {
                 "inputs": [act_dtype],
@@ -1372,7 +1719,7 @@ class PyTorchToEinsum:
         # Einsum: BHQK,BHKV->BHQV (K is contracted)
         subgraph[av_node_id] = {
             "type": "matmul",
-            "einsum_equation": "BHQK,BHKV->BHQV",
+            "einsum_equation": f"{lead_eq}QK,{lead_eq}KV->{lead_eq}QV",
             "elementwise_op": "mul",
             "reduction_op": "add",
             "is_real_einsum": True,
@@ -1393,9 +1740,9 @@ class PyTorchToEinsum:
                 "outputs": [final_output_shape],
             },
             "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Weight": ["B", "H", "K", "V"],
-                "Output": ["B", "H", "Q", "V"],
+                "Input":  lead + ["Q", "K"],
+                "Weight": lead + ["K", "V"],
+                "Output": lead + ["Q", "V"],
             },
             "tensor_dtypes": {
                 "inputs": [act_dtype, act_dtype],
@@ -1408,6 +1755,63 @@ class PyTorchToEinsum:
         }
 
         return subgraph, av_node_id, input_mapping
+
+    def _start_targets(self, start_node_id_map: Dict[str, str]) -> "set[str]":
+        """Set of start-node / producer ids that inputs may map to (cached per conversion)."""
+        cached = getattr(self, "_start_node_targets", None)
+        if cached is None:
+            cached = set(start_node_id_map.values())
+            self._start_node_targets = cached
+        return cached
+
+    def _ordered_input_producers(
+        self,
+        node_id: str,
+        node_data: Dict[str, Any],
+        op_graph: nx.DiGraph,
+        start_nodes_info: List[Dict[str, Any]],
+        start_node_id_map: Dict[str, str],
+    ) -> List[str]:
+        """Producer ids of ``node_id``'s inputs in PyTorch argument order.
+
+        Walks ``connections.inputs`` (tensor ids, in call order) and maps
+        each to the op / start node that produces it: start-node map first
+        (also carries hidden-tensor -> producer entries), then op-graph
+        nodes, then ``_tensor_to_producer_op``.  Inputs that cannot be
+        resolved are filled positionally from the still-unassigned
+        predecessors when the counts match.  Any predecessor or consumed
+        start node not yet listed is appended (sorted) so no edge is lost.
+        Used by the op expanders (SDPA) that previously relied on sorted
+        predecessor names, which does not reflect argument order.
+        """
+        raw_inputs = list((node_data.get("connections") or {}).get("inputs") or [])
+        preds = list(op_graph.predecessors(node_id))
+        tensor_to_producer = getattr(self, "_tensor_to_producer_op", {})
+        ordered: List[Optional[str]] = []
+        for tid in raw_inputs:
+            if tid in start_node_id_map:
+                ordered.append(start_node_id_map[tid])
+            elif tid in op_graph.nodes:
+                ordered.append(tid)
+            elif tensor_to_producer.get(tid) in op_graph.nodes:
+                ordered.append(tensor_to_producer[tid])
+            else:
+                ordered.append(None)
+        unresolved = [i for i, x in enumerate(ordered) if x is None]
+        remaining = [p for p in preds if p not in ordered]
+        if unresolved and len(unresolved) == len(remaining):
+            for i, p in zip(unresolved, remaining):
+                ordered[i] = p
+        result = [x for x in ordered if x is not None]
+        for p in sorted(preds):
+            if p not in result:
+                result.append(p)
+        for info in start_nodes_info:
+            if node_id in info.get("consumers", []):
+                start_id = start_node_id_map.get(info["original_id"])
+                if start_id and start_id not in result:
+                    result.append(start_id)
+        return result
 
     def _should_expand_groupwise_conv(self, node_data: Dict[str, Any]) -> bool:
         """Check if this is a group-wise convolution that needs reshape expansion.
@@ -1423,7 +1827,7 @@ class PyTorchToEinsum:
             return False
 
         module_args = node_data.get("module_args") or {}
-        groups = int(module_args.get("groups", 1))
+        groups = int(conv_call_kwargs(module_args).get("groups") or 1)
         if groups <= 1:
             return False
 
@@ -1457,7 +1861,7 @@ class PyTorchToEinsum:
     ) -> Tuple[Dict[str, Dict[str, Any]], str, Dict[int, str]]:
         """Expand group-wise conv into input view, grouped conv, and output view."""
         module_args = node_data.get("module_args") or {}
-        groups = int(module_args.get("groups", 1))
+        groups = int(conv_call_kwargs(module_args).get("groups") or 1)
         input_shapes = node_data.get("input_shapes") or []
         output_shapes = node_data.get("output_shapes") or []
         input_dtypes = node_data.get("input_dtypes") or []
@@ -1537,7 +1941,7 @@ class PyTorchToEinsum:
             if itype == "weight":
                 input_connections.append(mapped)
                 continue
-            if mapped in start_node_id_map.values() or mapped in op_graph.nodes:
+            if mapped in self._start_targets(start_node_id_map) or mapped in op_graph.nodes:
                 input_connections.append(mapped)
                 assigned_preds.add(mapped)
                 continue
@@ -3028,7 +3432,7 @@ class PyTorchToEinsum:
             if itype == "weight":
                 input_connections.append(mapped)
                 continue
-            if mapped in start_node_id_map.values() or mapped in op_graph.nodes:
+            if mapped in self._start_targets(start_node_id_map) or mapped in op_graph.nodes:
                 input_connections.append(mapped)
                 assigned_preds.add(mapped)
                 continue

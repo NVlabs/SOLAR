@@ -29,7 +29,20 @@ import yaml
 from solar.common.constants import SAFE_ENV_VARS
 
 
-class NoAliasDumper(yaml.SafeDumper):
+# Use the libyaml-backed emitter when available: graph YAMLs for large traces run
+# to 10^5+ lines and the pure-Python emitter takes minutes on them.
+_SafeDumperBase = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
+
+
+_SafeLoader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def yaml_safe_load(stream):
+    """yaml.safe_load using the libyaml C loader when available (10x faster on big graphs)."""
+    return yaml.load(stream, Loader=_SafeLoader)
+
+
+class NoAliasDumper(_SafeDumperBase):
     """YAML dumper that disables anchors/aliases for human-readable output.
     
     Standard PyYAML creates anchors (&id001) and aliases (*id001) when it
