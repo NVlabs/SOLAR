@@ -64,6 +64,8 @@ from solar.einsum.af_graph_builder import build_af_graph_from_dict
 from solar.einsum.analyzer import EinsumAnalyzer
 from solar.einsum.einsum_rank_renamer import EinsumRankRenamer
 from solar.einsum.einsum_to_taco import add_taco_expressions
+from solar.einsum.expansions import expand_gru, expand_lstm, expand_mha, expand_sdpa
+from solar.einsum.operands import SIGNATURES, Operand, bind_operands, resolve_operands
 from solar.einsum.ops.base import EinsumOp, EinsumOperand
 from solar.einsum.ops.registry import get_global_registry
 
@@ -1084,47 +1086,26 @@ class PyTorchToEinsum:
                 node_id_remap[node_id] = final_node_id
                 expanded_input_map[node_id] = input_mapping
 
-            # Check if this is MHA that should be expanded
-            elif self._should_expand_mha(node_data):
-                subgraph_layers, final_node_id, input_mapping = self._expand_mha(
-                    node_id, node_data, op_graph, start_nodes_info, start_node_id_map
-                )
-                for sub_id, sub_layer in subgraph_layers.items():
-                    result["layers"][sub_id] = sub_layer
-                node_id_remap[node_id] = final_node_id
-                expanded_input_map[node_id] = input_mapping
-
-            # Check if this is LSTM that should be expanded
-            elif self._should_expand_lstm(node_data):
-                subgraph_layers, final_node_id, input_mapping = self._expand_lstm(
-                    node_id, node_data, op_graph, start_nodes_info, start_node_id_map
-                )
-                for sub_id, sub_layer in subgraph_layers.items():
-                    result["layers"][sub_id] = sub_layer
-                node_id_remap[node_id] = final_node_id
-                expanded_input_map[node_id] = input_mapping
-
-            # Check if this is GRU that should be expanded
-            elif self._should_expand_gru(node_data):
-                subgraph_layers, final_node_id, input_mapping = self._expand_gru(
-                    node_id, node_data, op_graph, start_nodes_info, start_node_id_map
-                )
-                for sub_id, sub_layer in subgraph_layers.items():
-                    result["layers"][sub_id] = sub_layer
-                node_id_remap[node_id] = final_node_id
-                expanded_input_map[node_id] = input_mapping
-
-            # Check if this is SDPA that should be expanded
-            elif self._should_expand_sdpa(node_data):
-                subgraph_layers, final_node_id, input_mapping = self._expand_sdpa(
-                    node_id, node_data, op_graph, start_nodes_info, start_node_id_map
-                )
-                for sub_id, sub_layer in subgraph_layers.items():
-                    result["layers"][sub_id] = sub_layer
-                # Remap: original node_id outputs now come from final subgraph node
-                node_id_remap[node_id] = final_node_id
-                # Store input mapping for predecessor updates
-                expanded_input_map[node_id] = input_mapping
+            elif self._expansion_for(node_data) is not None:
+                expand = self._expansion_for(node_data)
+                try:
+                    subgraph_layers, final_node_id, input_mapping = expand(
+                        node_id, node_data, op_graph, start_nodes_info, start_node_id_map
+                    )
+                except ValueError as exc:
+                    # Operands the expansion needs were not recorded; keep the
+                    # node as one opaque layer rather than drop it.
+                    logger.warning("%s: not expanded (%s)", node_id, exc)
+                    result["layers"][node_id] = self._convert_operation(
+                        node_id, node_data, op_graph, start_nodes_info, start_node_id_map
+                    )
+                else:
+                    for sub_id, sub_layer in subgraph_layers.items():
+                        result["layers"][sub_id] = sub_layer
+                    # Remap: original node_id outputs now come from final subgraph node
+                    node_id_remap[node_id] = final_node_id
+                    # Store input mapping for predecessor updates
+                    expanded_input_map[node_id] = input_mapping
 
             else:
                 layer_dict = self._convert_operation(
@@ -1136,6 +1117,18 @@ class PyTorchToEinsum:
         self._fix_split_connections(result, node_id_remap, expanded_input_map)
 
         return result
+
+    def _expansion_for(self, node_data: Dict[str, Any]):
+        """The subgraph expansion for this node type, or None."""
+        if self._should_expand_mha(node_data):
+            return self._expand_mha
+        if self._should_expand_lstm(node_data):
+            return self._expand_lstm
+        if self._should_expand_gru(node_data):
+            return self._expand_gru
+        if self._should_expand_sdpa(node_data):
+            return self._expand_sdpa
+        return None
 
     def _should_expand_mha(self, node_data: Dict[str, Any]) -> bool:
         """Check if this is a multi_head_attention_forward that should be expanded."""
@@ -1185,229 +1178,8 @@ class PyTorchToEinsum:
         start_nodes_info: List[Dict[str, Any]],
         start_node_id_map: Dict[str, str],
     ) -> Tuple[Dict[str, Dict[str, Any]], str, Dict[int, str]]:
-        """Expand scaled_dot_product_attention into a subgraph of operations.
-
-        Based on PyTorch's reference implementation:
-            attn_weight = query @ key.transpose(-2, -1) * scale_factor
-            attn_weight = torch.softmax(attn_weight, dim=-1)
-            return attn_weight @ value
-
-        Returns:
-            Tuple of (subgraph_layers_dict, final_node_id, input_mapping)
-            input_mapping maps input index -> subgraph node that receives it
-        """
-        input_shapes = node_data.get("input_shapes") or []
-        output_shapes = node_data.get("output_shapes") or []
-        module_args = node_data.get("module_args", {})
-        input_dtypes = node_data.get("input_dtypes") or []
-        output_dtypes = node_data.get("output_dtypes") or []
-        act_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
-        out_dtype = output_dtypes[0] if output_dtypes else act_dtype
-
-        if len(input_shapes) < 3:
-            raise ValueError(f"SDPA requires 3 inputs (Q, K, V). Got: {input_shapes}")
-
-        query_shape = list(input_shapes[0])  # [B, H, Q, D]
-        key_shape = list(input_shapes[1])    # [B, H, K, D]
-        value_shape = list(input_shapes[2])  # [B, H, K, V]
-        output_shape = list(output_shapes[0]) if output_shapes else None
-
-        # Infer dimensions
-        B = query_shape[0]  # batch
-        H = query_shape[1]  # heads
-        Q_len = query_shape[2]  # query sequence length
-        D = query_shape[3]  # embedding dim
-        K_len = key_shape[2]    # key sequence length
-        V_dim = value_shape[3]  # value embedding dim
-
-        # Intermediate shapes
-        scores_shape = [B, H, Q_len, K_len]  # Q @ K^T
-        final_output_shape = output_shape if output_shape else [B, H, Q_len, V_dim]
-
-        # Build input connections
-        input_connections = sorted(list(op_graph.predecessors(node_id)))
-        for info in start_nodes_info:
-            if node_id in info.get("consumers", []):
-                start_id = start_node_id_map.get(info["original_id"])
-                if start_id and start_id not in input_connections:
-                    input_connections.append(start_id)
-        input_connections = sorted(input_connections)
-
-        output_connections = sorted(list(op_graph.successors(node_id)))
-
-        subgraph: Dict[str, Dict[str, Any]] = {}
-
-        # Node IDs for subgraph
-        qk_node_id = f"{node_id}.qk_matmul"
-        scale_node_id = f"{node_id}.scale"
-        softmax_node_id = f"{node_id}.softmax"
-        av_node_id = f"{node_id}.av_matmul"
-
-        # Build input mapping: which predecessor input goes to which subgraph node
-        # Q (input 0) -> qk_matmul
-        # K (input 1) -> qk_matmul
-        # V (input 2) -> av_matmul
-        input_mapping: Dict[int, str] = {
-            0: qk_node_id,  # Q -> qk_matmul
-            1: qk_node_id,  # K -> qk_matmul
-            2: av_node_id,  # V -> av_matmul
-        }
-
-        # 1. Q @ K^T -> attention scores
-        # Einsum: BHQD,BHKD->BHQK (D is contracted)
-        subgraph[qk_node_id] = {
-            "type": "matmul",
-            "einsum_equation": "BHQD,BHKD->BHQK",
-            "elementwise_op": "mul",
-            "reduction_op": "add",
-            "is_real_einsum": True,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [
-                    f"{input_connections[0]}.Output" if input_connections else f"{node_id}.Query",
-                    f"{input_connections[1]}.Output" if len(input_connections) > 1 else f"{node_id}.Key",
-                ],
-                "outputs": [f"{qk_node_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [query_shape, key_shape],
-                "outputs": [scores_shape],
-            },
-            # Operands drive the AF graph builder; without them the
-            # layer is silently dropped (cf. commit 8162f29 for linear).
-            "operands": {
-                "Input":  ["B", "H", "Q", "D"],
-                "Weight": ["B", "H", "K", "D"],
-                "Output": ["B", "H", "Q", "K"],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype, act_dtype],
-                "outputs": [act_dtype],
-            },
-            "connections": {
-                "inputs": input_connections[:2] if len(input_connections) >= 2 else input_connections,
-                "outputs": [scale_node_id],
-            },
-        }
-
-        # 2. Scale by 1/sqrt(d_k)
-        subgraph[scale_node_id] = {
-            "type": "mul",
-            "einsum_equation": "BHQK->BHQK",
-            "elementwise_op": "mul",
-            "reduction_op": "none",
-            "is_real_einsum": False,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [f"{qk_node_id}.Output"],
-                "outputs": [f"{scale_node_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [scores_shape],
-                "outputs": [scores_shape],
-            },
-            "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Output": ["B", "H", "Q", "K"],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype],
-                "outputs": [act_dtype],
-            },
-            "connections": {
-                "inputs": [qk_node_id],
-                "outputs": [softmax_node_id],
-            },
-            "additional_info": {
-                "scale_factor": f"1/sqrt({D})",
-            },
-        }
-
-        # 3. Softmax over K dimension (dim=-1)
-        subgraph[softmax_node_id] = {
-            "type": "softmax",
-            "einsum_equation": "BHQK->BHQK",
-            "elementwise_op": "softmax",
-            "reduction_op": "none",
-            "is_real_einsum": False,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [f"{scale_node_id}.Output"],
-                "outputs": [f"{softmax_node_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [scores_shape],
-                "outputs": [scores_shape],
-            },
-            "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Output": ["B", "H", "Q", "K"],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype],
-                "outputs": [act_dtype],
-            },
-            "connections": {
-                "inputs": [scale_node_id],
-                "outputs": [av_node_id],
-            },
-            "additional_info": {
-                "dim": -1,
-            },
-        }
-
-        # 4. Attention weights @ V -> output
-        # Einsum: BHQK,BHKV->BHQV (K is contracted)
-        subgraph[av_node_id] = {
-            "type": "matmul",
-            "einsum_equation": "BHQK,BHKV->BHQV",
-            "elementwise_op": "mul",
-            "reduction_op": "add",
-            "is_real_einsum": True,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [
-                    f"{softmax_node_id}.Output",
-                    f"{input_connections[2]}.Output" if len(input_connections) > 2 else f"{node_id}.Value",
-                ],
-                "outputs": [f"{av_node_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [scores_shape, value_shape],
-                "outputs": [final_output_shape],
-            },
-            "operands": {
-                "Input":  ["B", "H", "Q", "K"],
-                "Weight": ["B", "H", "K", "V"],
-                "Output": ["B", "H", "Q", "V"],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype, act_dtype],
-                "outputs": [out_dtype],
-            },
-            "connections": {
-                "inputs": [softmax_node_id] + (input_connections[2:3] if len(input_connections) > 2 else []),
-                "outputs": output_connections,
-            },
-        }
-
-        return subgraph, av_node_id, input_mapping
+        """Expand scaled_dot_product_attention; see :func:`solar.einsum.expansions.expand_sdpa`."""
+        return expand_sdpa(self, node_id, node_data, op_graph, start_nodes_info, start_node_id_map)
 
     def _should_expand_groupwise_conv(self, node_data: Dict[str, Any]) -> bool:
         """Check if this is a group-wise convolution that needs reshape expansion.
@@ -1746,700 +1518,60 @@ class PyTorchToEinsum:
         self,
         node_id: str,
         node_data: Dict[str, Any],
-        op_graph: "nx.DiGraph",
+        op_graph: nx.DiGraph,
         start_nodes_info: List[Dict[str, Any]],
         start_node_id_map: Dict[str, str],
     ) -> Tuple[Dict[str, Dict[str, Any]], str, Dict[int, str]]:
-        """Expand multi_head_attention_forward into a subgraph.
-
-        MHA decomposes into:
-          1. in_proj (linear): input @ in_proj_weight^T  [S*B,D] @ [D,3D] -> [S*B,3D]
-          2. qk_matmul: Q @ K^T  [B,H,S,D/H] x [B,H,D/H,S] -> [B,H,S,S]
-          3. scale: * 1/sqrt(d_k)
-          4. softmax
-          5. av_matmul: attn @ V  [B,H,S,S] x [B,H,S,D/H] -> [B,H,S,D/H]
-          6. out_proj (linear): concat @ out_proj_weight^T  [S*B,D] @ [D,D] -> [S*B,D]
-
-        The head count cancels for MACs: B*H*S*S*(D/H) = B*S*S*D.
-        We use num_heads=1 equivalent shapes so standard equations work.
-        """
-        input_shapes = node_data.get("input_shapes") or []
-        output_shapes = node_data.get("output_shapes") or []
-        input_types = [str(t).lower() for t in (node_data.get("input_types") or [])]
-        input_dtypes = node_data.get("input_dtypes") or []
-        output_dtypes = node_data.get("output_dtypes") or []
-        act_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
-        weight_dtype = next(
-            (input_dtypes[i] for i, t in enumerate(input_types)
-             if t == "weight" and i < len(input_dtypes)),
-            act_dtype,
-        )
-        out_dtype = output_dtypes[0] if output_dtypes else act_dtype
-
-        # Parse activation shape: [S, B, D]
-        act_shape = input_shapes[0] if input_shapes else []
-        if len(act_shape) < 3:
-            raise ValueError(f"MHA requires [S,B,D] input. Got: {act_shape}")
-        S, B, D = act_shape[0], act_shape[1], act_shape[2]
-
-        # Find weight shapes by type
-        in_proj_w_shape = None  # [3D, D]
-        out_proj_w_shape = None  # [D, D]
-        for i, t in enumerate(input_types):
-            if t == "weight" and i < len(input_shapes):
-                ws = input_shapes[i]
-                if isinstance(ws, list) and len(ws) == 2:
-                    if ws[0] == 3 * D and ws[1] == D:
-                        in_proj_w_shape = ws
-                    elif ws[0] == D and ws[1] == D:
-                        out_proj_w_shape = ws
-
-        # Derived shapes for sub-nodes
-        proj_shape = [S, B, 3 * D]  # after in_proj
-        # Use single-head equivalent: [B, 1, S, D] so H cancels in cost
-        # Use Q/K labels for sequence dims to avoid repeated dim in equations
-        q_shape = [B, 1, S, D]
-        k_transposed_shape = [B, 1, D, S]  # K^T for matmul handler convention
-        v_shape = [B, 1, S, D]
-        scores_shape = [B, 1, S, S]  # shapes still use S,S (same value)
-        attn_out_shape = [B, 1, S, D]
-        final_shape = list(output_shapes[0]) if output_shapes else [S, B, D]
-
-        # Build connections
-        input_connections = sorted(list(op_graph.predecessors(node_id)))
-        for info in start_nodes_info:
-            if node_id in info.get("consumers", []):
-                start_id = start_node_id_map.get(info["original_id"])
-                if start_id and start_id not in input_connections:
-                    input_connections.append(start_id)
-        input_connections = sorted(input_connections)
-        output_connections = sorted(list(op_graph.successors(node_id)))
-
-        subgraph: Dict[str, Dict[str, Any]] = {}
-
-        in_proj_id = f"{node_id}.in_proj"
-        qk_id = f"{node_id}.qk_matmul"
-        scale_id = f"{node_id}.scale"
-        softmax_id = f"{node_id}.softmax"
-        av_id = f"{node_id}.av_matmul"
-        out_proj_id = f"{node_id}.out_proj"
-
-        input_mapping: Dict[int, str] = {0: in_proj_id}
-        if len(input_connections) > 1:
-            input_mapping[1] = in_proj_id
-        if len(input_connections) > 2:
-            input_mapping[2] = in_proj_id
-
-        act_input_name = (
-            f"{input_connections[0]}.Output" if input_connections
-            else f"{node_id}.Input"
-        )
-        in_proj_w_name = f"{node_id}.in_proj.Weight"
-        out_proj_w_name = f"{node_id}.out_proj.Weight"
-
-        # 1. in_proj: input @ in_proj_weight^T
-        #    Weight is [N, K] = [3D, D]. Equation MK,NK->MN matches handler convention.
-        in_proj_input_shape = [S * B, D]
-        in_proj_output_shape = [S * B, 3 * D]
-        if in_proj_w_shape:
-            subgraph[in_proj_id] = {
-                "type": "linear",
-                "einsum_equation": "MK,NK->MN",
-                "elementwise_op": "mul",
-                "reduction_op": "add",
-                "is_real_einsum": True,
-                "is_einsum_supportable": True,
-                "operands": {"Input": ["M", "K"], "Weight": ["N", "K"], "Output": ["M", "N"]},
-                "tensor_names": {
-                    "inputs": [act_input_name, in_proj_w_name],
-                    "outputs": [f"{in_proj_id}.Output"],
-                },
-                "tensor_types": {
-                    "inputs": ["input", "weight"],
-                    "outputs": ["output"],
-                },
-                "tensor_shapes": {
-                    "inputs": [in_proj_input_shape, in_proj_w_shape],
-                    "outputs": [in_proj_output_shape],
-                },
-                "tensor_dtypes": {
-                    "inputs": [act_dtype, weight_dtype],
-                    "outputs": [act_dtype],
-                },
-                "connections": {
-                    "inputs": input_connections[:1],
-                    "outputs": [qk_id],
-                },
-            }
-
-        # 2. qk_matmul: Q @ K^T
-        subgraph[qk_id] = {
-            "type": "matmul",
-            "einsum_equation": "BHQD,BHDK->BHQK",
-            "elementwise_op": "mul",
-            "reduction_op": "add",
-            "is_real_einsum": True,
-            "is_einsum_supportable": True,
-            "operands": {"Input": ["B", "H", "Q", "D"], "Input_1": ["B", "H", "D", "K"], "Output": ["B", "H", "Q", "K"]},
-            "tensor_names": {
-                "inputs": [f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name,
-                           f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name],
-                "outputs": [f"{qk_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [q_shape, k_transposed_shape],
-                "outputs": [scores_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype, act_dtype],
-                "outputs": [act_dtype],
-            },
-            "connections": {
-                "inputs": [in_proj_id] if in_proj_w_shape else input_connections[:1],
-                "outputs": [scale_id],
-            },
-        }
-
-        # 3. scale
-        subgraph[scale_id] = {
-            "type": "mul",
-            "einsum_equation": "BHQK->BHQK",
-            "elementwise_op": "mul",
-            "reduction_op": "none",
-            "is_real_einsum": False,
-            "is_einsum_supportable": True,
-            "operands": {"Input": ["B", "H", "Q", "K"], "Output": ["B", "H", "Q", "K"]},
-            "tensor_names": {
-                "inputs": [f"{qk_id}.Output"],
-                "outputs": [f"{scale_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [scores_shape],
-                "outputs": [scores_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype],
-                "outputs": [act_dtype],
-            },
-            "connections": {
-                "inputs": [qk_id],
-                "outputs": [softmax_id],
-            },
-        }
-
-        # 4. softmax
-        subgraph[softmax_id] = {
-            "type": "softmax",
-            "einsum_equation": "BHQK->BHQK",
-            "elementwise_op": "softmax",
-            "reduction_op": "none",
-            "is_real_einsum": False,
-            "is_einsum_supportable": True,
-            "operands": {"Input": ["B", "H", "Q", "K"], "Output": ["B", "H", "Q", "K"]},
-            "tensor_names": {
-                "inputs": [f"{scale_id}.Output"],
-                "outputs": [f"{softmax_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [scores_shape],
-                "outputs": [scores_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype],
-                "outputs": [act_dtype],
-            },
-            "connections": {
-                "inputs": [scale_id],
-                "outputs": [av_id],
-            },
-        }
-
-        # 5. av_matmul: attn @ V
-        subgraph[av_id] = {
-            "type": "matmul",
-            "einsum_equation": "BHQK,BHKV->BHQV",
-            "elementwise_op": "mul",
-            "reduction_op": "add",
-            "is_real_einsum": True,
-            "is_einsum_supportable": True,
-            "operands": {"Input": ["B", "H", "Q", "K"], "Input_1": ["B", "H", "K", "V"], "Output": ["B", "H", "Q", "V"]},
-            "tensor_names": {
-                "inputs": [f"{softmax_id}.Output",
-                           f"{in_proj_id}.Output" if in_proj_w_shape else act_input_name],
-                "outputs": [f"{av_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [scores_shape, v_shape],
-                "outputs": [attn_out_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype, act_dtype],
-                "outputs": [act_dtype],
-            },
-            "connections": {
-                "inputs": [softmax_id],
-                "outputs": [out_proj_id] if out_proj_w_shape else output_connections,
-            },
-        }
-
-        # 6. out_proj: Weight is [N, K] = [D, D]. Equation MK,NK->MN.
-        final_node_id = av_id
-        if out_proj_w_shape:
-            out_proj_input_shape = [S * B, D]
-            out_proj_output_shape = [S * B, D]
-            subgraph[out_proj_id] = {
-                "type": "linear",
-                "einsum_equation": "MK,NK->MN",
-                "elementwise_op": "mul",
-                "reduction_op": "add",
-                "is_real_einsum": True,
-                "is_einsum_supportable": True,
-                "operands": {"Input": ["M", "K"], "Weight": ["N", "K"], "Output": ["M", "N"]},
-                "tensor_names": {
-                    "inputs": [f"{av_id}.Output", out_proj_w_name],
-                    "outputs": [f"{out_proj_id}.Output"],
-                },
-                "tensor_types": {
-                    "inputs": ["input", "weight"],
-                    "outputs": ["output"],
-                },
-                "tensor_shapes": {
-                    "inputs": [out_proj_input_shape, out_proj_w_shape],
-                    "outputs": [out_proj_output_shape],
-                },
-                "tensor_dtypes": {
-                    "inputs": [act_dtype, weight_dtype],
-                    "outputs": [out_dtype],
-                },
-                "connections": {
-                    "inputs": [av_id],
-                    "outputs": output_connections,
-                },
-            }
-            final_node_id = out_proj_id
-
-        return subgraph, final_node_id, input_mapping
+        """Expand multi_head_attention_forward; see :func:`solar.einsum.expansions.expand_mha`."""
+        return expand_mha(self, node_id, node_data, op_graph, start_nodes_info, start_node_id_map)
 
     def _expand_lstm(
         self,
         node_id: str,
         node_data: Dict[str, Any],
-        op_graph: "nx.DiGraph",
+        op_graph: nx.DiGraph,
         start_nodes_info: List[Dict[str, Any]],
         start_node_id_map: Dict[str, str],
     ) -> Tuple[Dict[str, Dict[str, Any]], str, Dict[int, str]]:
-        """Expand LSTM into a subgraph of linear operations.
-
-        LSTM decomposes into (per timestep, summed over S steps):
-          1. ih_linear: input @ W_ih^T   [S*B, I] @ [4H, I] -> [S*B, 4H]
-          2. hh_linear: hidden @ W_hh^T  [S*B, H] @ [4H, H] -> [S*B, 4H]
-          3. gate ops (sigmoid, tanh) — elementwise, not real einsums
-        """
-        input_shapes = node_data.get("input_shapes") or []
-        output_shapes = node_data.get("output_shapes") or []
-        input_types = [str(t).lower() for t in (node_data.get("input_types") or [])]
-        input_dtypes = node_data.get("input_dtypes") or []
-        output_dtypes = node_data.get("output_dtypes") or []
-        act_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
-        weight_dtype = next(
-            (input_dtypes[i] for i, t in enumerate(input_types)
-             if t == "weight" and i < len(input_dtypes)),
-            act_dtype,
-        )
-        out_dtype = output_dtypes[0] if output_dtypes else act_dtype
-
-        act_shape = input_shapes[0] if input_shapes else []
-        if len(act_shape) < 3:
-            raise ValueError(f"LSTM requires [S,B,I] input. Got: {act_shape}")
-        S, B, I = act_shape[0], act_shape[1], act_shape[2]
-
-        # Find weight shapes
-        w_ih_shape = None  # [4H, I]
-        w_hh_shape = None  # [4H, H]
-        for i, t in enumerate(input_types):
-            if t == "weight" and i < len(input_shapes):
-                ws = input_shapes[i]
-                if isinstance(ws, list) and len(ws) == 2:
-                    if ws[1] == I and w_ih_shape is None:
-                        w_ih_shape = ws
-                    elif w_hh_shape is None:
-                        w_hh_shape = ws
-
-        H = w_hh_shape[1] if w_hh_shape else (w_ih_shape[0] // 4 if w_ih_shape else I)
-
-        input_connections = sorted(list(op_graph.predecessors(node_id)))
-        for info in start_nodes_info:
-            if node_id in info.get("consumers", []):
-                start_id = start_node_id_map.get(info["original_id"])
-                if start_id and start_id not in input_connections:
-                    input_connections.append(start_id)
-        input_connections = sorted(input_connections)
-        output_connections = sorted(list(op_graph.successors(node_id)))
-
-        subgraph: Dict[str, Dict[str, Any]] = {}
-
-        ih_id = f"{node_id}.ih_linear"
-        hh_id = f"{node_id}.hh_linear"
-        gates_id = f"{node_id}.gates"
-
-        input_mapping: Dict[int, str] = {0: ih_id}
-        if len(input_connections) > 1:
-            input_mapping[1] = hh_id
-
-        act_input_name = (
-            f"{input_connections[0]}.Output" if input_connections
-            else f"{node_id}.Input"
-        )
-        hidden_input_name = (
-            f"{input_connections[1]}.Output" if len(input_connections) > 1
-            else f"{node_id}.Hidden"
-        )
-
-        # Hidden state shape — h0 is [num_layers*num_directions, B, H].
-        # Use the shape from input_shapes[1] if available.
-        hidden_shape = input_shapes[1] if len(input_shapes) > 1 else [1, B, H]
-
-        G = 4 * H  # gate dimension
-
-        # 1. ih_linear: input @ W_ih^T — [S, B, I] @ [G, I] -> [S, B, G]
-        ih_output_shape = [S, B, G]
-        subgraph[ih_id] = {
-            "type": "linear",
-            "einsum_equation": "SBI,GI->SBG",
-            "elementwise_op": "mul",
-            "reduction_op": "add",
-            "is_real_einsum": True,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [act_input_name, f"{node_id}.Weight_ih"],
-                "outputs": [f"{ih_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "weight"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [list(act_shape), w_ih_shape or [G, I]],
-                "outputs": [ih_output_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype, weight_dtype],
-                "outputs": [out_dtype],
-            },
-            "operands": {
-                "Input":  ["S", "B", "I"],
-                "Weight": ["G", "I"],
-                "Output": ["S", "B", "G"],
-            },
-            "connections": {
-                "inputs": input_connections[:1],
-                "outputs": [gates_id],
-            },
-        }
-
-        # 2. hh_linear: hidden @ W_hh^T
-        # The hidden projection runs once per timestep but we represent the
-        # total work as [S, B, H] @ [G, H] -> [S, B, G] so MACs reflect
-        # S steps of B×H×G multiplies.
-        hh_input_shape = [S, B, H]
-        hh_output_shape = [S, B, G]
-        subgraph[hh_id] = {
-            "type": "linear",
-            "einsum_equation": "SBH,GH->SBG",
-            "elementwise_op": "mul",
-            "reduction_op": "add",
-            "is_real_einsum": True,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [hidden_input_name, f"{node_id}.Weight_hh"],
-                "outputs": [f"{hh_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "weight"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [hh_input_shape, w_hh_shape or [G, H]],
-                "outputs": [hh_output_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype, weight_dtype],
-                "outputs": [out_dtype],
-            },
-            "operands": {
-                "Input":  ["S", "B", "H"],
-                "Weight": ["G", "H"],
-                "Output": ["S", "B", "G"],
-            },
-            "connections": {
-                "inputs": input_connections[1:2] if len(input_connections) > 1 else [],
-                "outputs": [gates_id],
-            },
-        }
-
-        # 3. Gate ops (sigmoid/tanh) — elementwise, combines ih + hh results
-        final_shape = list(output_shapes[0]) if output_shapes else [S, B, H]
-        subgraph[gates_id] = {
-            "type": "sigmoid",
-            "einsum_equation": "SBH->SBH",
-            "elementwise_op": "sigmoid",
-            "reduction_op": "none",
-            "is_real_einsum": False,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [f"{ih_id}.Output", f"{hh_id}.Output"],
-                "outputs": [f"{gates_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [ih_output_shape, hh_output_shape],
-                "outputs": [final_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [out_dtype, out_dtype],
-                "outputs": [out_dtype],
-            },
-            "operands": {
-                "Input":  ["S", "B", "H"],
-                "Output": ["S", "B", "H"],
-            },
-            "connections": {
-                "inputs": [ih_id, hh_id],
-                "outputs": output_connections,
-            },
-        }
-
-        final_node_id = gates_id
-        return subgraph, final_node_id, input_mapping
+        """Expand torch.lstm; see :func:`solar.einsum.expansions.expand_lstm`."""
+        return expand_lstm(self, node_id, node_data, op_graph, start_nodes_info, start_node_id_map)
 
     def _expand_gru(
         self,
         node_id: str,
         node_data: Dict[str, Any],
-        op_graph: "nx.DiGraph",
+        op_graph: nx.DiGraph,
         start_nodes_info: List[Dict[str, Any]],
         start_node_id_map: Dict[str, str],
     ) -> Tuple[Dict[str, Dict[str, Any]], str, Dict[int, str]]:
-        """Expand GRU into a subgraph of linear operations.
-
-        GRU decomposes into (per timestep, summed over S steps):
-          1. ih_linear: input @ W_ih^T   [S*B, I] @ [3H, I] -> [S*B, 3H]
-          2. hh_linear: hidden @ W_hh^T  [S*B, H] @ [3H, H] -> [S*B, 3H]
-          3. gate ops (sigmoid, tanh) — elementwise, not real einsums
-        """
-        input_shapes = node_data.get("input_shapes") or []
-        output_shapes = node_data.get("output_shapes") or []
-        input_types = [str(t).lower() for t in (node_data.get("input_types") or [])]
-        input_dtypes = node_data.get("input_dtypes") or []
-        output_dtypes = node_data.get("output_dtypes") or []
-        act_dtype = input_dtypes[0] if input_dtypes else "torch.float32"
-        weight_dtype = next(
-            (input_dtypes[i] for i, t in enumerate(input_types)
-             if t == "weight" and i < len(input_dtypes)),
-            act_dtype,
-        )
-        out_dtype = output_dtypes[0] if output_dtypes else act_dtype
-
-        act_shape = input_shapes[0] if input_shapes else []
-        if len(act_shape) < 3:
-            raise ValueError(f"GRU requires [S,B,I] input. Got: {act_shape}")
-        S, B, I = act_shape[0], act_shape[1], act_shape[2]
-
-        w_ih_shape = None  # [3H, I]
-        w_hh_shape = None  # [3H, H]
-        for i, t in enumerate(input_types):
-            if t == "weight" and i < len(input_shapes):
-                ws = input_shapes[i]
-                if isinstance(ws, list) and len(ws) == 2:
-                    if ws[1] == I and w_ih_shape is None:
-                        w_ih_shape = ws
-                    elif w_hh_shape is None:
-                        w_hh_shape = ws
-
-        H = w_hh_shape[1] if w_hh_shape else (w_ih_shape[0] // 3 if w_ih_shape else I)
-
-        input_connections = sorted(list(op_graph.predecessors(node_id)))
-        for info in start_nodes_info:
-            if node_id in info.get("consumers", []):
-                start_id = start_node_id_map.get(info["original_id"])
-                if start_id and start_id not in input_connections:
-                    input_connections.append(start_id)
-        input_connections = sorted(input_connections)
-        output_connections = sorted(list(op_graph.successors(node_id)))
-
-        subgraph: Dict[str, Dict[str, Any]] = {}
-
-        ih_id = f"{node_id}.ih_linear"
-        hh_id = f"{node_id}.hh_linear"
-        gates_id = f"{node_id}.gates"
-
-        input_mapping: Dict[int, str] = {0: ih_id}
-        if len(input_connections) > 1:
-            input_mapping[1] = hh_id
-
-        act_input_name = (
-            f"{input_connections[0]}.Output" if input_connections
-            else f"{node_id}.Input"
-        )
-        hidden_input_name = (
-            f"{input_connections[1]}.Output" if len(input_connections) > 1
-            else f"{node_id}.Hidden"
-        )
-
-        hidden_shape = input_shapes[1] if len(input_shapes) > 1 else [1, B, H]
-
-        G = 3 * H  # gate dimension
-
-        # 1. ih_linear: input @ W_ih^T — [S, B, I] @ [G, I] -> [S, B, G]
-        ih_output_shape = [S, B, G]
-        subgraph[ih_id] = {
-            "type": "linear",
-            "einsum_equation": "SBI,GI->SBG",
-            "elementwise_op": "mul",
-            "reduction_op": "add",
-            "is_real_einsum": True,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [act_input_name, f"{node_id}.Weight_ih"],
-                "outputs": [f"{ih_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "weight"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [list(act_shape), w_ih_shape or [G, I]],
-                "outputs": [ih_output_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype, weight_dtype],
-                "outputs": [out_dtype],
-            },
-            "operands": {
-                "Input":  ["S", "B", "I"],
-                "Weight": ["G", "I"],
-                "Output": ["S", "B", "G"],
-            },
-            "connections": {
-                "inputs": input_connections[:1],
-                "outputs": [gates_id],
-            },
-        }
-
-        # 2. hh_linear: hidden @ W_hh^T
-        # The hidden projection runs once per timestep but we represent the
-        # total work as [S, B, H] @ [G, H] -> [S, B, G] so MACs reflect
-        # S steps of B×H×G multiplies.
-        hh_input_shape = [S, B, H]
-        hh_output_shape = [S, B, G]
-        subgraph[hh_id] = {
-            "type": "linear",
-            "einsum_equation": "SBH,GH->SBG",
-            "elementwise_op": "mul",
-            "reduction_op": "add",
-            "is_real_einsum": True,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [hidden_input_name, f"{node_id}.Weight_hh"],
-                "outputs": [f"{hh_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "weight"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [hh_input_shape, w_hh_shape or [G, H]],
-                "outputs": [hh_output_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [act_dtype, weight_dtype],
-                "outputs": [out_dtype],
-            },
-            "operands": {
-                "Input":  ["S", "B", "H"],
-                "Weight": ["G", "H"],
-                "Output": ["S", "B", "G"],
-            },
-            "connections": {
-                "inputs": input_connections[1:2] if len(input_connections) > 1 else [],
-                "outputs": [gates_id],
-            },
-        }
-
-        # 3. Gate ops (sigmoid/tanh) — elementwise, combines ih + hh results
-        final_shape = list(output_shapes[0]) if output_shapes else [S, B, H]
-        subgraph[gates_id] = {
-            "type": "sigmoid",
-            "einsum_equation": "SBH->SBH",
-            "elementwise_op": "sigmoid",
-            "reduction_op": "none",
-            "is_real_einsum": False,
-            "is_einsum_supportable": True,
-            "tensor_names": {
-                "inputs": [f"{ih_id}.Output", f"{hh_id}.Output"],
-                "outputs": [f"{gates_id}.Output"],
-            },
-            "tensor_types": {
-                "inputs": ["input", "input"],
-                "outputs": ["output"],
-            },
-            "tensor_shapes": {
-                "inputs": [ih_output_shape, hh_output_shape],
-                "outputs": [final_shape],
-            },
-            "tensor_dtypes": {
-                "inputs": [out_dtype, out_dtype],
-                "outputs": [out_dtype],
-            },
-            "operands": {
-                "Input":  ["S", "B", "H"],
-                "Output": ["S", "B", "H"],
-            },
-            "connections": {
-                "inputs": [ih_id, hh_id],
-                "outputs": output_connections,
-            },
-        }
-
-        final_node_id = gates_id
-        return subgraph, final_node_id, input_mapping
+        """Expand torch.gru; see :func:`solar.einsum.expansions.expand_gru`."""
+        return expand_gru(self, node_id, node_data, op_graph, start_nodes_info, start_node_id_map)
 
     def _linear_operands(self, node_data: Dict[str, Any]) -> Optional[Tuple[int, int, int]]:
         """Input slots of ``linear(input, weight, bias)``, or None if there is no bias.
 
-        The tracer records arguments in signature order, so position
-        identifies each operand; labels only say whether a tensor is a
+        Slots are bound to the signature of ``F.linear`` from the recorded
+        call (``F.linear(x, bias=b, weight=w)`` binds the same as
+        ``F.linear(x, w, b)``); labels only say whether a tensor is a
         parameter. Shapes that contradict the roles return None, so the node
         is converted unsplit rather than mis-split.
         """
         if str(node_data.get("type", "")).lower() != "linear":
             return None
         shapes = node_data.get("input_shapes") or []
-        if len(shapes) != 3:
+        types = list(node_data.get("input_types") or [])
+        slots = [
+            Operand(i, "", list(shape), None, str(types[i]).lower() if i < len(types) else "input", None)
+            for i, shape in enumerate(shapes)
+        ]
+        roles = bind_operands(node_data, slots, SIGNATURES["linear"])
+        x, weight, bias = (roles.get(r) for r in ("input", "weight", "bias"))
+        if not all(isinstance(o, Operand) for o in (x, weight, bias)):
             return None
-        x, weight, bias = shapes
-        if len(weight) != 2 or len(bias) != 1 or x[-1:] != weight[1:] or bias != weight[:1]:
+        if (len(weight.shape) != 2 or len(bias.shape) != 1
+                or x.shape[-1:] != weight.shape[1:] or bias.shape != weight.shape[:1]):
             return None
-        return 0, 1, 2
+        return x.slot, weight.slot, bias.slot
 
     def _should_split_linear_with_bias(self, node_data: Dict[str, Any]) -> bool:
         """Check if this is a linear layer with bias that should be split."""
@@ -2491,22 +1623,13 @@ class PyTorchToEinsum:
         # producer ops and their output slots), then pick x, weight and bias
         # by position. Entries are (slot, tensor name, shape, type, producer);
         # producer is None for parameters.
-        linear = self._convert_operation(
-            node_id, node_data, op_graph, start_nodes_info, start_node_id_map
+        entries = resolve_operands(
+            self, node_id, node_data, op_graph, start_nodes_info, start_node_id_map
         )
-        producers = iter(linear["connections"]["inputs"])
-        entries = [
-            (i, name, shape, itype, None if itype == "weight" else next(producers))
-            for i, (name, shape, itype) in enumerate(zip(
-                linear["tensor_names"]["inputs"],
-                linear["tensor_shapes"]["inputs"],
-                linear["tensor_types"]["inputs"],
-            ))
-        ]
         activation_entry, weight_entry, bias_entry = (
             entries[i] for i in self._linear_operands(node_data)
         )
-        output_connections = linear["connections"]["outputs"]
+        output_connections = sorted(op_graph.successors(node_id))
 
         # Extract dtypes from the original node for propagation to sub-nodes.
         input_types = node_data.get("input_types") or []
@@ -2520,8 +1643,8 @@ class PyTorchToEinsum:
         )
         out_dtype = output_dtypes[0] if output_dtypes else act_dtype
 
-        weight_shape = list(weight_entry[2]) if (weight_entry and isinstance(weight_entry[2], list)) else None
-        bias_shape = list(bias_entry[2]) if (bias_entry and isinstance(bias_entry[2], list)) else None
+        weight_shape = list(weight_entry.shape)
+        bias_shape = list(bias_entry.shape)
 
         # Intermediate shape (output of matmul, input to add)
         matmul_output_shape = output_shapes[0] if output_shapes else []
@@ -2529,10 +1652,8 @@ class PyTorchToEinsum:
         # === MATMUL LAYER ===
         # Get einsum equation for matmul
         matmul_input_shapes_for_equation: List[List[Any]] = []
-        if activation_entry and isinstance(activation_entry[2], list):
-            matmul_input_shapes_for_equation.append(list(activation_entry[2]))
-        if weight_entry and isinstance(weight_entry[2], list):
-            matmul_input_shapes_for_equation.append(list(weight_entry[2]))
+        matmul_input_shapes_for_equation.append(list(activation_entry.shape))
+        matmul_input_shapes_for_equation.append(list(weight_entry.shape))
         matmul_ts = TensorShapes(
             inputs=matmul_input_shapes_for_equation,
             outputs=list(node_data.get("output_shapes") or []),
@@ -2564,18 +1685,18 @@ class PyTorchToEinsum:
         matmul_input_shapes_list: List[List[Any]] = []
         matmul_connection_inputs: List[str] = []
 
-        for _, name, shape, _, producer in (activation_entry, weight_entry):
-            matmul_input_names.append(name)
-            matmul_input_shapes_list.append(list(shape))
-            if producer is not None:
-                matmul_connection_inputs.append(producer)
+        for entry in (activation_entry, weight_entry):
+            matmul_input_names.append(entry.name)
+            matmul_input_shapes_list.append(list(entry.shape))
+            if entry.producer is not None:
+                matmul_connection_inputs.append(entry.producer)
 
         matmul_tensor_names = {
             "inputs": matmul_input_names,
             "outputs": [f"{node_id}.Output"],
         }
         matmul_tensor_types = {
-            "inputs": [activation_entry[3], weight_entry[3]],
+            "inputs": [activation_entry.type, weight_entry.type],
             "outputs": ["output"],
         }
         matmul_tensor_shapes = {
@@ -2638,17 +1759,17 @@ class PyTorchToEinsum:
         add_connection_inputs = [node_id]
 
         if bias_entry and bias_shape:
-            add_input_names.append(bias_entry[1])
+            add_input_names.append(bias_entry.name)
             add_input_shapes_list.append(list(bias_shape))
-            if bias_entry[4] is not None:
-                add_connection_inputs.append(bias_entry[4])
+            if bias_entry.producer is not None:
+                add_connection_inputs.append(bias_entry.producer)
 
         add_tensor_names = {
             "inputs": add_input_names,
             "outputs": [f"{add_node_id}.Output"],
         }
         add_tensor_types = {
-            "inputs": ["input"] + ([bias_entry[3]] if len(add_input_names) > 1 else []),
+            "inputs": ["input"] + ([bias_entry.type] if len(add_input_names) > 1 else []),
             "outputs": ["output"],
         }
         add_tensor_shapes = {
