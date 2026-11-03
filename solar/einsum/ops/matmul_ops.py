@@ -19,7 +19,8 @@ This module provides einsum handlers for:
 - matmul (matrix multiplication)
 - linear (fully connected layer)
 - bmm (batch matrix multiplication)
-- mm (2D matrix multiplication)
+- mm (2D matrix multiplication), mv, dot
+- addmm, baddbmm, addbmm, addmv (bias + matrix multiplication)
 """
 
 from typing import Any, List
@@ -36,7 +37,8 @@ from solar.common.types import TensorShape, TensorShapes
 class MatmulHandler(EinsumOpHandler):
     """Handler for matmul operations."""
     
-    supported_ops = ["matmul", "mm"]
+    # mv and dot are the 2D x 1D and 1D x 1D cases of matmul.
+    supported_ops = ["matmul", "mm", "mv", "dot"]
     
     def generate_einsum(
         self,
@@ -302,12 +304,66 @@ class BmmHandler(EinsumOpHandler):
         )
 
 
+class AddmmHandler(EinsumOpHandler):
+    """Handler for the fused bias + matmul ops.
+
+    ``addmm(input, mat1, mat2)``, ``baddbmm(input, batch1, batch2)``,
+    ``addbmm(input, batch1, batch2)`` and ``addmv(input, mat, vec)`` compute
+    ``beta * input + alpha * (product)``. The bias ``input`` is the first
+    traced operand, so it is the first operand of the equation (shapes are
+    matched to equation operands by position). Its ranks are the trailing
+    output ranks it broadcasts against.
+    """
+
+    supported_ops = ["addmm", "baddbmm", "addbmm", "addmv"]
+
+    _PRODUCTS = {
+        # op: (mat1 ranks, mat2 ranks, output ranks)
+        "addmm": (["M", "K"], ["K", "N"], ["M", "N"]),
+        "baddbmm": (["B", "M", "K"], ["B", "K", "N"], ["B", "M", "N"]),
+        "addbmm": (["B", "M", "K"], ["B", "K", "N"], ["M", "N"]),
+        "addmv": (["M", "K"], ["K"], ["M"]),
+    }
+
+    def generate_einsum(
+        self,
+        op_name: str,
+        tensor_shapes: TensorShapes,
+        **kwargs: Any
+    ) -> EinsumOp:
+        """Generate einsum for a bias + matmul op."""
+        if tensor_shapes.num_inputs < 3:
+            raise ValueError(f"{op_name} needs (input, mat1, mat2) shapes")
+        bias_shape = tensor_shapes.inputs[0]
+        mat1, mat2, out = self._PRODUCTS[op_name]
+        if bias_shape is None or len(bias_shape) > len(out):
+            raise ValueError(f"{op_name}: input shape {bias_shape} does not broadcast to {out}")
+        bias = out[len(out) - len(bias_shape):]
+
+        operands = [
+            EinsumOperand("Bias", bias, is_output=False),
+            EinsumOperand("Input", mat1, is_output=False),
+            EinsumOperand("Weight", mat2, is_output=False),
+            EinsumOperand("Output", out, is_output=True),
+        ]
+        equation = f"{''.join(bias)},{''.join(mat1)},{''.join(mat2)}->{''.join(out)}"
+
+        return EinsumOp(
+            operands=operands,
+            equation=equation,
+            name=op_name,
+            elementwise_op="mul",
+            reduction_op="add",
+        )
+
+
 # Register handlers with global registry (without loading other handlers)
 _registry = get_global_registry(load_handlers=False)
 _registry.register_handler(MatmulHandler)
 _registry.register_handler(LinearHandler)
 _registry.register_handler(BmmHandler)
+_registry.register_handler(AddmmHandler)
 
 
-__all__ = ["MatmulHandler", "LinearHandler", "BmmHandler"]
+__all__ = ["MatmulHandler", "LinearHandler", "BmmHandler", "AddmmHandler"]
 
