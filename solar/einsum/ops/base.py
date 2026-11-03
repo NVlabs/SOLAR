@@ -184,8 +184,12 @@ def compute_cost_from_equation(equation: str, tensor_shapes: TensorShapes) -> in
                 atoms = _parse_dim_atoms(token)
                 if len(atoms) == 1 and dim_offset < len(shape):
                     atom = atoms[0]
-                    if all_ranks.get(atom) is None:
-                        all_ranks[atom] = int(shape[dim_offset])
+                    size = int(shape[dim_offset])
+                    # A size-1 occurrence is a broadcast of the same rank
+                    # (``[2, 1, M, K] @ [3, K, N]``): the extent comes from
+                    # the operand that is not broadcast.
+                    if all_ranks.get(atom) is None or (all_ranks[atom] == 1 and size > 1):
+                        all_ranks[atom] = size
 
     _resolve(input_tokens, tensor_shapes.inputs)
     _resolve([output_tokens], tensor_shapes.outputs)
