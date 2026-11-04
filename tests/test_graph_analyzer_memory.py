@@ -1,0 +1,1670 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for fused/unfused memory element counting in graph_analyzer.
+
+Verifies that:
+- Weight tensors are always counted as external (weight_elements, part of fused), never intermediate
+- Activation tensors between graph-internal ops are intermediate (fusable)
+- __getitem__ ops count memory as input only (output is a view)
+- tensor_shapes, tensor_sizes, tensor_types are present in analysis output
+- For interior nodes: fused_elements == sum of weight tensor sizes + boundary I/O
+"""
+
+import pytest
+import yaml
+from pathlib import Path
+from textwrap import dedent
+
+from solar.common.types import ProcessingConfig
+from solar.graph import PyTorchProcessor
+from solar.einsum.pytorch_to_einsum import PyTorchToEinsum
+from solar.analysis.graph_analyzer import EinsumGraphAnalyzer
+
+
+def _run_full_pipeline(
+    tmp_path: Path,
+    model_source: str,
+    precision: str = "fp32",
+    mutate_einsum=None,
+) -> dict:
+    """Run full Solar pipeline from source code to analysis."""
+    model_file = tmp_path / "model.py"
+    model_file.write_text(dedent(model_source))
+
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+
+    config = ProcessingConfig(
+        save_graph=False,
+        force_rerun=True,
+        debug=False,
+        safe_mode=False,
+    )
+    processor = PyTorchProcessor(config)
+    ok = processor.process_model_file(str(model_file), str(graph_dir))
+    assert ok, "PyTorchProcessor.process_model_file failed"
+
+    einsum_dir = tmp_path / "einsum"
+    einsum_dir.mkdir()
+
+    converter = PyTorchToEinsum()
+    einsum_graph = converter.convert(str(graph_dir / "pytorch_graph.yaml"), str(einsum_dir))
+    assert einsum_graph is not None, "PyTorchToEinsum.convert failed"
+
+    if mutate_einsum is not None:
+        for graph_name in ("einsum_graph.yaml", "einsum_graph_renamed.yaml"):
+            graph_path = einsum_dir / graph_name
+            graph = yaml.safe_load(graph_path.read_text())
+            mutate_einsum(graph)
+            graph_path.write_text(yaml.safe_dump(graph, sort_keys=False))
+
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+
+    analyzer = EinsumGraphAnalyzer()
+    analysis = analyzer.analyze_graph(
+        str(einsum_dir / "einsum_graph_renamed.yaml"),
+        str(analysis_dir),
+        precision=precision,
+        copy_graph=False,
+    )
+    assert analysis is not None, "EinsumGraphAnalyzer.analyze_graph failed"
+    return analysis
+
+
+def _weight_elems_for_layer(layer: dict) -> int:
+    """Sum tensor_sizes[i] where tensor_types.inputs[i] == 'weight'."""
+    types = (layer.get("tensor_types") or {}).get("inputs", [])
+    sizes = (layer.get("tensor_sizes") or {}).get("inputs", [])
+    total = 0
+    for i, t in enumerate(types):
+        if t == "weight" and i < len(sizes):
+            total += sizes[i]
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Test: tensor_shapes, tensor_sizes, tensor_types present in output
+# ---------------------------------------------------------------------------
+class TestAnalysisOutputFields:
+    """Verify that tensor_shapes, tensor_sizes, tensor_types are in each layer."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(64, 32, bias=False)
+
+        def forward(self, x):
+            return self.fc(x)
+
+    def get_inputs():
+        return [torch.randn(2, 16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_tensor_shapes_present(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            assert "tensor_shapes" in layer, f"{lid} missing tensor_shapes"
+            assert "inputs" in layer["tensor_shapes"]
+            assert "outputs" in layer["tensor_shapes"]
+
+    def test_tensor_sizes_present(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            assert "tensor_sizes" in layer, f"{lid} missing tensor_sizes"
+            assert "inputs" in layer["tensor_sizes"]
+            assert "outputs" in layer["tensor_sizes"]
+
+    def test_tensor_types_present(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            assert "tensor_types" in layer, f"{lid} missing tensor_types"
+            assert "inputs" in layer["tensor_types"]
+            assert "outputs" in layer["tensor_types"]
+
+    def test_tensor_sizes_match_shapes(self, analysis):
+        """tensor_sizes should be the product of corresponding tensor_shapes."""
+        for lid, layer in analysis["layers"].items():
+            shapes = layer["tensor_shapes"]
+            sizes = layer["tensor_sizes"]
+            for key in ("inputs", "outputs"):
+                for i, shp in enumerate(shapes[key]):
+                    expected = 1
+                    for d in shp:
+                        expected *= d
+                    assert sizes[key][i] == expected, (
+                        f"{lid} {key}[{i}]: shape {shp} -> expected {expected}, got {sizes[key][i]}"
+                    )
+
+
+# ---------------------------------------------------------------------------
+# Test: Weight tensors never classified as intermediate
+# ---------------------------------------------------------------------------
+class TestWeightsNotIntermediate:
+    """For interior nodes (not start/end), weight tensors must be external (fused)."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(64, 128, bias=False)
+            self.fc2 = nn.Linear(128, 32, bias=False)
+
+        def forward(self, x):
+            h = self.fc1(x)
+            h = F.relu(h)
+            return self.fc2(h)
+
+    def get_inputs():
+        return [torch.randn(2, 16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_interior_node_fused_includes_weights(self, analysis):
+        """For an interior matmul (fc2), fused_elements must include weight size."""
+        for lid, layer in analysis["layers"].items():
+            if not layer.get("input_is_intermediate"):
+                continue
+            w_elems = _weight_elems_for_layer(layer)
+            if w_elems > 0:
+                assert layer["fused_elements"] >= w_elems, (
+                    f"{lid}: fused_elements ({layer['fused_elements']}) < "
+                    f"weight_elements ({w_elems})"
+                )
+
+    def test_weight_not_in_intermediate(self, analysis):
+        """Weight elements should not be counted in intermediate_elements."""
+        for lid, layer in analysis["layers"].items():
+            w_elems = _weight_elems_for_layer(layer)
+            if w_elems == 0:
+                continue
+            if layer.get("input_is_intermediate") and layer.get("output_is_intermediate"):
+                assert layer["intermediate_elements"] < layer["unfused_elements"], (
+                    f"{lid}: intermediate should be less than unfused (weights excluded)"
+                )
+
+    def test_fused_elements_for_interior_matmul(self, analysis):
+        """For an interior node with both intermediate input and output,
+        fused_elements should equal sum of weight tensor sizes (only weights
+        need DRAM; activations are fused)."""
+        for lid, layer in analysis["layers"].items():
+            if not (layer.get("input_is_intermediate") and layer.get("output_is_intermediate")):
+                continue
+            w_elems = _weight_elems_for_layer(layer)
+            if w_elems > 0:
+                assert layer["fused_elements"] == w_elems, (
+                    f"{lid}: fused_elements ({layer['fused_elements']}) != "
+                    f"weight_elements ({w_elems}) for fully interior node"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Test: __getitem__ memory accounting
+# ---------------------------------------------------------------------------
+class TestGetitemMemory:
+    """__getitem__ is a view/slice — input_elems = output_elems, output_elems = 0."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(64, 32, bias=False)
+
+        def forward(self, x):
+            # x shape: [2, 3, 16, 64], select frame 0 -> [2, 16, 64]
+            frame = x[:, 0, :, :]
+            return self.fc(frame)
+
+    def get_inputs():
+        return [torch.randn(2, 3, 16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_getitem_output_elems_zero(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] == "__getitem__":
+                assert layer["output_elements"] == 0, (
+                    f"{lid}: __getitem__ output_elements should be 0 (view)"
+                )
+
+    def test_getitem_input_elems_equals_selected_size(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] == "__getitem__":
+                assert layer["input_elements"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Test: Single-layer graph (all external, no intermediate)
+# ---------------------------------------------------------------------------
+class TestSingleLayerAllExternal:
+    """A single matmul: all inputs are external, fused == unfused."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.randn(64, 128))
+
+        def forward(self, x):
+            return torch.matmul(x, self.weight)
+
+    def get_inputs():
+        return [torch.randn(4, 32, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_equals_unfused(self, analysis):
+        total = analysis["total"]
+        assert total["fused_elements"] == total["unfused_elements"]
+
+    def test_zero_intermediate(self, analysis):
+        assert analysis["total"]["intermediate_elements"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: Multi-layer chain — fused vs unfused accounting
+# ---------------------------------------------------------------------------
+class TestMultiLayerFusedAccounting:
+    """Linear -> relu -> Linear: verify fused/unfused/intermediate totals."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(64, 128, bias=False)
+            self.fc2 = nn.Linear(128, 32, bias=False)
+
+        def forward(self, x):
+            h = self.fc1(x)
+            h = F.relu(h)
+            return self.fc2(h)
+
+    def get_inputs():
+        return [torch.randn(2, 16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_unfused_greater_than_fused(self, analysis):
+        total = analysis["total"]
+        assert total["unfused_elements"] > total["fused_elements"]
+
+    def test_fused_plus_intermediate_equals_unfused(self, analysis):
+        total = analysis["total"]
+        assert total["fused_elements"] + total["intermediate_elements"] == total["unfused_elements"]
+
+    def test_intermediate_positive(self, analysis):
+        assert analysis["total"]["intermediate_elements"] > 0
+
+    def test_total_model_io_plus_weights_equals_fused(self, analysis):
+        total = analysis["total"]
+        assert total["weight_read_elements"] + total["model_io_elements"] == total["fused_elements"]
+
+    def test_fused_prefetched_leq_fused(self, analysis):
+        """fused_prefetched (deduplicated) must be <= fused (per-op sum)."""
+        total = analysis["total"]
+        assert total["fused_prefetched_elements"] <= total["fused_elements"]
+
+
+# ---------------------------------------------------------------------------
+# Test: Linear with bias — weight+bias always in fused
+# ---------------------------------------------------------------------------
+class TestLinearBiasFusedElements:
+    """nn.Linear(bias=True) split into matmul + bias_add.
+    Both weight and bias should be in fused_elements, never intermediate."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(64, 128, bias=True)
+            self.fc2 = nn.Linear(128, 32, bias=True)
+
+        def forward(self, x):
+            h = F.relu(self.fc1(x))
+            return self.fc2(h)
+
+    def get_inputs():
+        return [torch.randn(1, 16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_total_weight_in_fused(self, analysis):
+        """Sum of all weight tensor sizes across all layers should be <= fused_elements."""
+        total_weights = 0
+        for lid, layer in analysis["layers"].items():
+            total_weights += _weight_elems_for_layer(layer)
+        assert total_weights > 0, "No weight tensors found"
+        assert analysis["total"]["fused_elements"] >= total_weights
+
+    def test_bias_add_has_weight_type(self, analysis):
+        """bias_add layers should have a 'weight' type input for the bias tensor."""
+        for lid, layer in analysis["layers"].items():
+            if "bias_add" not in lid:
+                continue
+            types = (layer.get("tensor_types") or {}).get("inputs", [])
+            assert "weight" in types, f"{lid}: bias_add should have 'weight' input type"
+
+
+class TestLinearOperands:
+    """linear(x, weight, bias) split into matmul + bias_add. Each operand must
+    reference its real source (start node, producer op, or parameter) and the
+    fused estimate must count reads of x, weight and bias plus the output
+    write. A computed weight or bias (w * 2) is fused away."""
+
+    # forward args, forward body, AccelForge reads of matmul and bias_add
+    CASES = {
+        "nn_linear": ("", "self.fc(x)", ["start", "W1"], ["Model_linear", "W2"]),
+        "plain": ("w, b", "F.linear(x, w, b)", ["start", "start_1"], ["Model_linear", "start_2"]),
+        "kwargs": ("w, b", "F.linear(x, bias=b, weight=w)", ["start", "start_1"], ["Model_linear", "start_2"]),
+        "computed_weight": ("w, b", "F.linear(x, w * 2, b)", ["start", "Model_mul"], ["Model_linear", "start_2"]),
+        "computed_bias": ("w, b", "F.linear(x, w, b * 2)", ["start", "start_1"], ["Model_linear", "Model_mul"]),
+        "mixed": ("b", "F.linear(x, self.fc.weight, b)", ["start", "W1"], ["Model_linear", "start_1"]),
+        "no_bias": ("w", "F.linear(x, w * 2)", ["start", "Model_mul"], None),
+    }
+
+    @pytest.mark.parametrize("name", list(CASES))
+    def test_linear_operands(self, tmp_path, name):
+        args, body, matmul_reads, bias_reads = self.CASES[name]
+        inputs = {"w": "torch.randn(32, 64)", "b": "torch.randn(32)"}
+        arg_list = [a.strip() for a in args.split(",") if a.strip()]
+        fc = "self.fc = nn.Linear(64, 32)" if "self.fc" in body else "pass"
+        analysis = _run_full_pipeline(tmp_path, f"""\
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                {fc}
+
+            def forward(self, x{"".join(", " + a for a in arg_list)}):
+                return {body}
+
+        def get_inputs():
+            return [torch.randn(2, 16, 64){"".join(", " + inputs[a] for a in arg_list)}]
+
+        def get_init_inputs():
+            return []
+        """)
+
+        x, w, b, out = 2 * 16 * 64, 32 * 64, 32, 2 * 16 * 32
+        assert analysis["total"]["fused_elements"] == x + w + (b if bias_reads else 0) + out
+
+        # Every non-weight input is a tensor some layer produces.
+        layers = yaml.safe_load((tmp_path / "einsum" / "einsum_graph.yaml").read_text())["layers"]
+        produced = {n for l in layers.values() for n in l["tensor_names"]["outputs"]}
+        for lid, l in layers.items():
+            names, types = l["tensor_names"]["inputs"], l["tensor_types"]["inputs"]
+            assert {n for n, t in zip(names, types) if t != "weight"} <= produced, lid
+
+        af = yaml.safe_load((tmp_path / "einsum" / "af_einsum_graph.yaml").read_text())
+        reads = {
+            e["name"]: [t["name"] for t in e["tensor_accesses"] if not t.get("output")]
+            for e in af["workload"]["einsums"]
+        }
+        assert reads["Model_linear"] == matmul_reads
+        assert reads.get("Model_linear_bias_add") == bias_reads
+
+
+# ---------------------------------------------------------------------------
+# Test: Conv2d — implicit weight and bias not in connections
+# ---------------------------------------------------------------------------
+class TestConv2dWeightClassification:
+    """Conv2d has 1 connection (activation) but 2-3 input shapes (+ weight, bias).
+    All implicit weights must be external."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = nn.Conv2d(3, 16, 3, padding=1, bias=True)
+            self.conv2 = nn.Conv2d(16, 32, 3, padding=1, bias=False)
+
+        def forward(self, x):
+            h = F.relu(self.conv1(x))
+            return self.conv2(h)
+
+    def get_inputs():
+        return [torch.randn(1, 3, 32, 32)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_conv_weights_in_fused(self, analysis):
+        """Conv weight tensors should be external (weight_elements, in fused), not intermediate."""
+        for lid, layer in analysis["layers"].items():
+            if "conv2d" not in layer.get("type", ""):
+                continue
+            w_elems = _weight_elems_for_layer(layer)
+            assert w_elems > 0, f"{lid}: conv2d should have weight tensors"
+            assert layer["weight_elements"] == w_elems
+            assert layer["fused_elements"] >= w_elems
+
+    def test_interior_conv_fused_includes_weights(self, analysis):
+        """For conv2 (interior node), fused should include its weight."""
+        for lid, layer in analysis["layers"].items():
+            if "conv2d" not in layer.get("type", ""):
+                continue
+            if not layer.get("input_is_intermediate"):
+                continue
+            w_elems = _weight_elems_for_layer(layer)
+            assert layer["fused_elements"] >= w_elems, (
+                f"{lid}: interior conv2d fused ({layer['fused_elements']}) < weight ({w_elems})"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test: Deep chain — per-layer invariant
+# ---------------------------------------------------------------------------
+class TestPerLayerInvariant:
+    """For every layer: unfused = input_elements + output_elements,
+    and fused_elements + intermediate_elements == unfused_elements."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(64, 64, bias=False)
+            self.fc2 = nn.Linear(64, 64, bias=False)
+            self.fc3 = nn.Linear(64, 64, bias=False)
+
+        def forward(self, x):
+            h = F.relu(self.fc1(x))
+            h = F.relu(self.fc2(h))
+            return self.fc3(h)
+
+    def get_inputs():
+        return [torch.randn(1, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_unfused_equals_input_plus_output(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            assert layer["unfused_elements"] == layer["input_elements"] + layer["output_elements"], (
+                f"{lid}: unfused != input + output"
+            )
+
+    def test_fused_plus_intermediate_equals_unfused(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            assert layer["fused_elements"] + layer["intermediate_elements"] == layer["unfused_elements"], (
+                f"{lid}: fused + intermediate != unfused"
+            )
+
+    def test_total_fused_plus_intermediate_equals_unfused(self, analysis):
+        total = analysis["total"]
+        assert total["fused_elements"] + total["intermediate_elements"] == total["unfused_elements"]
+
+
+# ---------------------------------------------------------------------------
+# Test: Zero-copy view ops (expand, view, reshape, transpose, etc.)
+# ---------------------------------------------------------------------------
+class TestZeroCopyViewOps:
+    """expand, view, reshape, transpose, permute, unsqueeze, squeeze, flatten
+    produce zero-copy aliases and should contribute 0 memory elements."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(64, 32, bias=False)
+
+        def forward(self, x):
+            # x: (2, 8, 64)
+            h = self.fc(x)         # (2, 8, 32)
+            h = h.transpose(1, 2)  # (2, 32, 8) — zero-copy
+            h = h.reshape(2, 256)  # (2, 256) — zero-copy
+            h = h.unsqueeze(1)     # (2, 1, 256) — zero-copy
+            return h
+
+    def get_inputs():
+        return [torch.randn(2, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_view_ops_zero_memory(self, analysis):
+        """View ops should have input_elements == 0 and output_elements == 0."""
+        zero_copy_types = {
+            "transpose", "permute", "t",
+            "view", "reshape", "contiguous",
+            "expand", "expand_as",
+            "unsqueeze", "squeeze", "flatten",
+        }
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in zero_copy_types:
+                assert layer["input_elements"] == 0, (
+                    f"{lid} ({layer['type']}): input_elements should be 0, got {layer['input_elements']}"
+                )
+                assert layer["output_elements"] == 0, (
+                    f"{lid} ({layer['type']}): output_elements should be 0, got {layer['output_elements']}"
+                )
+                assert layer["unfused_elements"] == 0, (
+                    f"{lid} ({layer['type']}): unfused_elements should be 0, got {layer['unfused_elements']}"
+                )
+
+    def test_view_ops_zero_compute(self, analysis):
+        """View ops should have macs == 0 and other_ops == 0."""
+        zero_copy_types = {
+            "transpose", "permute", "t",
+            "view", "reshape", "contiguous",
+            "expand", "expand_as",
+            "unsqueeze", "squeeze", "flatten",
+        }
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in zero_copy_types:
+                assert layer["macs"] == 0, (
+                    f"{lid} ({layer['type']}): macs should be 0, got {layer['macs']}"
+                )
+                assert layer["other_ops"] == 0, (
+                    f"{lid} ({layer['type']}): other_ops should be 0, got {layer['other_ops']}"
+                )
+
+    def test_total_memory_excludes_views(self, analysis):
+        """Total unfused should not include view ops."""
+        non_view_unfused = 0
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] not in {
+                "transpose", "view", "reshape", "unsqueeze",
+                "squeeze", "flatten", "permute", "t",
+                "expand", "expand_as", "contiguous",
+            }:
+                non_view_unfused += layer["unfused_elements"]
+        assert analysis["total"]["unfused_elements"] == non_view_unfused
+
+
+# ---------------------------------------------------------------------------
+# Test: Expand + contiguous (the hybrid_attention_mask bug)
+# ---------------------------------------------------------------------------
+class TestExpandContiguousNoDoubleCount:
+    """expand() + contiguous() should not double-count memory.
+    expand() is zero-copy, contiguous() is zero-copy in analysis."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+
+        def forward(self, mask):
+            # mask: (1, 1, 64, 64)
+            expanded = mask.expand(4, 8, 64, 64)    # zero-copy view
+            materialized = expanded.contiguous()      # zero-copy in analysis
+            return materialized
+
+    def get_inputs():
+        return [torch.randn(1, 1, 64, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_expand_zero_memory(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] == "expand":
+                assert layer["unfused_elements"] == 0, (
+                    f"{lid}: expand should have 0 unfused_elements"
+                )
+
+    def test_contiguous_zero_memory(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] == "contiguous":
+                assert layer["unfused_elements"] == 0, (
+                    f"{lid}: contiguous should have 0 unfused_elements"
+                )
+
+    def test_no_double_count(self, analysis):
+        """Total memory should be roughly input + output, not 2x."""
+        total = analysis["total"]
+        input_size = 1 * 1 * 64 * 64  # mask
+        output_size = 4 * 8 * 64 * 64  # expanded
+        assert total["unfused_elements"] <= input_size + output_size + 1000, (
+            f"Total {total['unfused_elements']} exceeds expected {input_size + output_size}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test: Slice/select ops (getitem, narrow, select)
+# ---------------------------------------------------------------------------
+class TestSliceViewOps:
+    """__getitem__ / select / narrow return views into the source tensor.
+    Memory = output slice size (input), output_elements = 0."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(64, 32, bias=False)
+
+        def forward(self, x):
+            # x: (2, 3, 8, 64) — e.g. multi-frame input
+            frame = x[:, 0, :, :]     # __getitem__: (2, 8, 64) — view
+            return self.fc(frame)
+
+    def get_inputs():
+        return [torch.randn(2, 3, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_getitem_output_zero(self, analysis):
+        """__getitem__ output_elements should be 0 (returns a view)."""
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] == "__getitem__":
+                assert layer["output_elements"] == 0, (
+                    f"{lid}: __getitem__ output_elements should be 0"
+                )
+
+    def test_getitem_zero_compute(self, analysis):
+        """__getitem__ should have macs == 0 and other_ops == 0."""
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] == "__getitem__":
+                assert layer["macs"] == 0, f"{lid}: macs should be 0"
+                assert layer["other_ops"] == 0, f"{lid}: other_ops should be 0"
+
+    def test_getitem_input_equals_slice_size(self, analysis):
+        """__getitem__ input_elements should equal the slice size (output shape)."""
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] == "__getitem__":
+                assert layer["input_elements"] > 0, (
+                    f"{lid}: __getitem__ input_elements should be > 0"
+                )
+                shapes = layer.get("tensor_shapes", {})
+                out_shapes = shapes.get("outputs", [])
+                if out_shapes:
+                    expected = 1
+                    for d in out_shapes[0]:
+                        expected *= d
+                    assert layer["input_elements"] == expected, (
+                        f"{lid}: input_elements {layer['input_elements']} != "
+                        f"slice size {expected}"
+                    )
+
+
+# ---------------------------------------------------------------------------
+# Test: View ops in a real chain (linear -> reshape -> linear)
+# ---------------------------------------------------------------------------
+class TestViewInChainNoMemory:
+    """Reshape between two linears should not add memory."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(64, 128, bias=False)
+            self.fc2 = nn.Linear(128, 32, bias=False)
+
+        def forward(self, x):
+            # x: (1, 8, 64)
+            h = self.fc1(x)           # (1, 8, 128)
+            h = h.view(1, 1024)       # (1, 1024) — zero-copy
+            h = h.view(1, 8, 128)     # (1, 8, 128) — zero-copy
+            return self.fc2(h)         # (1, 8, 32)
+
+    def get_inputs():
+        return [torch.randn(1, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_view_layers_zero(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in ("view", "reshape"):
+                assert layer["unfused_elements"] == 0, (
+                    f"{lid}: {layer['type']} should have 0 unfused"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Test: Scatter/__setitem__ ops (KV cache write)
+# ---------------------------------------------------------------------------
+class TestScatterSetitemMemory:
+    """__setitem__ (tensor[:, :, idx, :] = values) should count the slice
+    size, not the full target tensor."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(128, 128, bias=False)
+
+        def forward(self, hidden, cache, position):
+            # hidden: (1, 8, 128), cache: (1, 8, 256, 128), position: (1,)
+            projected = self.fc(hidden)              # (1, 8, 128)
+            cache[:, :, 0:8, :] = projected          # scatter write
+            return cache
+
+    def get_inputs():
+        cache = torch.randn(1, 8, 256, 128)
+        hidden = torch.randn(1, 8, 128)
+        position = torch.tensor([0])
+        return [hidden, cache, position]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_setitem_not_full_tensor(self, analysis):
+        """__setitem__ should not count the full cache tensor."""
+        full_cache_elems = 1 * 8 * 256 * 128  # 262144
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in ("__setitem__", "index_put", "index_put_",
+                                  "scatter", "scatter_", "index_copy", "index_copy_"):
+                assert layer["unfused_elements"] < full_cache_elems, (
+                    f"{lid}: scatter op unfused ({layer['unfused_elements']}) "
+                    f"should be < full cache ({full_cache_elems})"
+                )
+
+    def test_setitem_zero_compute(self, analysis):
+        """__setitem__ / scatter ops should have macs == 0 and other_ops == 0."""
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in ("__setitem__", "index_put", "index_put_",
+                                  "scatter", "scatter_", "index_copy", "index_copy_"):
+                assert layer["macs"] == 0, f"{lid}: macs should be 0"
+                assert layer["other_ops"] == 0, f"{lid}: other_ops should be 0"
+
+    def test_setitem_input_zero(self, analysis):
+        """__setitem__ input_elements should be 0 (values accounted for by upstream producer)."""
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in ("__setitem__", "index_put", "index_put_",
+                                  "scatter", "scatter_", "index_copy", "index_copy_"):
+                assert layer["input_elements"] == 0, (
+                    f"{lid}: input_elements ({layer['input_elements']}) should be 0"
+                )
+
+    def test_setitem_output_less_than_full_cache(self, analysis):
+        """__setitem__ output_elements should be the source/values size, not the full target."""
+        full_cache = 1 * 8 * 256 * 128  # 262144
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in ("__setitem__", "index_put", "index_put_",
+                                  "scatter", "scatter_", "index_copy", "index_copy_"):
+                assert layer["output_elements"] < full_cache, (
+                    f"{lid}: output_elements ({layer['output_elements']}) "
+                    f"should be < full cache ({full_cache})"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Test: index_copy_ (another scatter variant)
+# ---------------------------------------------------------------------------
+class TestIndexCopyMemory:
+    """index_copy_ writes into a target at specific indices.
+    Memory should be the values size, not the full target."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+
+        def forward(self, target, indices, source):
+            # target: (64, 128), indices: (4,), source: (4, 128)
+            target.index_copy_(0, indices, source)
+            return target
+
+    def get_inputs():
+        target = torch.randn(64, 128)
+        indices = torch.tensor([0, 10, 20, 30])
+        source = torch.randn(4, 128)
+        return [target, indices, source]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_not_full_target(self, analysis):
+        full_target = 64 * 128  # 8192
+        source_size = 4 * 128   # 512
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in ("index_copy", "index_copy_",
+                                  "__setitem__", "scatter", "scatter_"):
+                assert layer["unfused_elements"] <= source_size, (
+                    f"{lid}: unfused ({layer['unfused_elements']}) should be <= source size ({source_size})"
+                )
+
+    def test_input_zero(self, analysis):
+        for lid, layer in analysis["layers"].items():
+            if layer["type"] in ("index_copy", "index_copy_",
+                                  "__setitem__", "scatter", "scatter_"):
+                assert layer["input_elements"] == 0, (
+                    f"{lid}: input_elements should be 0"
+                )
+
+    def test_fused_leq_unfused(self, analysis):
+        """fused_elements must never exceed unfused_elements."""
+        for lid, layer in analysis["layers"].items():
+            assert layer["fused_elements"] <= layer["unfused_elements"], (
+                f"{lid}: fused ({layer['fused_elements']}) > unfused ({layer['unfused_elements']})"
+            )
+        total = analysis["total"]
+        assert total["fused_elements"] <= total["unfused_elements"], (
+            f"total: fused ({total['fused_elements']}) > unfused ({total['unfused_elements']})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test: Scatter fused <= unfused invariant across multiple patterns
+# ---------------------------------------------------------------------------
+class TestScatterFusedLeqUnfused:
+    """Verify fused <= unfused for various scatter/index-write patterns.
+    This was broken when the scatter memory override set input_elems=0
+    but the classification loop still used original shapes."""
+
+    MODEL_SOURCE_INDEX_COPY = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+
+        def forward(self, target, indices, source):
+            target.index_copy_(0, indices, source)
+            return target
+
+    def get_inputs():
+        return [torch.randn(5, 3), torch.tensor([0, 4, 2]), torch.randn(3, 3)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    MODEL_SOURCE_SETITEM_CHAIN = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(32, 32, bias=False)
+
+        def forward(self, cache, values):
+            projected = self.fc(values)
+            cache[:, 0:4, :] = projected
+            return cache
+
+    def get_inputs():
+        return [torch.randn(1, 64, 32), torch.randn(1, 4, 32)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis_index_copy(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE_INDEX_COPY)
+
+    @pytest.fixture
+    def analysis_setitem_chain(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE_SETITEM_CHAIN)
+
+    def test_index_copy_fused_leq_unfused_per_layer(self, analysis_index_copy):
+        for lid, layer in analysis_index_copy["layers"].items():
+            assert layer["fused_elements"] <= layer["unfused_elements"], (
+                f"{lid}: fused ({layer['fused_elements']}) > unfused ({layer['unfused_elements']})"
+            )
+
+    def test_index_copy_fused_leq_unfused_total(self, analysis_index_copy):
+        total = analysis_index_copy["total"]
+        assert total["fused_elements"] <= total["unfused_elements"]
+
+    def test_index_copy_output_equals_source(self, analysis_index_copy):
+        """index_copy_ output should be source size (9), not target (15)."""
+        for lid, layer in analysis_index_copy["layers"].items():
+            if "index_copy" in layer["type"]:
+                assert layer["output_elements"] == 9, (
+                    f"{lid}: output should be 9 (source), got {layer['output_elements']}"
+                )
+                assert layer["unfused_elements"] == 9
+
+    def test_setitem_chain_fused_leq_unfused_per_layer(self, analysis_setitem_chain):
+        for lid, layer in analysis_setitem_chain["layers"].items():
+            assert layer["fused_elements"] <= layer["unfused_elements"], (
+                f"{lid}: fused ({layer['fused_elements']}) > unfused ({layer['unfused_elements']})"
+            )
+
+    def test_setitem_chain_fused_leq_unfused_total(self, analysis_setitem_chain):
+        total = analysis_setitem_chain["total"]
+        assert total["fused_elements"] <= total["unfused_elements"]
+
+
+class TestKernel88MinGPTIntermediateTagging:
+    """End-to-end regression for kernelbench level1/88 (MinGPT GELU)."""
+
+    MODEL_SOURCE_KERNEL88 = """\
+    import math
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def __init__(self):
+            super(Model, self).__init__()
+
+        def forward(self, x):
+            return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+
+    batch_size = 8192
+    dim = 8192
+
+    def get_inputs():
+        return [torch.rand(batch_size, dim)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE_KERNEL88, precision="fp16")
+
+    def test_outputs_with_consumers_are_intermediate(self, analysis):
+        """Any layer output consumed by another layer must be intermediate."""
+        for lid, layer in analysis["layers"].items():
+            outputs = (layer.get("connections") or {}).get("outputs") or []
+            if outputs:
+                assert layer["output_is_intermediate"] is True, (
+                    f"{lid}: output has consumers {outputs} but output_is_intermediate=False"
+                )
+
+    def test_inputs_from_graph_are_intermediate(self, analysis):
+        """Any layer with non-start inputs should mark input_is_intermediate=True."""
+        for lid, layer in analysis["layers"].items():
+            inputs = (layer.get("connections") or {}).get("inputs") or []
+            graph_inputs = [x for x in inputs if x != "start"]
+            if graph_inputs:
+                assert layer["input_is_intermediate"] is True, (
+                    f"{lid}: has graph inputs {graph_inputs} but input_is_intermediate=False"
+                )
+
+    def test_kernel88_fused_is_two_x(self, analysis):
+        """
+        Fully fused elementwise chain: 1 read of x + 1 write of output = 2×|x|.
+        All internal activations are intermediate; the only external tensor
+        (start.Output = x) is shared across mul/pow/add but each per-op read
+        is from the same graph-internal fan-out, leaving only the first
+        external read and the final output in model I/O.
+        """
+        x_elems = 8192 * 8192
+        assert analysis["total"]["fused_elements"] == 2 * x_elems
+
+    def test_kernel88_fused_prefetched_equals_fused(self, analysis):
+        """No shared-input duplication: fused_prefetched == fused == 2×|x|."""
+        x_elems = 8192 * 8192
+        assert analysis["total"]["fused_prefetched_elements"] == 2 * x_elems
+
+    def test_kernel88_fused_prefetched_leq_fused(self, analysis):
+        """fused_prefetched (deduplicated) must be <= fused (per-op sum)."""
+        total = analysis["total"]
+        assert total["fused_prefetched_elements"] <= total["fused_elements"]
+
+
+# ---------------------------------------------------------------------------
+# Test: Stacked external tensor sliced per layer (KV-cache pattern)
+# ---------------------------------------------------------------------------
+class TestStackedSliceExternalReads:
+    """A stacked [num_layers, ...] external input sliced per layer must count
+    every slice read toward fused DRAM traffic, not just one.
+
+    Regression: the external-input dedup keyed reads by source tensor name,
+    so all N per-layer __getitem__ reads of a stacked KV-style tensor
+    collapsed to max(slice_size) = one slice — an N× undercount.  Distinct
+    slices are distinct bytes; the access-region analysis resolves each
+    slice to its region and counts the exact union (which also preserves
+    the full-tensor fan-out dedup verified by test_kernel88_fused_is_two_x).
+    """
+
+    NUM_LAYERS = 4
+    SLICE_ELEMS = 8 * 64
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x, kv):
+            # kv: (4, 8, 64) — stacked per-layer tensor (KV-cache pattern)
+            for i in range(4):
+                x = x + kv[i]
+            return x
+
+    def get_inputs():
+        return [torch.randn(8, 64), torch.randn(4, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_all_slices(self, analysis):
+        """fused = read x + read ALL kv slices + write output."""
+        x_elems = self.SLICE_ELEMS
+        kv_elems = self.NUM_LAYERS * self.SLICE_ELEMS
+        expected = x_elems + kv_elems + x_elems
+        assert analysis["total"]["fused_elements"] == expected, (
+            f"fused_elements {analysis['total']['fused_elements']} != {expected}; "
+            f"stacked-tensor slice reads were deduplicated to one slice"
+        )
+
+    def test_fused_prefetched_counts_all_slices(self, analysis):
+        """fused_prefetched uses the same dedup — must match fused."""
+        assert (
+            analysis["total"]["fused_prefetched_elements"]
+            == analysis["total"]["fused_elements"]
+        )
+
+    def test_fused_leq_unfused(self, analysis):
+        """Capped sum must never exceed the raw per-op total."""
+        total = analysis["total"]
+        assert total["fused_elements"] <= total["unfused_elements"]
+
+    def test_each_getitem_reads_one_slice(self, analysis):
+        """Per-op accounting is unchanged: each slice op reads slice_size."""
+        getitems = [
+            layer for layer in analysis["layers"].values()
+            if layer["type"] == "__getitem__"
+        ]
+        assert len(getitems) == self.NUM_LAYERS
+        for layer in getitems:
+            assert layer["input_elements"] == self.SLICE_ELEMS
+
+
+# ---------------------------------------------------------------------------
+# Test: Analyzer consumes explicit access metadata
+# ---------------------------------------------------------------------------
+class TestAnalyzerUsesExplicitAccessMetadata:
+    """Analyzer should prefer structured access metadata over raw parsing."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[0:10] + x[5:15]
+
+    def get_inputs():
+        return [torch.randn(16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        def corrupt_raw_attributes(graph):
+            for layer in graph["layers"].values():
+                if layer.get("type") == "__getitem__":
+                    layer["raw_attributes"] = "not parseable"
+
+        return _run_full_pipeline(
+            tmp_path,
+            self.MODEL_SOURCE,
+            mutate_einsum=corrupt_raw_attributes,
+        )
+
+    def test_fused_counts_union_from_access_metadata(self, analysis):
+        reads = 15 * 64
+        writes = 10 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+# ---------------------------------------------------------------------------
+# Tests: Access-region analysis for external reads (alias analysis)
+# ---------------------------------------------------------------------------
+class TestRepeatedSliceExternalReads:
+    """Repeated identical slices of one external tensor count once.
+
+    The unique footprint of x[0:10] read twice is 10 rows, not 20: the
+    capped-sum aggregation overcounted this pattern, breaking the SOL
+    lower-bound property.  The region union counts each element once.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[0:10] + x[0:10]
+
+    def get_inputs():
+        return [torch.randn(16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_slice_once(self, analysis):
+        reads = 10 * 64
+        writes = 10 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestOverlappingSliceExternalReads:
+    """Overlapping slices count the overlap once: |[0:10) ∪ [5:15)| = 15."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[0:10] + x[5:15]
+
+    def get_inputs():
+        return [torch.randn(16, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_union(self, analysis):
+        reads = 15 * 64
+        writes = 10 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestMixedFullAndSliceReads:
+    """A full read plus a slice read of the same tensor count as one full
+    read: the slice is a subset of the full access."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x * 2.0 + x[0:4].sum(dim=0)
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_full_once(self, analysis):
+        reads = 8 * 64
+        writes = 8 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestTwoDimensionalSliceUnion:
+    """Two 2-D slices overlapping in both dimensions: exact 2-D union.
+
+    x[0:4, 0:32] and x[2:6, 16:48] on (8, 64) overlap in the
+    [2:4) x [16:32) rectangle: 128 + 128 - 32 = 224 unique elements.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[0:4, 0:32] + x[2:6, 16:48]
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_exact_union(self, analysis):
+        reads = 4 * 32 + 4 * 32 - 2 * 16
+        writes = 4 * 32
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestNegativeIndexSlice:
+    """Negative integer indices resolve to their normalized regions."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, kv):
+            return kv[0] + kv[-1]
+
+    def get_inputs():
+        return [torch.randn(4, 8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_two_distinct_slices(self, analysis):
+        reads = 2 * 8 * 64  # kv[0] and kv[3] are disjoint
+        writes = 8 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestStridedSliceFallback:
+    """Strided slices are not statically boxed; the conservative fallback
+    (per-tensor max of reads) applies and must not overcount.
+
+    x[::2] and x[1::2] are disjoint (true footprint 8 rows) but strided;
+    the documented lower bound is max(4, 4) = 4 rows.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[::2] + x[1::2]
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_uses_conservative_bound(self, analysis):
+        reads = 4 * 64  # max of the two strided reads, not their sum
+        writes = 4 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestTensorIndexFallback:
+    """Dynamic (tensor) indexing cannot be proven; the gather read falls
+    back to the conservative count without crashing."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            idx = torch.tensor([0, 2, 2])
+            return x[idx].sum(dim=0)
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_uses_gather_read(self, analysis):
+        reads = 3 * 12  # recorded gather output size (conservative)
+        index = 3       # the int64 index is read too (issue #38 / an earlier decision gather convention)
+        writes = 12
+        assert analysis["total"]["fused_elements"] == reads + index + writes
+
+
+class TestStaticIntListIndex:
+    """A static integer-list gather with duplicate indices counts each
+    distinct row once: x[[0, 2, 2]] touches rows {0, 2}."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x[[0, 2, 2]].sum(dim=0)
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_distinct_rows(self, analysis):
+        reads = 2 * 12
+        writes = 12
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestChunkPartitionReads:
+    """Consumed chunk outputs count as their exact disjoint regions."""
+
+    SUBSET_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            a, b, c = x.chunk(3, dim=1)
+            return a + c
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    ALL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            a, b, c = x.chunk(3, dim=1)
+            return a + b + c
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    def test_subset_of_chunks(self, tmp_path):
+        analysis = _run_full_pipeline(tmp_path, self.SUBSET_SOURCE)
+        reads = 2 * 8 * 4  # chunks 0 and 2 only
+        writes = 8 * 4
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+    def test_all_chunks_equal_full_tensor(self, tmp_path):
+        analysis = _run_full_pipeline(tmp_path, self.ALL_SOURCE)
+        reads = 8 * 12  # partition union == full tensor
+        writes = 8 * 4
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestViewAliasDeduplication:
+    """A tensor read directly and through a view is one base tensor: the
+    two reads deduplicate to one full read (previously double-counted
+    because the dedup keyed on the view's output name)."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            y = x.view(8, 64)
+            return x + y
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_base_once(self, analysis):
+        reads = 8 * 64
+        writes = 8 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestExpandReadCappedAtBase:
+    """A full read through expand touches every base element exactly once
+    in DRAM terms: the group footprint is capped at the base size."""
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            return x.expand(8, 64) * 2.0
+
+    def get_inputs():
+        return [torch.randn(1, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_read_capped_at_base(self, analysis):
+        reads = 1 * 64  # base tensor size, not the expanded 8 * 64
+        # The output is a scalar multiple of a broadcast: the minimal
+        # implementation computes the 64-element base and returns the
+        # expanded view, so the write is the base footprint as well
+        # (see _output_write_caps; SOL-ExecBench mask preparation).
+        writes = 1 * 64
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestUnevenSplitPartitionReads:
+    """Uneven split: only the consumed piece counts, with its exact size.
+
+    Also exercises the multi-output slot plumbing end-to-end: consumer
+    tensor names carry the slot (converter), the AF union-find pairs the
+    consumer with the correct output's axes, and the analyzer resolves the
+    partition box from the recorded output shapes.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            a, b, c = x.split([5, 5, 2], dim=1)
+            return c * 2.0
+
+    def get_inputs():
+        return [torch.randn(8, 12)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_consumed_piece_only(self, analysis):
+        reads = 8 * 2  # the (8, 2) piece, not 8 * 5 and not the full tensor
+        writes = 8 * 2
+        assert analysis["total"]["fused_elements"] == reads + writes
+
+
+class TestMultiOutputExternalWrites:
+    """Each external output of a multi-output op counts its own write.
+
+    Regression: the external-output dedup stored the layer's total write
+    (sum over all outputs) under every output name, so an op with N
+    external outputs was counted N times - an overcount that breaks the
+    SOL lower bound.
+    """
+
+    MODEL_SOURCE = """\
+    import torch
+    import torch.nn as nn
+
+    class Model(nn.Module):
+        def forward(self, x):
+            values, indices = torch.max(x, dim=1)
+            return values, indices
+
+    def get_inputs():
+        return [torch.randn(8, 64)]
+
+    def get_init_inputs():
+        return []
+    """
+
+    @pytest.fixture
+    def analysis(self, tmp_path):
+        return _run_full_pipeline(tmp_path, self.MODEL_SOURCE)
+
+    def test_fused_counts_each_output_once(self, analysis):
+        reads = 8 * 64
+        writes = 8 + 8  # values + indices, not 2 * (values + indices)
+        assert analysis["total"]["fused_elements"] == reads + writes

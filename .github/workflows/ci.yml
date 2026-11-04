@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Public CI for SOLAR: packaging contract, clean install from the built wheel
+# (patched torchview at the pinned commit) and the offline unit/regression
+# suites.  No inference-API calls, no GPU, no benchmark campaigns.
+name: ci
+
+on:
+  push:
+    branches: [master, main, "release/**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packaging-contract:
+    name: packaging metadata + distribution contents (offline, no torch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m pip install --upgrade pip "setuptools>=61" wheel pytest build
+      - run: python -m pytest tests/release_packaging/test_packaging_metadata.py -q
+      - name: build sdist from the exact commit, wheel from the sdist, check contents
+        run: |
+          python -m build --sdist --outdir dist .
+          python -m pip wheel --no-deps -w dist dist/solar-*.tar.gz
+          python - <<'EOF'
+          import glob, zipfile
+          whl = glob.glob("dist/solar-*.whl")[0]
+          z = zipfile.ZipFile(whl); names = z.namelist()
+          meta = [n for n in names if n.endswith("METADATA")][0]
+          txt = z.read(meta).decode()
+          assert "License: Apache-2.0" in txt and "MIT" not in txt and "example.com" not in txt, txt
+          assert not any(n.startswith(("solar_handlers_cache/", "node_handlers_cache/", "tests/")) for n in names)
+          for need in ("solar/_data/configs/arch/B200.yaml", "solar/_data/skills/verified-translation/SKILL.md",
+                       "solar/_data/scripts/verify_saved_ir.py", "solar/_data/AGENTS.md"):
+              assert need in names, need
+          print(whl, "metadata and resources OK")
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  install-and-test:
+    name: wheel install (patched torchview) + unit tests, py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    needs: packaging-contract
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: install CPU torch first (keeps the resolver off the CUDA wheels)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - name: install patched torchview (same steps as install.sh)
+        run: |
+          git clone https://github.com/mert-kurttutan/torchview.git ../torchview
+          git -C ../torchview checkout edbe1fa
+          git -C ../torchview apply --check patches/torchview-parameter-tensors.patch
+          git -C ../torchview apply patches/torchview-parameter-tensors.patch
+          python -m pip install --no-deps ../torchview
+      - name: install SOLAR from the built wheel WITH dependency resolution
+        run: |
+          python -m pip install "$(ls dist/solar-*.whl)[verify]"
+          python -m pip check
+      - name: installed resources and CLI smoke from outside the checkout
+        run: |
+          cd "$(mktemp -d)"
+          python -m solar.resources
+          for c in solar-process-model solar-toeinsum-model \
+                   solar-analyze-model solar-predict-perf-model solar-totimeloop \
+                   solar-translate solar-toDSL-model solar-resource; do
+            "$c" --help > /dev/null || { echo "$c --help failed"; exit 1; }
+          done
+          python -m solar.frontend.router --help > /dev/null
+          model=$(solar-resource examples/Matmul/Matmul.py)
+          solar-process-model --model-file "$model" --output-dir graph
+          solar-toeinsum-model --graph-path graph/pytorch_graph.yaml --output-dir einsum --no-copy-graph
+          solar-analyze-model --einsum-graph-path einsum/einsum_graph_renamed.yaml --output-dir analysis
+          solar-predict-perf-model --analysis-path analysis/analysis.yaml --output-dir perf --arch-config B200
+          solar-totimeloop --einsum-graph-path einsum/einsum_graph_renamed.yaml --output-dir timeloop
+          ls perf/perf_B200.yaml timeloop/timeloop_graph.yaml
+          solar-translate verify "$(solar-resource skills/verified-translation/example/adapter.py)" \
+              "$(solar-resource skills/verified-translation/example/solar_model_einsum_lib.py)" \
+              --source-type cuda --mem-budget 8 | tee verify.log
+          grep -q '^VERIFIED' verify.log
+      - name: unit + regression tests (offline; the checkout is the test root)
+        run: python -m pytest tests -q -p no:cacheprovider --junitxml=report-${{ matrix.python }}.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pytest-report-py${{ matrix.python }}
+          path: report-${{ matrix.python }}.xml

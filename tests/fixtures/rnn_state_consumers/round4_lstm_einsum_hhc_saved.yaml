@@ -1,0 +1,629 @@
+model_name: model
+layers:
+  start:
+    type: start
+    einsum_equation: ->A0B0C0
+    elementwise_op: copy
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: false
+    tensor_names:
+      inputs: []
+      outputs:
+      - start.Output
+    tensor_types:
+      inputs: []
+      outputs:
+      - input
+    tensor_shapes:
+      inputs: []
+      outputs:
+      - - 1
+        - 2
+        - 3
+    operands:
+      start:
+      - A0
+      - B0
+      - C0
+    connections:
+      inputs: []
+      outputs:
+      - Model.lstm.l0.ih_linear
+    tensor_dtypes:
+      inputs: []
+      outputs:
+      - torch.float32
+  Model.lstm.h0_zeros:
+    type: zeros
+    einsum_equation: ->ZBH
+    elementwise_op: zeros
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: true
+    operands:
+      Output:
+      - Z
+      - B
+      - H
+    tensor_names:
+      inputs: []
+      outputs:
+      - Model.lstm.h0_zeros.Output
+    tensor_types:
+      inputs: []
+      outputs:
+      - output
+    tensor_shapes:
+      inputs: []
+      outputs:
+      - - 1
+        - 1
+        - 2
+    tensor_dtypes:
+      inputs: []
+      outputs:
+      - torch.float32
+    connections:
+      inputs: []
+      outputs:
+      - Model.lstm.h0_unbind
+  Model.lstm.h0_unbind:
+    type: chunk
+    einsum_equation: ZBH->BH
+    elementwise_op: mul
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - Z
+      - B
+      - H
+      Output:
+      - B
+      - H
+    tensor_names:
+      inputs:
+      - Model.lstm.h0_zeros.Output
+      outputs:
+      - Model.lstm.h0_unbind.Output
+    tensor_types:
+      inputs:
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 1
+        - 2
+      outputs:
+      - - 1
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Model.lstm.h0_zeros
+      outputs:
+      - Model.lstm.l0.h0_expand
+    additional_info:
+      chunks: 1
+      dim: 0
+    taco_expression: O0[b,h] = In0[z,b,h]
+  Model.lstm.l0.ih_linear:
+    type: linear
+    einsum_equation: BSI,GI->BSG
+    elementwise_op: mul
+    reduction_op: add
+    is_real_einsum: true
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - B
+      - S
+      - I
+      Weight:
+      - G
+      - I
+      Output:
+      - B
+      - S
+      - G
+    tensor_names:
+      inputs:
+      - start.Output
+      - Model.lstm.Weight
+      outputs:
+      - Model.lstm.l0.ih_linear.Output
+    tensor_types:
+      inputs:
+      - input
+      - weight
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 2
+        - 3
+      - - 8
+        - 3
+      outputs:
+      - - 1
+        - 2
+        - 8
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - start
+      outputs:
+      - Model.lstm.l0.gates
+    taco_expression: O0[b,s,g] = In0[b,s,i] * In1[g,i]
+  Model.lstm.l0.h0_expand:
+    type: expand
+    einsum_equation: BH->BSH
+    elementwise_op: mul
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - B
+      - H
+      Output:
+      - B
+      - S
+      - H
+    tensor_names:
+      inputs:
+      - Model.lstm.h0_unbind.Output
+      outputs:
+      - Model.lstm.l0.h0_expand.Output
+    tensor_types:
+      inputs:
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 2
+      outputs:
+      - - 1
+        - 2
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Model.lstm.h0_unbind
+      outputs:
+      - Model.lstm.l0.hh_linear
+    additional_info:
+      synthetic_recurrence_placeholder: true
+    taco_expression: O0[b,s,h] = In0[b,h]
+  Model.lstm.l0.hh_linear:
+    type: linear
+    einsum_equation: BSH,GH->BSG
+    elementwise_op: mul
+    reduction_op: add
+    is_real_einsum: true
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - B
+      - S
+      - H
+      Weight:
+      - G
+      - H
+      Output:
+      - B
+      - S
+      - G
+    tensor_names:
+      inputs:
+      - Model.lstm.l0.h0_expand.Output
+      - Model.lstm.Weight_1
+      outputs:
+      - Model.lstm.l0.hh_linear.Output
+    tensor_types:
+      inputs:
+      - input
+      - weight
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 2
+        - 2
+      - - 8
+        - 2
+      outputs:
+      - - 1
+        - 2
+        - 8
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Model.lstm.l0.h0_expand
+      outputs:
+      - Model.lstm.l0.gates
+    taco_expression: O0[b,s,g] = In0[b,s,h] * In1[g,h]
+  Model.lstm.l0.gates:
+    type: add
+    einsum_equation: BSG,BSG->BSH
+    elementwise_op: add
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - B
+      - S
+      - G
+      Input_1:
+      - B
+      - S
+      - G
+      Output:
+      - B
+      - S
+      - H
+    tensor_names:
+      inputs:
+      - Model.lstm.l0.ih_linear.Output
+      - Model.lstm.l0.hh_linear.Output
+      outputs:
+      - Model.lstm.l0.gates.Output
+    tensor_types:
+      inputs:
+      - input
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 2
+        - 8
+      - - 1
+        - 2
+        - 8
+      outputs:
+      - - 1
+        - 2
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Model.lstm.l0.ih_linear
+      - Model.lstm.l0.hh_linear
+      outputs: []
+    additional_info:
+      gates: 4
+    taco_expression: O0[b,s,h] = In0[b,s,g] + In1[b,s,g]
+  Model.lstm.l0.h_n:
+    type: select
+    einsum_equation: BSH->BH
+    elementwise_op: select
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - B
+      - S
+      - H
+      Output:
+      - B
+      - H
+    tensor_names:
+      inputs:
+      - Model.lstm.l0.gates.Output
+      outputs:
+      - Model.lstm.l0.h_n.Output
+    tensor_types:
+      inputs:
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 2
+        - 2
+      outputs:
+      - - 1
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Model.lstm.l0.gates
+      outputs:
+      - Model.lstm.h_n.stack
+    additional_info:
+      dim: 1
+      index: 1
+      state: h_n
+      cell: 0
+    taco_expression: O0[b,h] = In0[b,s,h]
+  Model.lstm.h_n.stack:
+    type: stack
+    einsum_equation: BH->ZBH
+    elementwise_op: stack
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - B
+      - H
+      Output:
+      - Z
+      - B
+      - H
+    tensor_names:
+      inputs:
+      - Model.lstm.l0.h_n.Output
+      outputs:
+      - Model.lstm.h_n.stack.Output
+    tensor_types:
+      inputs:
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 2
+      outputs:
+      - - 1
+        - 1
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Model.lstm.l0.h_n
+      outputs:
+      - Model.einsum
+    additional_info:
+      dim: 0
+      state: h_n
+    taco_expression: O0[z,b,h] = In0[b,h]
+  Model.lstm.l0.c_n:
+    type: select
+    einsum_equation: BSH->BH
+    elementwise_op: select
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - B
+      - S
+      - H
+      Output:
+      - B
+      - H
+    tensor_names:
+      inputs:
+      - Model.lstm.l0.gates.Output
+      outputs:
+      - Model.lstm.l0.c_n.Output
+    tensor_types:
+      inputs:
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 2
+        - 2
+      outputs:
+      - - 1
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Model.lstm.l0.gates
+      outputs:
+      - Model.lstm.c_n.stack
+    additional_info:
+      dim: 1
+      index: 1
+      state: c_n
+      cell: 0
+    taco_expression: O0[b,h] = In0[b,s,h]
+  Model.lstm.c_n.stack:
+    type: stack
+    einsum_equation: BH->ZBH
+    elementwise_op: stack
+    reduction_op: none
+    is_real_einsum: false
+    is_einsum_supportable: true
+    operands:
+      Input:
+      - B
+      - H
+      Output:
+      - Z
+      - B
+      - H
+    tensor_names:
+      inputs:
+      - Model.lstm.l0.c_n.Output
+      outputs:
+      - Model.lstm.c_n.stack.Output
+    tensor_types:
+      inputs:
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 2
+      outputs:
+      - - 1
+        - 1
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Model.lstm.l0.c_n
+      outputs:
+      - Model.einsum
+    additional_info:
+      dim: 0
+      state: c_n
+    taco_expression: O0[z,b,h] = In0[b,h]
+  Model.einsum:
+    type: einsum
+    einsum_equation: ABC,ABC,ABC->ABC
+    elementwise_op: mul
+    reduction_op: add
+    is_real_einsum: true
+    is_einsum_supportable: true
+    tensor_names:
+      inputs:
+      - Model.lstm.h_n.stack.Output
+      - Model.lstm.h_n.stack.Output
+      - Model.lstm.c_n.stack.Output
+      outputs:
+      - Model.einsum.Output
+    tensor_types:
+      inputs:
+      - input
+      - input
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 1
+        - 1
+        - 2
+      - - 1
+        - 1
+        - 2
+      - - 1
+        - 1
+        - 2
+      outputs:
+      - - 1
+        - 1
+        - 2
+    operands:
+      Input:
+      - A
+      - B
+      - C
+      Output:
+      - A
+      - B
+      - C
+      Input_1:
+      - A
+      - B
+      - C
+      Input_2:
+      - A
+      - B
+      - C
+    connections:
+      inputs:
+      - Model.lstm.h_n.stack
+      - Model.lstm.c_n.stack
+      outputs: []
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      - torch.float32
+      - torch.float32
+      outputs:
+      - torch.float32
+    parameter_sources:
+      inputs:
+      - null
+      - null
+      - null
+    raw_attributes: '[[''abc,abc,abc->abc'', Tensor(shape=(1, 1, 2), dtype=torch.float32),
+      Tensor(shape=(1, 1, 2), dtype=torch.float32), Tensor(shape=(1, 1, 2), dtype=torch.float32)],
+      {}]'
+    taco_expression: O0[a,b,c] = In0[a,b,c] + In1[a,b,c] * In2[a,b,c]
+model_output_ops:
+- Model.einsum
+model_outputs:
+- op: Model.einsum
+  tensor: Model.einsum.Output
+  is_input: false
+  shape:
+  - 1
+  - 1
+  - 2
+  dtype: torch.float32
+capture_capability:
+  parameter_tensors: true
+  call_attributes: true
+  torchview_version: 0.2.7
+  torchview_file: <torchview-src>/torchview/__init__.py
+  source: patched
+  probe:
+    parameter_tensor_nodes: 3
+    ops_with_attributes: 6
+    ops_total: 6
+    chain_consumers_with_attributes:
+      softmax: true
+      relu: true
+    draw_context: solar.graph.pytorch_processor._patch_torchview_collect_attributes
+    model: nn.Linear(4,3) -> softmax(h + 1.0, dim=-1); F.conv2d(stride=2, padding=1,
+      groups=2) -> relu(c * 2.0) on CPU
+  checked_utc: '2026-10-25T23:07:24.789592+00:00'
+  error: null
+  dynamo_warmup: true
+  capable: true
+  degraded: false
+  reason: capable
+capture_status: ok

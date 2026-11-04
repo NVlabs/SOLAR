@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The sdist carries everything a checkout does so the documented CLI/skill
+# workflows (and `python -m pytest tests`) run from an unpacked sdist, and so
+# a wheel built from the sdist can copy RESOURCE_TREES into solar/_data
+# (setup.py).
+include LICENSE THIRD_PARTY_NOTICES CONTRIBUTING README.md RELEASE_NOTES.md RELEASE_CHECKLIST.md AGENTS.md
+include requirements.txt install.sh install_uv.sh MANIFEST.in
+include REUSE.toml
+graft LICENSES
+include solar/einsum_lib/fallback_protocol/PROTOCOL.json solar/einsum_lib/fallback_protocol/PROTOCOL.md
+graft configs
+graft docs
+graft examples
+graft examples_jax
+graft patches
+graft scripts
+graft skills
+graft tests
+global-exclude __pycache__ *.py[cod] *.so .DS_Store
+prune solar/_data
+prune solar_handlers_cache
+prune node_handlers_cache
+prune examples/*/output

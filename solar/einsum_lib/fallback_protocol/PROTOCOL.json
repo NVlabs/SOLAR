@@ -1,0 +1,928 @@
+{
+ "schema": "lite-fallback-protocol-v10",
+ "spec_version": "v6",
+ "contract": "lite-fallback-contract-v10",
+ "written_utc": "2026-10-28T13:03:01.388608+00:00",
+ "owner": "the fallback-contract maintainers (shim and protocol kept together)",
+ "status": "SPEC v6; the shim embeds RECORD_SCHEMA, INVARIANTS, REEMIT and CONTEXT verbatim; CANONICAL location = the tracked file solar/einsum_lib/fallback_protocol/PROTOCOL.json beside the shim (resolved relative to the package; tests assert equality)",
+ "authority_model": {
+  "parent_held_launch_descriptor": "unchanged from v1 (LaunchDescriptor minted before the launch is the ONLY identity / source / engine-pin / time authority; the disk mint is validation-only: MINT_ALTERED / MINT_MISSING)",
+  "imported_engine_hashes": "see context_resolution: expected_engine names anchors for every key it names (unnamed keys unspecified); fields not named are learned from the first valid record and fixed for the attempt",
+  "standalone_descriptor": "LaunchDescriptor.standalone(binding) is a LIMITED MODE (identity only: no source / engine-pin / time anchors, no mint) for tests and un-controlled launches; it is not equivalent to the fully anchored production controller path and an admitted run must use mint_attempt",
+  "mode": {
+   "field": "descriptor.mode (also in the mint)",
+   "values": {
+    "fallback-allowed": "default; full contract: positive fast-ran record, or typed decline -> transition -> consistent closing record",
+    "no-fallback-expected": "the parent declares no fallback is expected: closure passes ONLY with the positive fast-ran record per execution scope; any valid transition-*/interpreter-* row is MODE_VIOLATION (non-pass)"
+   },
+   "both_modes": "an attempt without execution evidence is NO_EXECUTION_EVIDENCE (non-pass) whatever the exit code"
+  }
+ },
+ "scopes_and_coverage": {
+  "typing": "descriptor.cases are EXECUTION cases; descriptor.stages are PREPARATION stages; the two name sets must be disjoint (descriptor construction refuses overlap)",
+  "tag_kind": "a tag name declared as a case is a CASE scope: a record under it with binding.stage (or with case != name) is rejected SCOPE_CONFLICT; a tag name declared as a stage is a STAGE scope: a record under it with binding.case is rejected SCOPE_CONFLICT; an undeclared tag takes its kind from binding.case XOR binding.stage (both -> SCHEMA xor rejection at validation); records of mixed kinds under one undeclared tag -> SCOPE_CONFLICT for the minority kind",
+  "required_case_satisfied_only_by": "a CASE-scope tag whose state is FAST_DONE or CLOSED_OK (comparator decides); CLOSED_FAIL / FAST_FAILED / OPEN / STATE_CONFLICT give case evidence with a NON-PASS closure (the case is 'covered' but failing); NO case-scope evidence (missing tag, preparation-only evidence, only rejected records) -> MISSING_CASE (non-pass)",
+  "preparation_never_fulfils_an_execution_case": true,
+  "attempt_level": {
+   "NO_EXECUTION_EVIDENCE": "no event files at all (never written or deleted while the mint remains) -> non-pass in EVERY mode whatever the child exit code; status NO_EXECUTION_EVIDENCE (+ RESOURCE_STOP_BEFORE_ANY_FALLBACK_EVENT and the unjoined kill record under a guard kill)",
+   "non_pass_if": [
+    "any scope non-pass",
+    "MINT_ALTERED / MINT_MISSING",
+    "any declared case MISSING_CASE or with a non-pass closure",
+    "preparation records without any execution scope (preparation_without_execution)",
+    "mode no-fallback-expected with any valid transition-*/interpreter-* row (MODE_VIOLATION)",
+    "NO_EXECUTION_EVIDENCE"
+   ],
+   "pass_requires": "per existing execution scope FAST_DONE or CLOSED_OK (CLOSED_OK excluded in no-fallback-expected mode); at least one execution scope; every declared case covered; exit code never closes",
+   "verdict": "always null"
+  }
+ },
+ "event_rows": {
+  "columns": [
+   "event",
+   "kind",
+   "outcome",
+   "backend_attempt",
+   "backend_terminal",
+   "decline_present",
+   "decline_typed",
+   "decline_stage",
+   "preparation_only",
+   "allowed_scopes"
+  ],
+  "rows": [
+   [
+    "transition-lowering",
+    "transition",
+    "INTERPRETER_PENDING",
+    "interpreter",
+    null,
+    true,
+    true,
+    "lowering",
+    false,
+    [
+     "parent",
+     "case"
+    ]
+   ],
+   [
+    "transition-module_exec",
+    "transition",
+    "INTERPRETER_PENDING",
+    "interpreter",
+    null,
+    true,
+    true,
+    "module_exec",
+    false,
+    [
+     "parent",
+     "case"
+    ]
+   ],
+   [
+    "transition-run_model",
+    "transition",
+    "INTERPRETER_PENDING",
+    "interpreter",
+    null,
+    true,
+    true,
+    "run_model",
+    false,
+    [
+     "parent",
+     "case"
+    ]
+   ],
+   [
+    "interpreter-ran",
+    "closing_complete",
+    "INTERPRETER_RAN",
+    "interpreter",
+    "interpreter",
+    true,
+    true,
+    "any of lowering|module_exec|run_model",
+    false,
+    [
+     "parent",
+     "case"
+    ]
+   ],
+   [
+    "interpreter-failed",
+    "closing_failed",
+    "interpreter_failed:<Type>: <msg> (prefix) + interpreter_failure dict",
+    "interpreter",
+    null,
+    true,
+    true,
+    "any",
+    false,
+    [
+     "parent",
+     "case"
+    ]
+   ],
+   [
+    "fast-ran",
+    "fast_complete",
+    "FAST_RAN",
+    "numba",
+    "numba",
+    false,
+    false,
+    null,
+    false,
+    [
+     "parent",
+     "case"
+    ]
+   ],
+   [
+    "untyped-decline",
+    "fast_failed",
+    "UNTYPED_DECLINE",
+    "numba",
+    null,
+    true,
+    false,
+    "lowering",
+    "any",
+    [
+     "parent",
+     "case",
+     "stage"
+    ]
+   ],
+   [
+    "numba-unavailable",
+    "fast_failed",
+    "NUMBA_UNAVAILABLE",
+    "numba",
+    null,
+    true,
+    false,
+    "lowering",
+    "any",
+    [
+     "parent",
+     "case",
+     "stage"
+    ]
+   ],
+   [
+    "precheck-decline",
+    "preparation",
+    "PRECHECK_DECLINE_NO_EXECUTION",
+    "numba",
+    null,
+    true,
+    true,
+    "lowering",
+    true,
+    [
+     "stage"
+    ]
+   ]
+  ],
+  "rule": "a record whose state tuple is not exactly one row is STATE_NOT_ALLOWED; unknown event UNKNOWN_EVENT; row under a scope not listed SCOPE_NOT_ALLOWED -- row validity is NECESSARY, the state machine below decides what the VALID SET means"
+ },
+ "state_machine_execution_scope": {
+  "states": {
+   "NO_VALID_EVENT": {
+    "set": "no valid record (all rejected or none)",
+    "closure": "NO_VALID_EVENT (non-pass); with guard_kill and >=1 REJECTED transition-named record -> write <tag>fallback-kill-record.json (RESOURCE_STOP_UNJOINED: the kill is recorded honestly, no prior decline is claimed)"
+   },
+   "FAST_DONE": {
+    "set": "{fast-ran} exactly",
+    "closure": "CLOSED_COMPARATOR_DECIDES:fast-ran (non-pass only if guard_kill / exit != 0 / any rejected)"
+   },
+   "FAST_FAILED": {
+    "set": "{untyped-decline} exactly OR {numba-unavailable} exactly",
+    "closure": "CLOSED_NON_PASS:<event>"
+   },
+   "OPEN": {
+    "set": "exactly ONE transition and no closing record",
+    "closure": "guard_kill -> RESOURCE_STOP (write <tag>fallback-resource-stop.json joined from the transition) else NON_PASS_OPEN_TRANSITION (write <tag>fallback-open-transition.json); non-pass"
+   },
+   "CLOSED_OK": {
+    "set": "exactly ONE transition + exactly ONE interpreter-ran with event_utc >= the transition",
+    "closure": "CLOSED_COMPARATOR_DECIDES:interpreter-ran (non-pass only if guard_kill / exit != 0 / any rejected)"
+   },
+   "CLOSED_FAIL": {
+    "set": "exactly ONE transition + exactly ONE interpreter-failed with event_utc >= the transition",
+    "closure": "CLOSED_NON_PASS:interpreter-failed"
+   },
+   "STATE_CONFLICT": {
+    "set": "ANY other combination of valid records",
+    "closure": "STATE_CONFLICT:<sorted events> (non-pass). The LATEST transition (if any) survives and receives the joined record exactly as OPEN; every other record of the set is REJECTED with code STATE_CONFLICT (listed in rejected_events and conflicting_events); none closes"
+   }
+  },
+  "forbidden_combinations_examples": [
+   "transition + untyped-decline",
+   "transition + numba-unavailable (fast-failure rows are FORBIDDEN once a transition exists in the scope: a decline that reached the interpreter cannot also be a visible fast-stage non-pass)",
+   "transition + fast-ran",
+   "two transitions (a real attempt opens at most one)",
+   "interpreter-ran + interpreter-failed",
+   "two interpreter-ran",
+   "interpreter-ran or interpreter-failed WITHOUT a transition (orphan)",
+   "fast-ran + untyped-decline",
+   "untyped-decline + numba-unavailable",
+   "any precheck-decline in an execution scope (rejected SCOPE_NOT_ALLOWED before the state machine)"
+  ],
+  "first_match_forbidden": "no priority order: the WHOLE valid set is classified; a complete record never wins over a contradictory failure record",
+  "valid_set": "rows that passed membership AND cross_field AND (for closing rows) cross_record"
+ },
+ "state_machine_stage_scope": {
+  "states": {
+   "PREPARATION_RECORDED": {
+    "set": "{precheck-decline} exactly",
+    "closure": "PREPARATION_RECORDED:precheck-decline (not non-pass)"
+   },
+   "FAST_FAILED": {
+    "set": "{untyped-decline} exactly OR {numba-unavailable} exactly",
+    "closure": "CLOSED_NON_PASS:<event>"
+   },
+   "NO_VALID_EVENT": {
+    "set": "none valid",
+    "closure": "NO_VALID_EVENT (non-pass)"
+   },
+   "STATE_CONFLICT": {
+    "set": "any other combination (e.g. precheck-decline + untyped-decline)",
+    "closure": "STATE_CONFLICT (non-pass)"
+   }
+  },
+  "rejected_before": "transition-*, interpreter-*, fast-ran under a stage tag are SCOPE_NOT_ALLOWED (rejected, never part of the set)"
+ },
+ "rejection_diagnostics": {
+  "UNREADABLE": "not readable / not JSON",
+  "NOT_AN_OBJECT": "JSON not an object",
+  "SCHEMA:<path>": "a declared field (incl. nested history/events/interpreter_failure/binding/engine elements) missing or of the wrong type; checked BEFORE use; first failure stops",
+  "CONTRACT_MISMATCH": "contract != v6",
+  "UNKNOWN_EVENT": "",
+  "EVENT_FILENAME_MISMATCH": "",
+  "STATE_NOT_ALLOWED": "state tuple not a row",
+  "SCOPE_NOT_ALLOWED": "row kind not allowed under the tag's scope",
+  "SCOPE_CONFLICT": "declared tag kind vs binding kind (case vs stage) disagree, or mixed kinds under one tag",
+  "SUBATTEMPT_MISMATCH": "binding.case/stage != tag name, parent record with case/stage, undeclared name when a list is declared",
+  "IDENTITY_MISMATCH": " | v5: also canonical_run_dir(binding.out_dir) != binding.run_dir or != descriptor.run_dir",
+  "SOURCE_MISMATCH": "",
+  "ENGINE_PIN_MISMATCH": "",
+  "ENGINE_HASH_MISMATCH": "",
+  "TIME_INVALID": "",
+  "TIME_BEFORE_MINT": "",
+  "TIME_BEFORE_TRANSITION": "",
+  "MINT_ALTERED": "",
+  "MINT_MISSING": "",
+  "MISSING_CASE": "",
+  "STATE_CONFLICT": "the valid set of a scope is not one of the machine's states (contradictory records; named per scope; non-pass; joined record still written when a transition exists)",
+  "RESOURCE_STOP_UNJOINED": "the unjoined kill record outcome: guard kill, no valid surviving transition, no consistent completion; prior_decline_claimed false",
+  "FIELD_INCONSISTENT": "a non-closing row violates a cross-field invariant I1-I9 (reason FIELD_INCONSISTENT:<Ix>)",
+  "TERMINAL_INCONSISTENT": "a re-emit row (interpreter-ran / interpreter-failed / fast-ran) violates a cross-field invariant (reason TERMINAL_INCONSISTENT:<Ix>) or differs from expected_closing_record on a deterministic field (reason TERMINAL_INCONSISTENT:<field path>, one per field); rejected, never closes, never suppresses the joined stop / open-transition / unjoined kill record",
+  "MODE_VIOLATION": "attempt-level: mode no-fallback-expected and a valid transition-*/interpreter-* row exists (non-pass)",
+  "NO_EXECUTION_EVIDENCE": "attempt-level: no event files at all (non-pass in every mode, whatever the exit code)",
+  "CONTEXT_MISMATCH": "a record differs from the resolved attempt context on engine.solar_package_path / python / executable / config or decline_hook_available (reason CONTEXT_MISMATCH:<field>); the legacy names ENGINE_PIN_MISMATCH / SOURCE_MISMATCH / ENGINE_HASH_MISMATCH cover the pin, the source hash and the three file hashes; IDENTITY_MISMATCH covers the canonical out_dir rule; rejected before validity, never closes, never suppresses the joined stop / open-transition / unjoined kill record | v6: compared with TYPE-EXACT JSON equality against the committed context (tentative values only during phase 1)"
+ },
+ "guarantees": [
+  "joined record: whenever a VALID transition survives in an execution scope and the state is not CLOSED_OK / CLOSED_FAIL, the joined stop/open record IS written (OPEN and STATE_CONFLICT alike), whatever else is rejected",
+  "unjoined kill record: whenever a guard kill is recorded and a tag has NO valid surviving transition and NO consistent completion (state not FAST_DONE / CLOSED_OK / CLOSED_FAIL / PREPARATION_RECORDED), <tag>fallback-kill-record.json (RESOURCE_STOP_UNJOINED, prior_decline_claimed false, rejected records and valid non-closing rows listed) IS written -- independent of which other rows exist (NO_VALID_EVENT, FAST_FAILED, STATE_CONFLICT without a transition, no events at all); a joined record is never manufactured from malformed input",
+  "no crash: the generated validator covers every advertised field and nested element before use; a malformed transition is REJECTED; malformed history is never reinterpreted as completion",
+  "no priority: contradictory valid terminals never resolve to completion; a process exit code never establishes closure",
+  "re-emit and compare: a closing record that is not byte-for-field what the emitter would have written from the surviving transition (or, for fast-ran, from the attempt context) on every deterministic field is rejected before the state machine; the class of omitted relationships (trail, execution context, failure payload) is closed by construction",
+  "context resolution: one resolved attempt context (parent anchors for every named field, learned from the first valid record otherwise, fixed thereafter across cases and stages) is enforced on every row before admission; unnamed parent keys are never null requirements; the expected closing record is built from the resolved context, never from a child-supplied value",
+  "admission boundary (v6): learned context values are committed only from admissible surviving evidence; rejected records never poison later cases nor erase their valid transitions; the final classification is reached at a deterministic fixed point and records are written only then; context equality is type-exact"
+ ],
+ "type_schema": {
+  "record": {
+   "contract": {
+    "type": "const",
+    "value": "lite-fallback-contract-v10"
+   },
+   "event": {
+    "type": "str",
+    "nonempty": true
+   },
+   "event_utc": {
+    "type": "utc"
+   },
+   "engine": {
+    "type": "object",
+    "fields": {
+     "engine_pin": {
+      "type": "str",
+      "nonempty": true
+     },
+     "solar_package_path": {
+      "type": "str",
+      "nonempty": true
+     },
+     "numba_accel_sha256": {
+      "type": "sha256"
+     },
+     "verify_sha256": {
+      "type": "sha256"
+     },
+     "core_sha256": {
+      "type": "sha256"
+     },
+     "python": {
+      "type": "str",
+      "nonempty": true
+     },
+     "executable": {
+      "type": "str",
+      "nonempty": true
+     },
+     "config": {
+      "type": "object",
+      "fields": {},
+      "open": true
+     }
+    }
+   },
+   "binding": {
+    "type": "object",
+    "fields": {
+     "out_dir": {
+      "type": "str",
+      "nonempty": true
+     },
+     "run_dir": {
+      "type": "str",
+      "optional": true
+     },
+     "group": {
+      "type": "str",
+      "optional": true
+     },
+     "attempt": {
+      "type": "int",
+      "optional": true
+     },
+     "row": {
+      "type": "int",
+      "optional": true
+     },
+     "case": {
+      "type": "str",
+      "optional": true
+     },
+     "stage": {
+      "type": "str",
+      "optional": true
+     }
+    },
+    "xor": [
+     "case",
+     "stage"
+    ]
+   },
+   "outcome": {
+    "type": "str",
+    "nonempty": true
+   },
+   "backend": {
+    "type": "enum",
+    "values": [
+     "numba",
+     "interpreter"
+    ]
+   },
+   "backend_attempt": {
+    "type": "enum",
+    "values": [
+     "numba",
+     "interpreter"
+    ]
+   },
+   "backend_terminal": {
+    "type": "enum",
+    "values": [
+     null,
+     "numba",
+     "interpreter"
+    ]
+   },
+   "executed_program": {
+    "type": "enum",
+    "values": [
+     "numba_lowered",
+     "original_dsl_interpreter",
+     "not_executed_preparation"
+    ]
+   },
+   "fallback_allowed": {
+    "type": "bool"
+   },
+   "fallback_taken": {
+    "type": "bool"
+   },
+   "decline_reason": {
+    "type": "str",
+    "nullable": true
+   },
+   "decline_typed": {
+    "type": "bool"
+   },
+   "decline_stage": {
+    "type": "enum",
+    "values": [
+     null,
+     "lowering",
+     "module_exec",
+     "run_model"
+    ]
+   },
+   "decline_hook_available": {
+    "type": "bool"
+   },
+   "interpreter_failure": {
+    "type": "object",
+    "nullable": true,
+    "fields": {
+     "type": {
+      "type": "str",
+      "nonempty": true
+     },
+     "message": {
+      "type": "str"
+     },
+     "prior_decline_reason": {
+      "type": "str",
+      "nullable": true
+     },
+     "prior_decline_stage": {
+      "type": "enum",
+      "values": [
+       null,
+       "lowering",
+       "module_exec",
+       "run_model"
+      ]
+     }
+    }
+   },
+   "preparation_only": {
+    "type": "bool"
+   },
+   "source_sha256": {
+    "type": "sha256"
+   },
+   "lowered_sha256": {
+    "type": "sha256",
+    "nullable": true
+   },
+   "program_text_sha256": {
+    "type": "sha256"
+   },
+   "history": {
+    "type": "list",
+    "items": {
+     "type": "object",
+     "fields": {
+      "backend": {
+       "type": "enum",
+       "values": [
+        "numba",
+        "interpreter"
+       ]
+      },
+      "stage": {
+       "type": "enum",
+       "values": [
+        "lowering",
+        "module_exec",
+        "run_model"
+       ]
+      },
+      "reason": {
+       "type": "str"
+      },
+      "typed": {
+       "type": "bool"
+      }
+     }
+    }
+   },
+   "events": {
+    "type": "list",
+    "items": {
+     "type": "object",
+     "fields": {
+      "event": {
+       "type": "str",
+       "nonempty": true
+      },
+      "event_utc": {
+       "type": "utc"
+      }
+     }
+    }
+   },
+   "verdict": {
+    "type": "const",
+    "value": null
+   }
+  },
+  "mint": {
+   "schema": "str",
+   "contract": "str",
+   "minted_utc": "ISO-8601 UTC string parseable by datetime.fromisoformat",
+   "out_dir": "str",
+   "run_dir": "str",
+   "group": "str",
+   "attempt": "int",
+   "row": "null|int",
+   "admission_sha256": "null|sha256: 64 lowercase hex",
+   "source_sha256": "null|sha256: 64 lowercase hex",
+   "engine_pin": "null|str",
+   "harness_sha256": "null|sha256: 64 lowercase hex",
+   "shim_sha256": "null|sha256: 64 lowercase hex",
+   "cases": "null|list[str]",
+   "stages": "null|list[str]",
+   "mode": "fallback-allowed | no-fallback-expected (copied from the descriptor; the descriptor is the authority)"
+  },
+  "validation": {
+   "generated_from": "type_schema.record",
+   "never_raises": true,
+   "first_failure_stops": true,
+   "presence_vs_nullability": "a field that is not optional MUST be present (SCHEMA:<path> when absent); nullable permits the VALUE null, never omission; optional permits omission and null when present",
+   "before_use": true
+  },
+  "reason_format": {
+   "missing": "SCHEMA:<path>",
+   "wrong_value": "SCHEMA:<path>:<kind>",
+   "kinds": [
+    "type",
+    "const",
+    "enum",
+    "null",
+    "empty",
+    "utc",
+    "sha256",
+    "items",
+    "unknown"
+   ],
+   "xor": "SCHEMA:binding.xor:<detail>"
+  }
+ },
+ "tests_derived": {
+  "invariants": "every cross-field invariant per row (mutation of the field named by the invariant) and every cross-record invariant (the reviewer's eight mutations x killed/unkilled); expectation derived from invariants.cross_field / cross_record of the TRACKED PROTOCOL.json, not from the shim",
+  "combinations": "execution scope: every single and pair of the eight rows + triples, killed/unkilled; expected state derived from the on-disk records through the independent invariant check (a terminal inconsistent with the surviving transition is TERMINAL_INCONSISTENT -> rejected; the remaining set decides); stage scope pairs",
+  "empty_attempt": "no events / deleted events x exit 0 / exit != 0 x killed / unkilled x mode fallback-allowed / no-fallback-expected; no-fallback-expected with the positive fast-ran record passes closure, without it NO_EXECUTION_EVIDENCE; a transition in that mode is MODE_VIOLATION",
+  "unjoined_kill": "malformed transition + untyped-decline / numba-unavailable / orphan interpreter-ran under a kill -> kill record; no events + kill -> kill record; FAST_FAILED + kill -> kill record; CLOSED_OK/FAST_DONE + kill -> no kill record (GUARD_KILL_AFTER_TERMINAL)",
+  "schema_fuzz": "INDEPENDENT expectation table: for every path incl. nested list-item paths: deletion rejected unless optional; null rejected unless nullable/enum-with-null/const-null/optional; wrong values per type from a fixed table rejected; the validator is not its own oracle",
+  "portability": "the schema-equality test reads the TRACKED fixture relative to the package",
+  "independent_review_round6_probes": [
+   "empty parent attempt x delete_emitted",
+   "eight closing-record mutations x killed",
+   "rejected transition + untyped-decline / numba-unavailable / interpreter-ran under kill -> kill record",
+   "corrected hand-built interpreter-failed fixture -> CLOSED_FAIL",
+   "missing required nullable nested field rejected",
+   "clean matching completion -> CLOSED_OK"
+  ],
+  "independent_review_round5_probes": [
+   "forged untyped-decline row + real stub SIGKILL -> STATE_CONFLICT + joined RESOURCE_STOP written",
+   "interpreter-ran coexisting with untyped-decline / numba-unavailable / interpreter-failed -> STATE_CONFLICT non-pass",
+   "events=42/[1]/null/'x' -> SCHEMA rejection, kill record written, no crash",
+   "backend/fallback_allowed/fallback_taken/decline_hook_available/program_text_sha256/history wrong types -> SCHEMA",
+   "preparation substitution for a required case -> MISSING_CASE",
+   "case+stage both set -> rejected"
+  ],
+  "reemit_and_compare": "GENERATED per deterministic field: for every reemit event kind (interpreter-ran, interpreter-failed, fast-ran) x mode (fallback-allowed, no-fallback-expected) x clean/killed, each deterministic field of the real toy record is mutated in turn (type-preserving) -> TERMINAL_INCONSISTENT:<that field> among the reasons, the record never closes, and the joined stop / open-transition / unjoined kill record is retained; each free field mutated INSIDE its constraint stays accepted and OUTSIDE it is rejected; the emitter's persisted records equal expected_closing_record (shared function)",
+  "independent_review_round7_probes": [
+   "empty attempt x mode",
+   "child mode in record / in mint cannot override the parent",
+   "fast positive completion under no-fallback-expected",
+   "fast-ran with a prepended trail event (4 kinds) x killed -> rejected, unjoined kill record",
+   "terminal with changed engine.config / python / executable / decline_hook_available x killed -> rejected, joined stop retained",
+   "typed lowering decline with hook unavailable on both records -> rejected (I10)",
+   "failure object vs outcome mismatch x killed -> rejected",
+   "consistent fabrication limit documented",
+   "retained I3 control"
+  ],
+  "context_precedence": "for EVERY context field: anchor (parent names it; a record differing in that field is rejected; unnamed keys unspecified -> valid controls pass with partial anchors), learned (no anchor; the first valid record fixes it; a later record in the same or another case/stage differing is rejected; the learner itself passes), free-before-first (a single record attempt accepts its own values); multi-case learned consistency (case A fixes, case B differs -> rejected, B unjoined kill record under kill); out_dir canonical rule (unrelated out_dir with the minted run_dir -> IDENTITY_MISMATCH for transitions, closings and fast completions; a spelling alias canonicalising to the same directory passes)",
+  "independent_review_round8_probes": [
+   "parent anchor applies to transition AND terminal (4 fields x killed)",
+   "fast engine fields fixed by a prior valid case (4 fields x killed)",
+   "partial expected_engine anchors only named fields (positive controls)",
+   "out_dir canonical identity (typed/fast x killed)",
+   "full parent engine positive controls",
+   "free time constraint (+30 accepted, +120 rejected, -600 rejected)",
+   "unlisted deterministic additions rejected",
+   "real emitter uses the shared constructor and it is pure",
+   "consistent fabrication limit"
+  ],
+  "two_phase_learning": "orphan interpreter terminal in case A (forged context) + valid transition in case B, clean and killed: A rejected, B surviving transition kept with its joined record, learned values not the forgery; the reverse order (valid first, orphan later); multi-case; kills during each phase; the retained 18 individually-rejected-first controls; engine_context.passes / committed_from / tentative_discarded recorded; determinism (same files -> same committed context)",
+  "type_exact_context": "for every context field a JSON-type change of the same Python-equal value (true -> 1, nested [true,false] -> [1,0], 1 -> 1.0 where representable) in a transition+terminal pair against a parent anchor and against a learned case A -> rejected (CONTEXT_MISMATCH), joined/unjoined records retained; the reviewer's typed-config-* (8 records)",
+  "anchor_domain": "expected_engine with an unsupported key -> RecordInvalid at LaunchDescriptor construction and at mint_attempt; expected_engine.engine_pin differing from descriptor.engine_pin -> RecordInvalid; every enumerated key accepted",
+  "independent_review_round9_probes": [
+   "rejected first fast record does not seed (9 kinds x killed)",
+   "rejected orphan first record cannot poison a later transition (x killed)",
+   "context config equality preserves JSON types (parent/learned x nested x killed)",
+   "every parent-named engine key is enforced or rejected",
+   "fabricated first context is an explicit non-attestation limit (kept)",
+   "same canonical spelling alias allowed"
+  ]
+ },
+ "amendments": [
+  {
+   "id": "amend1",
+   "written_utc": "2026-10-28T10:21:40Z",
+   "scope": [
+    "state_machine.exec.STATE_CONFLICT",
+    "type_schema.reason_format",
+    "state_machine.stage.STATE_CONFLICT"
+   ],
+   "text": "conflicting records (every record of a STATE_CONFLICT set except the latest transition) are REJECTED with code STATE_CONFLICT and listed in both rejected_events and conflicting_events; the state is computed from the whole structurally valid set before that rejection. Reason format: SCHEMA:<path> = required field missing (round-5 format kept); SCHEMA:<path>:<kind> for a wrong present value; SCHEMA:binding.xor:<detail>. Stage scope: no transition exists, so every record of the conflicting set is rejected with code STATE_CONFLICT.",
+   "trigger": "independent review round-5 probes test_allowed_fast_failure_cannot_close_interpreter_transition and test_disjoint_binding_does_not_match_an_attempt run against the v6 shim",
+   "stage_clause_written_utc": "2026-10-28T10:22:42Z"
+  },
+  {
+   "id": "v3",
+   "written_utc": "2026-10-28T10:55:43.413711+00:00",
+   "folds_in": "amendment 1 of v2",
+   "adds": [
+    "mode",
+    "invariants (cross_field I1-I9, cross_record C1-C7)",
+    "NO_EXECUTION_EVIDENCE fail-closed",
+    "unjoined kill record independent of other rows",
+    "presence vs nullability",
+    "canonical tracked location"
+   ]
+  },
+  {
+   "id": "v4",
+   "written_utc": "2026-10-28T11:43:22.908764+00:00",
+   "adds": [
+    "reemit_and_compare (principle, shared pure function, deterministic/free field lists, codes)",
+    "I9 exact trail for non-reemit rows",
+    "I10 typed lowering decline => hook available",
+    "cross_record subsumed"
+   ],
+   "trigger": "independent review round-7 P2-R7-TRAIL-CLOSURE-1 / EXECUTION-CONTEXT-1 / FAILED-CLOSURE-1"
+  },
+  {
+   "id": "v5",
+   "written_utc": "2026-10-28T12:23:04.117572+00:00",
+   "adds": [
+    "context_resolution (anchor -> learned -> free precedence; CONTEXT_MISMATCH; out_dir canonical rule; no case-specific scope declared)",
+    "fast-ran free fields reduced to event_utc and lowered_sha256",
+    "expected record built from the resolved context"
+   ],
+   "trigger": "independent review round-8 P2-R8-CONTEXT-AUTHORITY-1 / P2-R8-OUTDIR-IDENTITY-1 and the spec line-111 contradiction"
+  },
+  {
+   "id": "v6",
+   "written_utc": "2026-10-28T13:03:01.388608+00:00",
+   "adds": [
+    "admission_boundary (two-phase resolution to a deterministic fixed point; records written only from the final classification)",
+    "type-exact JSON equality for context comparison",
+    "anchor_domain (unsupported expected_engine keys refused at construction)"
+   ],
+   "trigger": "independent review round-9 P2-R9-LEARN-REJECTED-1 / P2-R9-CONTEXT-TYPE-1 / P3-R9-ANCHOR-DOMAIN-1"
+  },
+  {
+   "id": "v6-wording-1",
+   "written_utc": "2026-10-28T13:41:22.819881+00:00",
+   "changes": "fixed-point shortcut claim narrowed: identical admission/survivor/completion dispositions, diagnostics retained from the tentative evaluation; no behaviour change",
+   "trigger": "independent review round-10 P3-R10-FIXED-POINT-WORDING-1 (nonblocking)"
+  }
+ ],
+ "canonical_location": {
+  "tracked": [
+   "solar/einsum_lib/fallback_protocol/PROTOCOL.json",
+   "solar/einsum_lib/fallback_protocol/PROTOCOL.md"
+  ],
+  "mirrors": [],
+  "test_resolution": "Path(fallback_contract.__file__).parent / \"fallback_protocol\" / \"PROTOCOL.json\"",
+  "finding": "P2-R6-SPEC-PORTABILITY-1",
+  "mirrors_note": "no mirrors in this distribution; the tracked files beside the shim are the only copies"
+ },
+ "invariants": {
+  "rule": "row membership (event_rows) is necessary; every valid record ALSO satisfies cross_field I1-I10; every record of reemit_and_compare.reemit_events ALSO equals expected_closing_record on every deterministic field. Violation -> REJECTED: TERMINAL_INCONSISTENT (reemit events: ids for I-violations, field paths for re-emit differences), FIELD_INCONSISTENT for other rows; a rejected record never closes and never suppresses the joined record",
+  "cross_field": {
+   "I1": "backend == backend_attempt",
+   "I2": "fallback_allowed is True",
+   "I3": "fallback_taken == (backend_attempt == \"interpreter\")",
+   "I4": "executed_program == \"not_executed_preparation\" if preparation_only else (\"numba_lowered\" if backend_attempt == \"numba\" else \"original_dsl_interpreter\")",
+   "I5": "interpreter_failure is an object iff event == \"interpreter-failed\"; then interpreter_failure.prior_decline_stage == decline_stage and interpreter_failure.prior_decline_reason == decline_reason",
+   "I6": "program_text_sha256 == lowered_sha256 for fast-ran (lowered non-null); == source_sha256 for every other row",
+   "I7": "lowered_sha256 null for transition-lowering / untyped-decline / numba-unavailable / precheck-decline; non-null for transition-module_exec / transition-run_model / fast-ran; for interpreter-ran / interpreter-failed null iff decline_stage == \"lowering\"",
+   "I8": "typed-decline rows (transition-*, interpreter-*, precheck-decline): history non-empty and history[-1] == {backend: \"numba\", stage: decline_stage, reason: decline_reason, typed: true}; fast-ran / untyped-decline / numba-unavailable: history == []",
+   "I9": "non-reemit rows (transition-*, untyped-decline, numba-unavailable, precheck-decline): events == [{event: record.event, event_utc: record.event_utc}] EXACTLY (one event, its own); reemit rows: the trail is DERIVED by expected_closing_record (transition.events + exactly one appended event, or exactly [fast-ran])",
+   "I10": "decline_typed and decline_stage == \"lowering\" => decline_hook_available is true (a typed LOWERING reason is collected only through the on_decline hook; without the hook the null return is untyped)"
+  },
+  "cross_record": {
+   "subsumed_by": "reemit_and_compare (v4): C1-C7 are implied by field equality with the record derived from the surviving transition; C7 (time) stays a separate anchor (TIME_BEFORE_TRANSITION)",
+   "C1": "T.decline_stage == S.decline_stage",
+   "C2": "T.decline_reason == S.decline_reason",
+   "C3": "T.source_sha256 == S.source_sha256 and T.lowered_sha256 == S.lowered_sha256 and T.program_text_sha256 == S.program_text_sha256",
+   "C4": "T.binding == S.binding (every key); imported-engine hashes equal (ENGINE_HASH_MISMATCH)",
+   "C5": "T.history == S.history",
+   "C6": "T.events[:len(S.events)] == S.events",
+   "C7": "T.event_utc >= S.event_utc (TIME_BEFORE_TRANSITION)"
+  },
+  "cross_record_fields_equal": [
+   "engine",
+   "binding",
+   "backend",
+   "backend_attempt",
+   "executed_program",
+   "fallback_allowed",
+   "fallback_taken",
+   "decline_stage",
+   "decline_reason",
+   "decline_typed",
+   "decline_hook_available",
+   "preparation_only",
+   "source_sha256",
+   "lowered_sha256",
+   "program_text_sha256",
+   "history"
+  ],
+  "closing_rows": [
+   "interpreter-ran",
+   "interpreter-failed"
+  ],
+  "reemit_rows": [
+   "interpreter-ran",
+   "interpreter-failed",
+   "fast-ran"
+  ]
+ },
+ "reemit_and_compare": {
+  "principle": "RE-EMIT AND COMPARE. The emitter writes every closing record DETERMINISTICALLY from (surviving transition, context, outcome kind, free fields). The validator RECONSTRUCTS the expected closing record from exactly those inputs with the emitter's own code path -- one pure function expected_closing_record(transition, context, outcome_kind, free) shared by emitter and validator -- and requires EQUALITY on every DETERMINISTIC field. Only the FREE fields may differ, each listed with its constraint. Any deterministic-field difference -> TERMINAL_INCONSISTENT:<field> (rejected, non-closing, never suppresses the joined stop / open-transition / unjoined kill record). This closes the class of omitted relationships by construction (trail, execution context, failure payload vs outcome, and any future one). (v5) The context handed to the function is the RESOLVED attempt context (context_resolution), enforced on every row before admission.",
+  "function": "expected_closing_record(transition, context, outcome_kind, free) -> record; transition = the surviving transition record (None for fast-ran); context (fast-ran only) = {binding, engine, source_sha256, decline_hook_available}; outcome_kind in reemit_events; free = the free fields below. mode is not an input: no record field depends on it (mode is parent-held; MODE_VIOLATION is an attempt-level rule)",
+  "reemit_events": [
+   "interpreter-ran",
+   "interpreter-failed",
+   "fast-ran"
+  ],
+  "derivation": {
+   "interpreter-ran": "copy of the transition with event=interpreter-ran, event_utc=free.event_utc, outcome=INTERPRETER_RAN, backend_terminal=interpreter, interpreter_failure=null, events=transition.events + [{event: interpreter-ran, event_utc: free.event_utc}], verdict=null; every other field EQUAL to the transition (engine incl. config/python/executable/solar_package_path/imported hashes; binding; backend/backend_attempt=interpreter; executed_program=original_dsl_interpreter; fallback_allowed=true; fallback_taken=true; decline_reason/typed/stage; decline_hook_available; preparation_only=false; source/lowered/program hashes; history)",
+   "interpreter-failed": "as interpreter-ran but event=interpreter-failed, backend_terminal=null, interpreter_failure={type: free.failure_type, message: free.failure_message[:1000], prior_decline_reason: transition.decline_reason, prior_decline_stage: transition.decline_stage}, outcome = \"interpreter_failed:\" + type + \": \" + message[:400] (the emitter truncation rule), events=transition.events + [{event: interpreter-failed, event_utc}]",
+   "fast-ran": "built from the context: contract, event=fast-ran, event_utc=free.event_utc, engine=context.engine, binding=context.binding, outcome=FAST_RAN, backend=backend_attempt=backend_terminal=numba, executed_program=numba_lowered, fallback_allowed=true, fallback_taken=false, decline_reason=null, decline_typed=false, decline_stage=null, decline_hook_available=context.decline_hook_available, interpreter_failure=null, preparation_only=false, source_sha256=context.source_sha256, lowered_sha256=free.lowered_sha256, program_text_sha256=free.lowered_sha256, history=[], events=[{event: fast-ran, event_utc}] EXACTLY, verdict=null"
+  },
+  "deterministic_fields": {
+   "interpreter-ran": [
+    "contract",
+    "event",
+    "engine",
+    "binding",
+    "outcome",
+    "backend",
+    "backend_attempt",
+    "backend_terminal",
+    "executed_program",
+    "fallback_allowed",
+    "fallback_taken",
+    "decline_reason",
+    "decline_typed",
+    "decline_stage",
+    "decline_hook_available",
+    "interpreter_failure",
+    "preparation_only",
+    "source_sha256",
+    "lowered_sha256",
+    "program_text_sha256",
+    "history",
+    "events",
+    "verdict"
+   ],
+   "interpreter-failed": [
+    "contract",
+    "event",
+    "engine",
+    "binding",
+    "outcome",
+    "backend",
+    "backend_attempt",
+    "backend_terminal",
+    "executed_program",
+    "fallback_allowed",
+    "fallback_taken",
+    "decline_reason",
+    "decline_typed",
+    "decline_stage",
+    "decline_hook_available",
+    "interpreter_failure",
+    "preparation_only",
+    "source_sha256",
+    "lowered_sha256",
+    "program_text_sha256",
+    "history",
+    "events",
+    "verdict"
+   ],
+   "fast-ran": [
+    "contract",
+    "event",
+    "engine",
+    "binding",
+    "outcome",
+    "backend",
+    "backend_attempt",
+    "backend_terminal",
+    "executed_program",
+    "fallback_allowed",
+    "fallback_taken",
+    "decline_reason",
+    "decline_typed",
+    "decline_stage",
+    "decline_hook_available",
+    "interpreter_failure",
+    "preparation_only",
+    "source_sha256",
+    "program_text_sha256",
+    "history",
+    "events",
+    "verdict"
+   ]
+  },
+  "free_fields": {
+   "interpreter-ran": {
+    "event_utc": "ISO-8601 UTC; >= transition.event_utc (TIME_BEFORE_TRANSITION) and <= postprocess time + 60 s (TERMINAL_INCONSISTENT:event_utc)"
+   },
+   "interpreter-failed": {
+    "event_utc": "as interpreter-ran",
+    "interpreter_failure.type": "non-empty str (schema)",
+    "interpreter_failure.message": "str, <= 1000 chars (TERMINAL_INCONSISTENT:interpreter_failure.message); the outcome string is DERIVED from type and message[:400], so a non-derived outcome is TERMINAL_INCONSISTENT:outcome"
+   },
+   "fast-ran": {
+    "event_utc": ">= descriptor.minted_utc (TIME_BEFORE_MINT) and <= postprocess time + 60 s",
+    "lowered_sha256": "sha256 (schema); program_text_sha256 is DERIVED equal to it"
+   },
+   "verdict": "const null in this contract (the comparator owns the verdict outside the record)",
+   "context_note": "engine fields, decline_hook_available and the out_dir spelling are NOT free fields: they are the attempt context (context_resolution), anchored by the parent or learned from the first valid record and then fixed"
+  },
+  "validator_context_for_fast_ran": "binding = {out_dir: RESOLVED (learned spelling; the record own spelling only when it is the learner), run_dir: descriptor.run_dir, group/attempt/row: descriptor identity, case/stage: the tag}; engine = RESOLVED context (anchored \u222a learned; the record own value only for a field that is still unresolved, i.e. when the record is the learner); source_sha256 = RESOLVED; decline_hook_available = RESOLVED",
+  "codes": {
+   "TERMINAL_INCONSISTENT:<field>": "one reason per differing deterministic field (dotted path; list/dict differences name the container or the index); rejected; never closes; never suppresses the joined stop / open-transition / unjoined kill record",
+   "precedence": "scope and identity (IDENTITY_MISMATCH incl. the canonical out_dir rule) first, then the resolved context (ENGINE_PIN_MISMATCH, SOURCE_MISMATCH, ENGINE_HASH_MISMATCH, CONTEXT_MISMATCH), then the time anchors (TIME_BEFORE_MINT, TIME_BEFORE_TRANSITION), then cross-field I1-I10 (ids), then the re-emit comparison (field paths)"
+  },
+  "emitter_obligation": "CandidateProgram emits interpreter-ran / interpreter-failed / fast-ran ONLY through expected_closing_record (the persisted transition record is the input for the interpreter closings; the program state is the context for fast-ran); a test asserts that the persisted records equal the function output"
+ },
+ "context_resolution": {
+  "principle": "The ATTEMPT CONTEXT is resolved ONCE per attempt with explicit precedence and enforced BEFORE any transition, completion, failure row or preparation is admitted as valid. A record contradicting the resolved context is rejected (never closes, never suppresses the joined stop / open-transition / unjoined kill record). The expected closing record is built from the RESOLVED context, never from a child-supplied value.",
+  "fields": [
+   "engine.engine_pin",
+   "engine.solar_package_path",
+   "engine.numba_accel_sha256",
+   "engine.verify_sha256",
+   "engine.core_sha256",
+   "engine.python",
+   "engine.executable",
+   "engine.config",
+   "source_sha256",
+   "decline_hook_available",
+   "binding.out_dir"
+  ],
+  "precedence": {
+   "1_anchor": "parent-held descriptor values are ANCHORS: engine.engine_pin <- descriptor.engine_pin; source_sha256 <- descriptor.source_sha256; engine.<k> <- descriptor.expected_engine[k] for EVERY key k the parent names (every named field is enforced; UNNAMED keys are unspecified -- never a null requirement); binding.out_dir has no parent spelling anchor, only the canonical rule below; the keys the parent may name are exactly the enumerated engine keys (anchor_domain); any other key is refused at construction",
+   "2_learned": "a field not anchored is LEARNED from the first ADMISSIBLE SURVIVING record of the attempt (classification order: parent tag first, then tags in sorted order; transitions before other rows within a tag) and is then FIXED for every later record of the attempt across all cases and stages. ADMISSIBLE SURVIVING = the record passed every per-record check AND remained in the valid set after the scope and state-machine classification of its tag (a record removed as STATE_CONFLICT / SCOPE_CONFLICT or rejected otherwise never commits a value)",
+   "3_free": "a context field is free ONLY until the first valid record fixes it; no engine field, the source hash, the hook flag or the out_dir spelling stays free afterwards. The genuinely free record fields are listed in reemit_and_compare.free_fields (event_utc; failure type/message; fast-ran lowered_sha256)"
+  },
+  "enforcement_point": "after schema / event / state-row / scope / identity checks (identity incl. the canonical out_dir rule reports first) and before the time and re-emit checks: a record whose context field differs from the anchored or learned value is rejected; the record that LEARNS a field is the first valid record and is by definition consistent with it",
+  "codes": {
+   "engine.engine_pin": "ENGINE_PIN_MISMATCH",
+   "source_sha256": "SOURCE_MISMATCH",
+   "engine.numba_accel_sha256 / verify_sha256 / core_sha256": "ENGINE_HASH_MISMATCH",
+   "engine.solar_package_path / python / executable / config and decline_hook_available": "CONTEXT_MISMATCH:<field>",
+   "binding.out_dir": "IDENTITY_MISMATCH (canonical rule) / CONTEXT_MISMATCH:binding.out_dir (spelling differs from the learned one)",
+   "note": "the three legacy names are the historical spellings of CONTEXT_MISMATCH for those fields and are kept for continuity of the retained tests"
+  },
+  "out_dir_rule": "canonical_run_dir(record.binding.out_dir) == record.binding.run_dir (when present) == descriptor.run_dir, checked before validity for EVERY row (IDENTITY_MISMATCH); spelling aliases that canonicalise to the same directory pass this rule; within the attempt the spelling is LEARNED from the first valid record like every other context field and every later record must use it (CONTEXT_MISMATCH:binding.out_dir); the expected record carries the learned spelling, so a child-supplied path is never copied into the expected context",
+  "case_specific_configuration": "NONE is declared: no context field is case- or stage-specific in this contract; a future contract that needs one must declare that scope here explicitly instead of copying the current record",
+  "summary_fields": "postprocess summary carries engine_context = {anchored, learned, learned_from (= committed_from), committed_from, tentative_discarded, passes, fixed_point}",
+  "admission_boundary": {
+   "principle": "learning has an explicit ADMISSION BOUNDARY: context values are COMMITTED only from admissible surviving evidence; a rejected record (whatever the phase of its rejection) discards its values and never poisons later cases or erases their valid transitions",
+   "two_phase_resolution": [
+    "phase 1 (tentative): every tag is classified against the committed context extended by TENTATIVE values learned from individually valid records in classification order; the state machine runs; the admissible survivors of every tag are collected; nothing is written",
+    "phase 2 (commit): a fresh context = anchors + values learned ONLY from the admissible survivors, in classification order (parent tag first, sorted tags, transitions before other rows)",
+    "phase 3 (re-validate): when the committed values equal the tentative values (no learner was rejected) the phase-1 classification is already the fixed point and is final (a frozen re-validation would reach IDENTICAL admission, survivor and completion DISPOSITIONS -- per tag: state, valid-event set, closing event, surviving transition, learner provenance -- so none is run and the shared builder is invoked once by the validator; the DIAGNOSTICS of records rejected in that case are those of the tentative evaluation and may name a different code than a frozen pass would (e.g. TERMINAL_INCONSISTENT:I3 where a frozen pass would report CONTEXT_MISMATCH:engine.python first), the disposition being the same (P3-R10-FIXED-POINT-WORDING-1)); otherwise every tag is classified again against the COMMITTED context, FROZEN (no tentative learning; unresolved fields pass); the state machine runs; if committing from the new survivors yields the same learned values the resolution is at its FIXED POINT and this classification is final; otherwise phases 2-3 repeat with the new commit (deterministic; bounded by 4 iterations -- failing to converge is recorded as context_resolution.fixed_point=false and the attempt is non-pass, fail closed)",
+    "phase 4 (write): joined stop / open-transition / unjoined kill records and the summary are written from the FINAL classification only"
+   ],
+   "determinism": "the same set of record files yields the same committed context and the same final classification; the summary records engine_context.passes (per pass: learned values and survivors), engine_context.committed_from (the admissible survivor that committed each field) and engine_context.tentative_discarded (values learned tentatively from records later rejected)",
+   "consequence": "an orphan interpreter terminal (no surviving transition) is individually valid but is removed by the state machine (STATE_CONFLICT): its values are discarded, a later valid transition in another case keeps its joined stop / open-transition record"
+  },
+  "equality": "context equality is TYPE-EXACT JSON equality: recursive over dicts (same key set) and lists (same length, element-wise), scalar values must have the same JSON type (bool is never equal to int; 1 is never equal to true; nested [true,false] is never equal to [1,0]); no implicit normalisation -- the same discipline as the re-emit comparison (_deep_diff)",
+  "anchor_domain": {
+   "allowed_expected_engine_keys": [
+    "engine_pin",
+    "solar_package_path",
+    "numba_accel_sha256",
+    "verify_sha256",
+    "core_sha256",
+    "python",
+    "executable",
+    "config"
+   ],
+   "rule": "a parent-named expected_engine key outside this enumeration is REFUSED at descriptor construction (LaunchDescriptor / mint_attempt raise RecordInvalid; the controller preflight fails loudly); an expected_engine.engine_pin, when named, must equal descriptor.engine_pin; \"every key the parent names\" is therefore literally enforced because only enforceable keys can be named",
+   "finding": "P3-R9-ANCHOR-DOMAIN-1"
+  }
+ }
+}

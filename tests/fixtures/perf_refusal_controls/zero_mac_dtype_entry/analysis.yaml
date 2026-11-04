@@ -1,0 +1,22 @@
+model_name: independent
+metadata:
+  bytes_accounting: per-tensor-dtype
+layers:
+  copy:
+    macs: 0
+    tensor_dtypes:
+      inputs:
+      - torch.float4_e2m1fn_x2
+      outputs:
+      - torch.float4_e2m1fn_x2
+    compute_dtype: nvfp4
+total:
+  macs: 0
+  flops: 0
+  other_ops: 0
+  unfused_elements: 16
+  fused_elements: 16
+  unfused_bytes: 16
+  fused_bytes: 16
+  macs_by_compute_dtype:
+    nvfp4: 0

@@ -1,0 +1,273 @@
+{
+  "outputs": {
+    "out": [
+      2.0
+    ]
+  },
+  "runtime_statement_counts": [
+    2
+  ],
+  "runtime_line_counts": [
+    {
+      "6": 2
+    }
+  ],
+  "weighted_lines": [
+    6
+  ],
+  "graph": {
+    "model_name": "probe",
+    "layers": {
+      "start": {
+        "type": "start",
+        "einsum_equation": "->TTOO",
+        "loop_expr": null,
+        "elementwise_op": "copy",
+        "reduction_op": "none",
+        "tensor_names": {
+          "inputs": [],
+          "outputs": [
+            "x",
+            "z",
+            "__const_0",
+            "k#0"
+          ]
+        },
+        "tensor_types": {
+          "inputs": [],
+          "outputs": [
+            "input",
+            "input",
+            "input",
+            "input"
+          ]
+        },
+        "tensor_shapes": {
+          "inputs": [],
+          "outputs": [
+            [
+              2
+            ],
+            [
+              5
+            ],
+            [
+              1
+            ],
+            [
+              1
+            ]
+          ]
+        },
+        "tensor_dtypes": {
+          "inputs": [],
+          "outputs": [
+            "fp32",
+            "fp32",
+            "fp32",
+            "fp32"
+          ]
+        },
+        "connections": {
+          "inputs": [],
+          "outputs": [
+            "k#0"
+          ]
+        },
+        "is_real_einsum": false
+      },
+      "k#0": {
+        "type": "kernel",
+        "einsum_equation": "T,T->O",
+        "loop_expr": "Y[0] += X[0]",
+        "is_real_einsum": false,
+        "elementwise_op": "copy",
+        "reduction_op": "add",
+        "tensor_names": {
+          "inputs": [
+            "x",
+            "z"
+          ],
+          "outputs": [
+            "k#0"
+          ]
+        },
+        "tensor_types": {
+          "inputs": [
+            "input",
+            "input"
+          ],
+          "outputs": [
+            "input"
+          ]
+        },
+        "tensor_shapes": {
+          "inputs": [
+            [
+              2
+            ],
+            [
+              5
+            ]
+          ],
+          "outputs": [
+            [
+              1
+            ]
+          ]
+        },
+        "tensor_dtypes": {
+          "inputs": [
+            "fp32",
+            "fp32"
+          ],
+          "outputs": [
+            "fp32"
+          ]
+        },
+        "connections": {
+          "inputs": [
+            "start"
+          ],
+          "outputs": []
+        },
+        "loop_statements": 5,
+        "loop_iterations": 5,
+        "loop_iterations_complete": true,
+        "equation_faithful": true
+      }
+    },
+    "tensor_origins": {
+      "x": "registered-input",
+      "z": "registered-input",
+      "__const_0": "internal-constant",
+      "k#0": "internal-constant"
+    }
+  },
+  "analysis": {
+    "layers": {
+      "k#0": {
+        "type": "kernel",
+        "einsum_equation": "T,T->O",
+        "is_real_einsum": false,
+        "macs": 0,
+        "macs_dense": 0,
+        "mac_sparsity_fraction": 1.0,
+        "other_ops": 5,
+        "flops": 0,
+        "cost_basis": "loop_iterations",
+        "unfused_elements": 8,
+        "orojenesis_elements": null,
+        "fused_elements": 8,
+        "unfused_bytes": 32,
+        "intermediate_bytes": 0,
+        "bytes_per_element": {
+          "inputs": [
+            4.0,
+            4.0
+          ],
+          "outputs": [
+            4.0
+          ]
+        },
+        "tensor_shapes": {
+          "inputs": [
+            [
+              2
+            ],
+            [
+              5
+            ]
+          ],
+          "outputs": [
+            [
+              1
+            ]
+          ]
+        },
+        "tensor_sizes": {
+          "inputs": [
+            2,
+            5
+          ],
+          "outputs": [
+            1
+          ]
+        },
+        "memory_elements": {
+          "inputs": [
+            2,
+            5
+          ],
+          "outputs": [
+            1
+          ]
+        },
+        "tensor_types": {
+          "inputs": [
+            "input",
+            "input"
+          ],
+          "outputs": [
+            "input"
+          ]
+        },
+        "input_elements": 7,
+        "output_elements": 1,
+        "intermediate_elements": 0,
+        "weight_elements": 0,
+        "weight_read_elements": 0,
+        "model_io_elements": 8,
+        "input_is_intermediate": false,
+        "output_is_intermediate": false,
+        "is_orphaned": false,
+        "connections": {
+          "inputs": [
+            "start"
+          ],
+          "outputs": []
+        }
+      }
+    },
+    "total": {
+      "num_layers": 1,
+      "num_start_nodes_filtered": 1,
+      "macs": 0,
+      "min_work_macs": 0,
+      "macs_dense_binary_schedule": 0,
+      "scalar_multiplies_dense_binary_schedule": 0,
+      "multi_operand_einsum_layers": [],
+      "macs_incomplete_layers": [],
+      "operand_evidence_warning_layers": [],
+      "other_ops": 5,
+      "flops": 0,
+      "dsl_cost_basis_layers": {
+        "loop_iterations": [
+          "k#0"
+        ]
+      },
+      "unfused_elements": 8,
+      "orojenesis_elements": null,
+      "fused_elements": 8,
+      "fused_prefetched_elements": 8,
+      "weight_elements": 0,
+      "weight_read_elements": 0,
+      "model_io_elements": 8,
+      "intermediate_elements": 0,
+      "fused_bytes": 32,
+      "fused_prefetched_bytes": 32,
+      "unfused_bytes": 32,
+      "intermediate_bytes": 0,
+      "external_input_bytes": 28,
+      "external_output_bytes": 4,
+      "num_intermediate_tensors": 0,
+      "num_orphaned_layers": 0
+    },
+    "metadata": {
+      "precision": "fp32",
+      "bytes_per_element": 4,
+      "bytes_accounting": "per-tensor-dtype",
+      "source_graph": "<private-path>/probe_einsum_graph.yaml"
+    }
+  }
+}

@@ -1,0 +1,318 @@
+{
+ "layers": {
+  "C": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0,
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "P",
+     "Q"
+    ],
+    "outputs": []
+   },
+   "einsum_equation": "IK,KJ->IJ",
+   "flops": 16,
+   "fused_elements": 4,
+   "input_elements": 8,
+   "input_is_intermediate": true,
+   "intermediate_bytes": 32,
+   "intermediate_elements": 8,
+   "is_orphaned": false,
+   "is_real_einsum": true,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 8,
+   "macs_dense": 8,
+   "macs_kind": "contraction",
+   "memory_elements": {
+    "inputs": [
+     4,
+     4
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "model_io_elements": 4,
+   "model_output_elements": 4,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 4,
+   "output_is_intermediate": false,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      2,
+      2
+     ],
+     [
+      2,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      2,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     4,
+     4
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input",
+     "input"
+    ],
+    "outputs": [
+     "intermediate"
+    ]
+   },
+   "type": "einsum",
+   "unfused_bytes": 48,
+   "unfused_elements": 12,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "P": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [],
+    "outputs": []
+   },
+   "einsum_equation": "IJ->IJ",
+   "flops": 8,
+   "fused_elements": 4,
+   "incomplete_reason": "weight_provenance_unresolved",
+   "input_elements": 4,
+   "input_is_intermediate": false,
+   "intermediate_bytes": 16,
+   "intermediate_elements": 4,
+   "is_orphaned": false,
+   "is_real_einsum": true,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 4,
+   "macs_dense": 4,
+   "macs_kind": "contraction",
+   "memory_elements": {
+    "inputs": [
+     4
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "model_io_elements": 4,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 4,
+   "output_is_intermediate": true,
+   "status": "incomplete",
+   "tensor_shapes": {
+    "inputs": [
+     [
+      2,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      2,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     4
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "weight"
+    ],
+    "outputs": [
+     "intermediate"
+    ]
+   },
+   "type": "einsum",
+   "unfused_bytes": 32,
+   "unfused_elements": 8,
+   "weight_elements": 0,
+   "weight_elements_unresolved": 4,
+   "weight_provenance_unresolved": [
+    0
+   ],
+   "weight_read_elements": 0
+  },
+  "Q": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [],
+    "outputs": []
+   },
+   "einsum_equation": "IJ->IJ",
+   "flops": 8,
+   "fused_elements": 4,
+   "incomplete_reason": "weight_provenance_unresolved",
+   "input_elements": 4,
+   "input_is_intermediate": false,
+   "intermediate_bytes": 16,
+   "intermediate_elements": 4,
+   "is_orphaned": false,
+   "is_real_einsum": true,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 4,
+   "macs_dense": 4,
+   "macs_kind": "contraction",
+   "memory_elements": {
+    "inputs": [
+     4
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "model_io_elements": 4,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 4,
+   "output_is_intermediate": true,
+   "status": "incomplete",
+   "tensor_shapes": {
+    "inputs": [
+     [
+      2,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      2,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     4
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "weight"
+    ],
+    "outputs": [
+     "intermediate"
+    ]
+   },
+   "type": "einsum",
+   "unfused_bytes": 32,
+   "unfused_elements": 8,
+   "weight_elements": 0,
+   "weight_elements_unresolved": 4,
+   "weight_provenance_unresolved": [
+    0
+   ],
+   "weight_read_elements": 0
+  }
+ },
+ "metadata": {
+  "bytes_accounting": "per-tensor-dtype",
+  "bytes_per_element": 4,
+  "precision": "fp32"
+ },
+ "total": {
+  "binary_schedule_applicability": "descriptive_alternative_not_selected_basis",
+  "equation_unfaithful_layers": [],
+  "external_input_bytes": 32,
+  "external_output_bytes": 16,
+  "flops": 32,
+  "fused_bytes": 48,
+  "fused_elements": 12,
+  "fused_prefetched_bytes": 48,
+  "fused_prefetched_elements": 12,
+  "incomplete_layers": {
+   "P": "weight_provenance_unresolved",
+   "Q": "weight_provenance_unresolved"
+  },
+  "intermediate_bytes": 64,
+  "intermediate_elements": 16,
+  "macs": 16,
+  "macs_dense_binary_schedule": 16,
+  "macs_incomplete_layers": [],
+  "macs_typed": {
+   "aggregate": 16,
+   "components_sum_to_aggregate": true,
+   "contraction": {
+    "by_compute_dtype": {
+     "workload_precision": 16
+    },
+    "macs": 16
+   },
+   "scalar_statement_multiplies": {
+    "layers": {},
+    "macs": 0,
+    "note": "multiply statements of non-einsum kernels counted as MACs by the per-statement classifier (unit_basis per_statement); not tensor-core contraction work"
+   }
+  },
+  "min_work_macs": 16,
+  "model_io_elements": 12,
+  "multi_operand_einsum_layers": [],
+  "nonreturned_store_bytes": 0,
+  "nonreturned_store_layers": [],
+  "num_intermediate_tensors": 2,
+  "num_layers": 3,
+  "num_orphaned_layers": 0,
+  "num_start_nodes_filtered": 0,
+  "operand_evidence_warning_layers": [],
+  "orojenesis_elements": null,
+  "other_ops": 0,
+  "scalar_multiplies_dense_binary_schedule": 0,
+  "status": "incomplete",
+  "unfused_bytes": 112,
+  "unfused_elements": 28,
+  "weight_elements": 0,
+  "weight_elements_unresolved": 8,
+  "weight_provenance_unresolved_layers": [
+   "P",
+   "Q"
+  ],
+  "weight_read_elements": 0
+ }
+}

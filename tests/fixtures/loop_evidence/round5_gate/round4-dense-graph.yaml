@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+model_name: toy
+layers:
+  start:
+    type: start
+    einsum_equation: ->NHFHNFNF
+    loop_expr: null
+    elementwise_op: copy
+    reduction_op: none
+    tensor_names:
+      inputs: []
+      outputs:
+      - x
+      - w
+      - __const_0
+      - linear#0
+    tensor_types:
+      inputs: []
+      outputs:
+      - input
+      - input
+      - input
+      - input
+    tensor_shapes:
+      inputs: []
+      outputs:
+      - - 2
+        - 4
+      - - 3
+        - 4
+      - - 2
+        - 3
+      - - 2
+        - 3
+    tensor_dtypes:
+      inputs: []
+      outputs:
+      - fp32
+      - fp32
+      - fp32
+      - fp32
+    connections:
+      inputs: []
+      outputs:
+      - linear#0
+    is_real_einsum: false
+  linear#0:
+    type: kernel
+    einsum_equation: NH,FH->NF
+    loop_expr: Y[n, f] += X[n, h] * W[f, h]
+    is_real_einsum: true
+    elementwise_op: mul
+    reduction_op: add
+    tensor_names:
+      inputs:
+      - x
+      - w
+      outputs:
+      - linear#0
+    tensor_types:
+      inputs:
+      - input
+      - input
+      outputs:
+      - input
+    tensor_shapes:
+      inputs:
+      - - 2
+        - 4
+      - - 3
+        - 4
+      outputs:
+      - - 2
+        - 3
+    tensor_dtypes:
+      inputs:
+      - fp32
+      - fp32
+      outputs:
+      - fp32
+    connections:
+      inputs:
+      - start
+      outputs: []
+    loop_statements: 24
+    loop_iterations: 24
+    loop_iterations_complete: true
+    equation_faithful: true
+tensor_origins:
+  x: registered-input
+  w: registered-input
+  __const_0: internal-constant
+  linear#0: internal-constant

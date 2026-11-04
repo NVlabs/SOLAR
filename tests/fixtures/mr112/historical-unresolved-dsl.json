@@ -1,0 +1,322 @@
+{
+  "metadata": {
+    "tensors": {
+      "x": {
+        "dims": {
+          "N": 2,
+          "H": 4
+        },
+        "dtype": "fp32",
+        "role": "input"
+      },
+      "out": {
+        "dims": {
+          "N": 2,
+          "H": 4
+        },
+        "dtype": "fp32"
+      }
+    },
+    "graph": {
+      "opaque_unknown#0": {
+        "function": "opaque_unknown",
+        "inputs": [
+          {
+            "tensor": "x",
+            "from": "input"
+          }
+        ],
+        "output": "out"
+      }
+    }
+  },
+  "raw": {
+    "model_name": "unknown",
+    "layers": {
+      "start": {
+        "type": "start",
+        "einsum_equation": "->NH",
+        "loop_expr": null,
+        "elementwise_op": "copy",
+        "reduction_op": "none",
+        "tensor_names": {
+          "inputs": [],
+          "outputs": [
+            "x"
+          ]
+        },
+        "tensor_types": {
+          "inputs": [],
+          "outputs": [
+            "input"
+          ]
+        },
+        "tensor_shapes": {
+          "inputs": [],
+          "outputs": [
+            [
+              2,
+              4
+            ]
+          ]
+        },
+        "tensor_dtypes": {
+          "inputs": [],
+          "outputs": [
+            "fp32"
+          ]
+        },
+        "connections": {
+          "inputs": [],
+          "outputs": [
+            "opaque_unknown#0"
+          ]
+        },
+        "is_real_einsum": false
+      },
+      "opaque_unknown#0": {
+        "type": "kernel",
+        "einsum_equation": "NH->NH",
+        "loop_expr": null,
+        "is_real_einsum": false,
+        "elementwise_op": null,
+        "reduction_op": null,
+        "tensor_names": {
+          "inputs": [
+            "x"
+          ],
+          "outputs": [
+            "out"
+          ]
+        },
+        "tensor_types": {
+          "inputs": [
+            "input"
+          ],
+          "outputs": [
+            "output"
+          ]
+        },
+        "tensor_shapes": {
+          "inputs": [
+            [
+              2,
+              4
+            ]
+          ],
+          "outputs": [
+            [
+              2,
+              4
+            ]
+          ]
+        },
+        "tensor_dtypes": {
+          "inputs": [
+            "fp32"
+          ],
+          "outputs": [
+            "fp32"
+          ]
+        },
+        "connections": {
+          "inputs": [
+            "start"
+          ],
+          "outputs": []
+        },
+        "equation_faithful": true
+      }
+    }
+  },
+  "analysis": {
+    "layers": {
+      "opaque_unknown#0": {
+        "type": "kernel",
+        "einsum_equation": "NH->NH",
+        "is_real_einsum": false,
+        "macs": 0,
+        "macs_dense": 0,
+        "mac_sparsity_fraction": 1.0,
+        "other_ops": 8,
+        "flops": 0,
+        "unfused_elements": 16,
+        "orojenesis_elements": null,
+        "fused_elements": 16,
+        "unfused_bytes": 64,
+        "intermediate_bytes": 0,
+        "bytes_per_element": {
+          "inputs": [
+            4.0
+          ],
+          "outputs": [
+            4.0
+          ]
+        },
+        "tensor_shapes": {
+          "inputs": [
+            [
+              2,
+              4
+            ]
+          ],
+          "outputs": [
+            [
+              2,
+              4
+            ]
+          ]
+        },
+        "tensor_sizes": {
+          "inputs": [
+            8
+          ],
+          "outputs": [
+            8
+          ]
+        },
+        "memory_elements": {
+          "inputs": [
+            8
+          ],
+          "outputs": [
+            8
+          ]
+        },
+        "tensor_types": {
+          "inputs": [
+            "input"
+          ],
+          "outputs": [
+            "output"
+          ]
+        },
+        "input_elements": 8,
+        "output_elements": 8,
+        "intermediate_elements": 0,
+        "weight_elements": 0,
+        "weight_read_elements": 0,
+        "model_io_elements": 16,
+        "input_is_intermediate": false,
+        "output_is_intermediate": false,
+        "is_orphaned": false,
+        "connections": {
+          "inputs": [
+            "start"
+          ],
+          "outputs": []
+        }
+      }
+    },
+    "total": {
+      "num_layers": 1,
+      "num_start_nodes_filtered": 1,
+      "macs": 0,
+      "min_work_macs": 0,
+      "macs_dense_binary_schedule": 0,
+      "scalar_multiplies_dense_binary_schedule": 0,
+      "multi_operand_einsum_layers": [],
+      "macs_incomplete_layers": [],
+      "operand_evidence_warning_layers": [],
+      "other_ops": 8,
+      "flops": 0,
+      "unfused_elements": 16,
+      "orojenesis_elements": null,
+      "fused_elements": 16,
+      "fused_prefetched_elements": 16,
+      "weight_elements": 0,
+      "weight_read_elements": 0,
+      "model_io_elements": 16,
+      "intermediate_elements": 0,
+      "fused_bytes": 64,
+      "fused_prefetched_bytes": 64,
+      "unfused_bytes": 64,
+      "intermediate_bytes": 0,
+      "external_input_bytes": 32,
+      "external_output_bytes": 32,
+      "num_intermediate_tensors": 0,
+      "num_orphaned_layers": 0
+    },
+    "metadata": {
+      "precision": "fp16",
+      "bytes_per_element": 2,
+      "bytes_accounting": "per-tensor-dtype",
+      "source_graph": "<private-path>/unknown_einsum_graph.yaml"
+    }
+  },
+  "perf": {
+    "arch": {
+      "name": "H100_PCIe",
+      "freq_GHz": 2.0,
+      "DRAM_byte_per_cycle": 1019.4,
+      "mac_per_cycle_key": "MAC_per_cycle_fp16_tc",
+      "MAC_per_cycle": 189000.0,
+      "MAC_per_cycle_fp32_sm": 12750.0,
+      "ridge_point": 185.40317834020013
+    },
+    "workload": {
+      "total_macs": 0,
+      "total_other_ops": 8,
+      "total_flops": 0,
+      "bytes_per_element": 2,
+      "mac_rate_bytes_per_element": 2,
+      "boundary_billing": "uniform_precision_width"
+    },
+    "unfused": {
+      "description": "Each op in isolation, all tensors from DRAM",
+      "memory_elements": 16,
+      "memory_bytes": 32,
+      "compute_tc_cycles": 0,
+      "compute_sm_cycles": 0,
+      "compute_cycles": 0,
+      "memory_cycles": 0,
+      "total_cycles": 0,
+      "runtime_ms": 1.5695507161075142e-08,
+      "arithmetic_intensity": 0.0,
+      "bottleneck": "memory"
+    },
+    "fused": {
+      "description": "Per-op roofline, intermediate tensors excluded",
+      "memory_elements": 16,
+      "memory_bytes": 32,
+      "compute_tc_cycles": 0,
+      "compute_sm_cycles": 0,
+      "compute_cycles": 0,
+      "memory_cycles": 0,
+      "total_cycles": 0,
+      "runtime_ms": 1.5695507161075142e-08,
+      "arithmetic_intensity": 0.0,
+      "bottleneck": "memory"
+    },
+    "fused_prefetched": {
+      "description": "Single roofline for entire graph, perfect overlap",
+      "memory_elements": 16,
+      "memory_bytes": 32,
+      "compute_tc_cycles": 0,
+      "compute_sm_cycles": 0,
+      "compute_cycles": 0,
+      "memory_cycles": 0,
+      "total_cycles": 0,
+      "runtime_ms": 1.5695507161075142e-08,
+      "arithmetic_intensity": 0.0,
+      "bottleneck": "memory"
+    },
+    "memory_breakdown": {
+      "weight_elements": 0,
+      "weight_bytes": 0,
+      "model_io_elements": 16,
+      "model_io_bytes": 32,
+      "intermediate_elements": 0,
+      "intermediate_bytes": 0
+    },
+    "speedup": {
+      "fused_vs_unfused": 1.0,
+      "fused_prefetched_vs_unfused": 1.0,
+      "fused_prefetched_vs_fused": 1.0
+    },
+    "memory_reduction": {
+      "fused_vs_unfused": 0.0,
+      "fused_prefetched_vs_unfused": 0.0
+    }
+  }
+}

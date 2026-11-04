@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "H200_SXM"
+# NVIDIA H200 SXM. Every value below is taken from the public H200 datasheet
+# (https://www.nvidia.com/en-us/data-center/h200/; compute rates equal the
+# H100 SXM) and the Hopper architecture whitepaper (L2 size). The datasheet
+# lists tensor-core rates with sparsity; the dense rate is half of that figure.
+# freq_GHz is a nominal clock: each MAC_per_cycle value is the dense peak
+# divided by 2 (FLOP per MAC) and by that clock, so predicted runtimes depend
+# only on the peaks.
+SRAM_capacity: 52428800  # 50 MB L2 (whitepaper)
+DRAM_capacity: 151397597184  # 141 GB HBM3e
+DRAM_byte_per_cycle: 2400  # 4.8 TB/s / 2.0 GHz
+freq_GHz: 2.0  # nominal clock (see header)
+MAC_per_cycle_fp32_sm: 16750  # 67 TFLOPS FP32 (CUDA cores)
+MAC_per_cycle_tf32_tc: 123625  # 494.5 TFLOPS TF32 Tensor Core, dense (989 with sparsity)
+MAC_per_cycle_fp16_tc: 247375  # 989.5 TFLOPS FP16 Tensor Core, dense (1979 with sparsity)
+MAC_per_cycle_bf16_tc: 247375  # 989.5 TFLOPS BF16 Tensor Core, dense (1979 with sparsity)
+MAC_per_cycle_fp8_tc: 494750  # 1979 TFLOPS FP8 Tensor Core, dense (3958 with sparsity)
+MAC_per_cycle_int8_tc: 494750  # 1979 TOPS INT8 Tensor Core, dense (3958 with sparsity)
+MAC_per_cycle_fp64_tc: 16750  # 67 TFLOPS FP64 Tensor Core

@@ -1,0 +1,2 @@
+dtype_conversions:
+- orig_dtypes: fp8 float8_e4m3fn

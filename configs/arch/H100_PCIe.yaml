@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Convention: every MAC_per_cycle value is the DENSE peak rate (datasheet figures with sparsity are halved) divided by 2 FLOP per MAC; source: the public H100 datasheet, https://www.nvidia.com/en-us/data-center/h100/ .
+
+name: "H100_PCIe"
+# MAC_per_cycle_* are MACs (equivalently, math instructions) per cycle, NOT FLOPs
+# per cycle.  perf_model.py divides both total_macs and total_other_ops by these,
+# and both are instruction counts: one FMA is one MAC and two FLOPs, and a bare
+# add or multiply issues at the same instruction rate.  Vendor datasheets quote
+# the FLOP rate, so each value below is half the advertised dense number; the
+# comment records the datasheet figure it came from.  There is deliberately no
+# MAC_per_cycle_fp32_tc key: the fp32 route falls back to the SM rate.
+SRAM_capacity: 52428800  # 50 MB L2 (NVIDIA Hopper architecture whitepaper); not used by the roofline
+DRAM_capacity: 85899345920  # 80GB
+DRAM_byte_per_cycle: 1019.4  # 2TB/s  
+freq_GHz: 2  # base clock frequency 
+MAC_per_cycle_fp32_sm: 12750  # 0.051 PFLOPS dense (CUDA cores)
+# int8/fp8: existing contract value from 1512 TOPS dense (the whitepaper's 1513 would give
+# 378,250); the rounding is deliberate and is NOT the factor-of-two unit error fixed above.
+MAC_per_cycle_int8_tc: 378000  # 1.512 POPS dense
+MAC_per_cycle_fp8_tc: 378000  # 1.512 PFLOPS dense
+MAC_per_cycle_fp16_tc: 189000  # 0.756 PFLOPS dense
+MAC_per_cycle_bf16_tc: 189000  # 0.756 PFLOPS dense
+MAC_per_cycle_tf32_tc: 94500   # 0.378 PFLOPS dense

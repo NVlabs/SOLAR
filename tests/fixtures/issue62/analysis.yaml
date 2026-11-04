@@ -1,0 +1,146 @@
+metadata:
+  model_name: issue62_fixture
+  precision: bf16
+  bytes_per_element: 2
+  bytes_accounting: per-tensor-dtype
+layers:
+  L1:
+    type: matmul
+    einsum_equation: AB,BC->AC
+    is_real_einsum: true
+    macs: 160
+    macs_dense: 160
+    other_ops: 0
+    flops: 320
+    tensor_names:
+      inputs:
+      - x
+      - w
+      outputs:
+      - h
+    tensor_types:
+      inputs:
+      - input
+      - weight
+      outputs:
+      - intermediate
+    tensor_shapes:
+      inputs:
+      - - 8
+        - 4
+      - - 4
+        - 5
+      outputs:
+      - - 8
+        - 5
+    tensor_dtypes:
+      inputs:
+      - bf16
+      - bf16
+      outputs:
+      - bf16
+    bytes_per_element:
+      inputs:
+      - 2
+      - 2
+      outputs:
+      - 2
+    input_elements: 52
+    output_elements: 40
+    weight_elements: 20
+    weight_read_elements: 20
+    model_io_elements: 32
+    intermediate_elements: 40
+    unfused_elements: 92
+    fused_elements: 52
+    unfused_bytes: 184
+    intermediate_bytes: 80
+    input_is_intermediate: false
+    output_is_intermediate: true
+    is_orphaned: false
+    connections:
+      inputs: []
+      outputs:
+      - L2
+  L2:
+    type: kernel
+    einsum_equation: AC,AB->AC
+    is_real_einsum: false
+    elementwise_op: mul
+    reduction_op: none
+    macs: 0
+    macs_dense: 0
+    other_ops: 40
+    flops: 40
+    tensor_names:
+      inputs:
+      - h
+      - x
+      outputs:
+      - y
+    tensor_types:
+      inputs:
+      - intermediate
+      - input
+      outputs:
+      - output
+    tensor_shapes:
+      inputs:
+      - - 8
+        - 5
+      - - 8
+        - 4
+      outputs:
+      - - 8
+        - 5
+    tensor_dtypes:
+      inputs:
+      - bf16
+      - bf16
+      outputs:
+      - fp32
+    bytes_per_element:
+      inputs:
+      - 2
+      - 2
+      outputs:
+      - 4
+    input_elements: 72
+    output_elements: 40
+    weight_elements: 0
+    weight_read_elements: 0
+    model_io_elements: 72
+    intermediate_elements: 40
+    unfused_elements: 112
+    fused_elements: 72
+    unfused_bytes: 304
+    intermediate_bytes: 80
+    input_is_intermediate: true
+    output_is_intermediate: false
+    is_orphaned: false
+    connections:
+      inputs:
+      - L1
+      outputs: []
+total:
+  num_layers: 2
+  num_start_nodes_filtered: 0
+  macs: 160
+  other_ops: 40
+  flops: 360
+  unfused_elements: 204
+  orojenesis_elements: null
+  fused_elements: 92
+  fused_prefetched_elements: 92
+  weight_elements: 20
+  weight_read_elements: 20
+  model_io_elements: 104
+  intermediate_elements: 80
+  unfused_bytes: 488
+  fused_bytes: 264
+  fused_prefetched_bytes: 264
+  intermediate_bytes: 160
+  external_input_bytes: 104
+  external_output_bytes: 160
+  num_intermediate_tensors: 1
+  num_orphaned_layers: 0

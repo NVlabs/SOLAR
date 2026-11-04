@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# REUSE 3.2 annotations (https://reuse.software/spec-3.2/) for files whose
+# format or byte-pinning does not allow an inline SPDX header: YAML
+# frontmatter skills, model-prompt references loaded verbatim, JSON/JSONL/
+# gzip fixtures and records, byte-pinned test controls and the torchview
+# patches. Inline headers take precedence over these annotations.
+#
+# The benchmark-row-derived DSL inputs and the programs lowered from them are
+# not part of the public tree (removed 2026-11-04; preserved privately with
+# their regression consumers). See RELEASE_CHECKLIST.md.
+version = 1
+SPDX-PackageName = "solar"
+SPDX-PackageSupplier = "NVIDIA Corporation"
+SPDX-PackageDownloadLocation = "https://github.com/NVlabs/SOLAR"
+
+[[annotations]]
+path = [
+  "skills/**",
+  "docs/einsum_lib_prompt.md",
+  "docs/einsum_lib_prompt_jax.md",
+  "solar/einsum_lib/fallback_protocol/PROTOCOL.json",
+  "tests/release_agentic/fixtures/**",
+  "tests/fixtures/COVERAGE_MAP.json",
+  "tests/fixtures/README.md",
+  "tests/fixtures/graph_analyzer_source_graph/**",
+  "tests/fixtures/issue62/**",
+  "tests/fixtures/loop_evidence/**",
+  "tests/fixtures/mr112/**",
+  "tests/fixtures/perf_refusal_controls/**",
+  "tests/fixtures/returned_outputs_review7/**",
+  "tests/fixtures/rnn_state_consumers/**",
+  "tests/fixtures/router/**",
+  "tests/fixtures/loop_dim_extent/round4/**",
+  "tests/fixtures/loop_dim_extent/round5/**",
+  "tests/fixtures/loop_dim_extent/round6/**",
+  "tests/fixtures/loop_dim_extent/round8/**",
+  "tests/fixtures/loop_dim_extent/round7/checks-*/**",
+  "tests/fixtures/loop_dim_extent/test-output/**",
+  "tests/fixtures/loop_dim_extent/test_*.py",
+  "tests/fixtures/lowering_final_rounding/review3_controls/**",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved."
+SPDX-License-Identifier = "Apache-2.0"
+
+# Derivative works of torchview (MIT License, Copyright (c) 2022 Mert Kurttutan;
+# notice retained in THIRD_PARTY_NOTICES and patches/README.md), distributed
+# under the project licence. A header line would alter the diff context.
+[[annotations]]
+path = ["patches/*.patch"]
+precedence = "closest"
+SPDX-FileCopyrightText = ["Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.", "Copyright (c) 2022 Mert Kurttutan (torchview, MIT License)"]
+SPDX-License-Identifier = "Apache-2.0"

@@ -1,0 +1,438 @@
+{
+ "schema": "tests-fixtures-coverage-map-v1",
+ "written_utc": "2026-11-01T21:15:25Z",
+ "rule": "FILE-LEVEL consumer rule. tests/fixtures/** is harness DATA: the files named test_*.py there are vendored controls that the listed normal tests copy into a run directory and execute explicitly (or read byte-for-byte); pytest must not collect them directly (tests/conftest.py collect_ignore). Every entry must have at least one consumer; the map is checked by tests/test_fixture_coverage_map.py.",
+ "method": "static reference scan of the normal test modules; FILE-LEVEL: a consumer must name the control file (relative path under tests/fixtures/ or bare filename as a whole token); directory entries are informational (no execution)",
+ "test_modules_under_fixtures": 59,
+ "uncovered": [],
+ "directories": {
+  "tests/fixtures/loop_dim_extent": {
+   "consumers": [
+    "tests/test_loop_dim_extent.py",
+    "tests/test_loop_dim_extent_access_witness.py",
+    "tests/test_loop_dim_extent_round4.py",
+    "tests/test_loop_dim_extent_round5.py",
+    "tests/test_loop_dim_extent_round6.py",
+    "tests/test_loop_dim_extent_round7.py",
+    "tests/test_loop_dim_extent_round8.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-09318804": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-481962ed": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-527b034d": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-5accce21": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-5d13883d": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-90ca6d10": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-a1189d62": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-c5fe21a6": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-c62a072f": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/round4/checks-00ce6d18": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/round5/checks-9b85d77c": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/round6/checks-ea874283": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/round7/checks-ed9be3d0": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_dim_extent/round8/checks-2f97bdbf": {
+   "consumers": []
+  },
+  "tests/fixtures/loop_evidence/round5_gate": {
+   "consumers": []
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls": {
+   "consumers": []
+  },
+  "tests/fixtures/returned_outputs_review7": {
+   "consumers": [
+    "tests/test_returned_bound_envelope.py"
+   ]
+  }
+ },
+ "entries": {
+  "tests/fixtures/loop_dim_extent/followup-203/checks-09318804/test_minimal_control_flow.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-481962ed/test_eval_order.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-481962ed/test_legacy_identity.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-527b034d/test_ancestor_controls.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-527b034d/test_round10_transfer.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-5accce21/test_site_flow.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-5d13883d/test_sequence_sites.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-5d13883d/test_site_controls.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-90ca6d10/test_binding_controls.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-90ca6d10/test_live_binding.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-a1189d62/test_epoch_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-c5fe21a6/test_witness_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-c62a072f/test_class_declaration_scope.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/followup-203/checks-c62a072f/test_model_boundary.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_access_witness.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round4/checks-00ce6d18/test_legacy_trace.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round4.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round4/checks-00ce6d18/test_round3_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round4.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round5/checks-9b85d77c/test_round4_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round5.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round6/checks-ea874283/test_round5_binop.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round6.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round6/checks-ea874283/test_round5_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round6.py",
+    "tests/test_loop_dim_extent_round7.py",
+    "tests/test_loop_dim_extent_round8.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round7/checks-ed9be3d0/test_round6_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round7.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round8/checks-2f97bdbf/test_round5_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round6.py",
+    "tests/test_loop_dim_extent_round7.py",
+    "tests/test_loop_dim_extent_round8.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round8/checks-2f97bdbf/test_round7_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round8.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/round8/checks-2f97bdbf/test_round7_nested_complete_v2.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent_round8.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/test_independent_dim_extent.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/test_loop_dimension.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent.py"
+   ]
+  },
+  "tests/fixtures/loop_dim_extent/test_registry_order.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_dim_extent.py"
+   ]
+  },
+  "tests/fixtures/loop_evidence/round5_gate/test_gate.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_loop_basis_completeness.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_binding_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_binding_positive_v2.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_followup_round7.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_independent_round7.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_isolation_direct.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_prescan_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_reflective_attributes.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_review4_round10.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_review4_round9.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_review7_round4.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_review7_round5.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round10_edges.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_mr124_round11.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round11_compatible.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_mr124_round12.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round11_escape_resolution.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_mr124_round12.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round3_scope.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round3_scope_positive_v2.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round4_generator_control.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round4_scope.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round5_effects.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round6_adversarial.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round6_boundaries.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round7_boundaries.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_prescan_allocation_coverage.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round8_direct.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_lowering_final_rounding.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round9_agent.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_mr124_round10.py"
+   ]
+  },
+  "tests/fixtures/lowering_final_rounding/review3_controls/test_round9_provenance.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_mr124_round10.py",
+    "tests/test_mr124_round11.py",
+    "tests/test_mr124_round12.py"
+   ]
+  },
+  "tests/fixtures/returned_outputs_review7/test_live_alias_review2.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_returned_alias_review2.py",
+    "tests/test_returned_bound_envelope.py"
+   ]
+  },
+  "tests/fixtures/returned_outputs_review7/test_review2_regions.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_returned_bound_envelope.py"
+   ]
+  },
+  "tests/fixtures/returned_outputs_review7/test_review7_aliases.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_returned_bound_envelope.py"
+   ]
+  },
+  "tests/fixtures/returned_outputs_review7/test_review7_fallback_identity.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_returned_bound_envelope.py"
+   ]
+  },
+  "tests/fixtures/returned_outputs_review7/test_review7_large_disjoint.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_returned_bound_envelope.py"
+   ]
+  },
+  "tests/fixtures/returned_outputs_review7/test_review7_large_stride.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_returned_bound_envelope.py"
+   ]
+  },
+  "tests/fixtures/returned_outputs_review7/test_round4_review2.py": {
+   "kind": "harness control collected as a test module if tests/fixtures is recursed",
+   "consumers": [
+    "tests/test_returned_bound_envelope.py"
+   ]
+  }
+ },
+ "public_surface_note": "Regenerated for the public tree: the vendored controls of the all-shapes campaign tests, which are not part of the public surface, are not shipped either; fixture directory names follow the public tree."
+}

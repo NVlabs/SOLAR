@@ -1,0 +1,14 @@
+{
+  "name": "release_agentic_scale_rows",
+  "axes": {
+    "B": {"type": "var"},
+    "H": {"type": "const", "value": 16}
+  },
+  "inputs": {
+    "x": {"shape": ["B", "H"], "dtype": "float32"},
+    "w": {"shape": ["H"], "dtype": "float32"}
+  },
+  "outputs": {
+    "output": {"shape": ["B", "H"], "dtype": "float32"}
+  }
+}

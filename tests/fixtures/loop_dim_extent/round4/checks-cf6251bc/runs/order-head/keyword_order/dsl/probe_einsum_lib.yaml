@@ -1,0 +1,32 @@
+tensors:
+  x:
+    dims:
+      T: 2
+    dtype: fp32
+    role: input
+    origin: registered-input
+  z:
+    dims:
+      T: 5
+    dtype: fp32
+    role: input
+    origin: registered-input
+  __const_0: &id001
+    dims:
+      O: 1
+    dtype: fp32
+    role: input
+    origin: internal-constant
+  k#0: *id001
+graph:
+  k#0:
+    type: kernel
+    function: k
+    inputs:
+    - tensor: x
+      from: input
+    - tensor: z
+      from: input
+    output: k#0
+    call_site_line: 13
+    input_order: signature

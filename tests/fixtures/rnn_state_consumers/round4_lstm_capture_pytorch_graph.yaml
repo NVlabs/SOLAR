@@ -1,0 +1,367 @@
+model_name: model
+layers:
+  Model.auxiliary-tensor:
+    type: auxiliary-tensor
+    node_class: TensorNode
+    input_shapes: []
+    output_shapes:
+    - - 1
+      - 2
+      - 3
+    input_dtypes: []
+    output_dtypes:
+    - torch.float32
+    input_types: []
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.Model.LSTM.auxiliary-tensor
+    connections:
+      inputs: []
+      outputs:
+      - Model.lstm
+  Model.lstm:
+    type: lstm
+    node_class: FunctionNode
+    input_shapes:
+    - - 1
+      - 2
+      - 3
+    - - 1
+      - 1
+      - 2
+    - - 1
+      - 1
+      - 2
+    - - 8
+      - 3
+    - - 8
+      - 2
+    output_shapes:
+    - - 1
+      - 2
+      - 2
+    - - 1
+      - 1
+      - 2
+    - - 1
+      - 1
+      - 2
+    input_dtypes:
+    - torch.float32
+    - torch.float32
+    - torch.float32
+    - torch.float32
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    - torch.float32
+    - torch.float32
+    output_dtypes_recorded: true
+    input_types:
+    - input
+    - input
+    - input
+    - weight
+    - weight
+    output_types:
+    - output
+    - output
+    - output
+    module_args:
+      function_name: lstm
+      raw_attributes: '[[Tensor(shape=(1, 2, 3), dtype=torch.float32), [Tensor(shape=(1,
+        1, 2), dtype=torch.float32), Tensor(shape=(1, 1, 2), dtype=torch.float32)],
+        [Tensor(shape=(8, 3), dtype=torch.float32), Tensor(shape=(8, 2), dtype=torch.float32)],
+        False, 1, 0.0, False, False, True], {}]'
+      hierarchical_name: Model.Model.LSTM.lstm
+      module_type: LSTM
+      batch_first: true
+      bias: false
+      bidirectional: false
+      call_super_init: false
+      dropout: 0.0
+      dump_patches: false
+      hidden_size: 2
+      input_size: 3
+      mode: LSTM
+      num_layers: 1
+      proj_size: 0
+      training: false
+    connections:
+      inputs:
+      - Model.auxiliary-tensor
+      - Model.hidden-tensor
+      - Model.hidden-tensor_1
+      - Model.parameter-tensor
+      - Model.parameter-tensor_1
+      outputs:
+      - Model.hidden-tensor_2
+      - Model.hidden-tensor_3
+      - Model.hidden-tensor_4
+  Model.hidden-tensor:
+    type: hidden-tensor
+    node_class: TensorNode
+    input_shapes:
+    - - 1
+      - 1
+      - 2
+    output_shapes:
+    - - 1
+      - 1
+      - 2
+    input_dtypes:
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    input_types: []
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.hidden-tensor
+    connections:
+      inputs: []
+      outputs:
+      - Model.lstm
+  Model.hidden-tensor_1:
+    type: hidden-tensor
+    node_class: TensorNode
+    input_shapes:
+    - - 1
+      - 1
+      - 2
+    output_shapes:
+    - - 1
+      - 1
+      - 2
+    input_dtypes:
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    input_types: []
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.hidden-tensor_1
+    connections:
+      inputs: []
+      outputs:
+      - Model.lstm
+  Model.hidden-tensor_2:
+    type: hidden-tensor
+    node_class: TensorNode
+    input_shapes:
+    - - 1
+      - 2
+      - 2
+    output_shapes:
+    - - 1
+      - 2
+      - 2
+    input_dtypes:
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    input_types:
+    - input
+    output_types: []
+    module_args:
+      hierarchical_name: Model.hidden-tensor_2
+    connections:
+      inputs:
+      - Model.lstm
+      outputs: []
+  Model.hidden-tensor_3:
+    type: hidden-tensor
+    node_class: TensorNode
+    input_shapes:
+    - - 1
+      - 1
+      - 2
+    output_shapes:
+    - - 1
+      - 1
+      - 2
+    input_dtypes:
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    input_types:
+    - input
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.hidden-tensor_3
+    connections:
+      inputs:
+      - Model.lstm
+      outputs:
+      - Model.einsum
+  Model.einsum:
+    type: einsum
+    node_class: FunctionNode
+    input_shapes:
+    - - 1
+      - 1
+      - 2
+    - - 1
+      - 1
+      - 2
+    - - 1
+      - 1
+      - 2
+    output_shapes:
+    - - 1
+      - 1
+      - 2
+    input_dtypes:
+    - torch.float32
+    - torch.float32
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    output_dtypes_recorded: true
+    input_types:
+    - input
+    - input
+    - input
+    output_types:
+    - output
+    module_args:
+      function_name: einsum
+      raw_attributes: '[[''abc,abc,abc->abc'', Tensor(shape=(1, 1, 2), dtype=torch.float32),
+        Tensor(shape=(1, 1, 2), dtype=torch.float32), Tensor(shape=(1, 1, 2), dtype=torch.float32)],
+        {}]'
+      hierarchical_name: Model.einsum
+    connections:
+      inputs:
+      - Model.hidden-tensor_3
+      - Model.hidden-tensor_3
+      - Model.hidden-tensor_4
+      outputs:
+      - Model.output-tensor
+  Model.hidden-tensor_4:
+    type: hidden-tensor
+    node_class: TensorNode
+    input_shapes:
+    - - 1
+      - 1
+      - 2
+    output_shapes:
+    - - 1
+      - 1
+      - 2
+    input_dtypes:
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    input_types:
+    - input
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.hidden-tensor_4
+    connections:
+      inputs:
+      - Model.lstm
+      outputs:
+      - Model.einsum
+  Model.output-tensor:
+    type: output-tensor
+    node_class: TensorNode
+    input_shapes:
+    - - 1
+      - 1
+      - 2
+    output_shapes: []
+    input_dtypes:
+    - torch.float32
+    output_dtypes: []
+    input_types:
+    - input
+    output_types: []
+    module_args:
+      hierarchical_name: Model.output-tensor
+    connections:
+      inputs:
+      - Model.einsum
+      outputs: []
+  Model.parameter-tensor:
+    type: parameter-tensor
+    node_class: TensorNode
+    input_shapes: []
+    output_shapes:
+    - - 8
+      - 3
+    input_dtypes: []
+    output_dtypes:
+    - torch.float32
+    input_types: []
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.parameter-tensor
+    connections:
+      inputs: []
+      outputs:
+      - Model.lstm
+  Model.parameter-tensor_1:
+    type: parameter-tensor
+    node_class: TensorNode
+    input_shapes: []
+    output_shapes:
+    - - 8
+      - 2
+    input_dtypes: []
+    output_dtypes:
+    - torch.float32
+    input_types: []
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.parameter-tensor_1
+    connections:
+      inputs: []
+      outputs:
+      - Model.lstm
+capture_capability:
+  parameter_tensors: true
+  call_attributes: true
+  torchview_version: 0.2.7
+  torchview_file: <torchview-src>/torchview/__init__.py
+  source: patched
+  probe:
+    parameter_tensor_nodes: 3
+    ops_with_attributes: 6
+    ops_total: 6
+    chain_consumers_with_attributes:
+      softmax: true
+      relu: true
+    draw_context: solar.graph.pytorch_processor._patch_torchview_collect_attributes
+    model: nn.Linear(4,3) -> softmax(h + 1.0, dim=-1); F.conv2d(stride=2, padding=1,
+      groups=2) -> relu(c * 2.0) on CPU
+  checked_utc: '2026-10-25T23:07:24.789592+00:00'
+  error: null
+  dynamo_warmup: true
+  capable: true
+  degraded: false
+  reason: capable
+capture_status: ok
+provenance:
+  source_sha256: 8cb61d1b0bab202f79879271dd24a9220bc1f2f459c1b59d7ddfe39aa932f2b7
+  capture_rev: c8550b3a7d79660185c7a803cfed302eaf326d4561afea3ec55bb5c0c5eb7919
+  capture_implementation_files:
+  - <checkout>/solar/graph/pytorch_processor.py
+  - <checkout>/solar/graph/torchview_processor.py
+  - <checkout>/solar/graph/torchview_capability.py
+  - <checkout>/solar/graph/_torchview_param_shim.py
+  - <torchview-src>/torchview/recorder_tensor.py
+  - <torchview-src>/torchview/torchview.py
+  capability_identity:
+    source: patched
+    torchview_version: 0.2.7
+    torchview_file: <torchview-src>/torchview/__init__.py
+    parameter_tensors: true
+    call_attributes: true
+    degraded: false
+    dynamo_warmup: true

@@ -1,0 +1,156 @@
+{
+ "issue": 62,
+ "written_utc": "2026-10-31T00:40:12.363840+00:00",
+ "what": "synthetic two-layer analysis (bf16 inputs and weight, bf16 intermediate, fp32 output, one repeated external read) and the perf reports the UNPATCHED perf_model of the pinned baseline revision wrote for it in uniform-fp32 and dtype_bytes modes (arch H100_PCIe, precision fp32); tests/test_memory_breakdown_labels.py asserts the patched model reproduces every pre-existing field byte-for-byte; rebound 2026-10-31 from the original baseline after a later change (issue #58) added nine report-provenance leaves (arch.mac_per_cycle_key_applied, arch.mac_rate_class_applied, workload.default_rate_remainder.*) -- every pre-existing leaf kept its exact value, type and position (see rebind)",
+ "produced_by": {
+  "head": "pinned baseline revision (the internal revision identifier is recorded privately)",
+  "perf_model_sha256": "c1abcd97bd4dfa163328519bff0bc641122167c2c00407a65124d700ef5d82a4",
+  "perf_model_git_blob": "recorded privately",
+  "python": "3.10.4",
+  "generator": "EinsumGraphPerfModel(debug=False, dtype_bytes=(mode == 'dtype')).predict(analysis.yaml, out, arch_config='H100_PCIe', precision='fp32', copy_analysis=False) on an export (git archive) of the pinned target, same call as tests/test_memory_breakdown_labels.py::_predict",
+  "generated_utc": "2026-10-31T00:40:12.377246+00:00"
+ },
+ "files": {
+  "analysis.yaml": {
+   "sha256": "9f8b8e8b0543654b57dfebc097fe23098d97f8fb100ea11d0c0d58f66adee28c",
+   "bytes": 2700
+  },
+  "perf_dtype_H100_PCIe.yaml": {
+   "sha256": "a19f2f836e5ead909ebbcd60da5b7a49c47f3199fc0d9d6677ba2998f6422e43",
+   "bytes": 2362
+  },
+  "perf_uniform_H100_PCIe.yaml": {
+   "sha256": "c0cd9c06bed30ead9bcdd8a41ede114e9bfe2fa4c2a879e03ca1e3d4d4b9aa3a",
+   "bytes": 2349
+  }
+ },
+ "arithmetic": {
+  "uniform_fp32": {
+   "weight_bytes": 80,
+   "model_io_bytes": 416,
+   "intermediate_bytes": 320,
+   "sum": 816,
+   "unfused_memory_bytes": 816,
+   "note": "uniform sum == unfused F (as for Lite 170)"
+  },
+  "dtype": {
+   "weight_bytes": 0,
+   "model_io_bytes": 264,
+   "intermediate_bytes": 160,
+   "sum": 424,
+   "unfused_memory_bytes": 488,
+   "gap": 64,
+   "note": "dtype sum != unfused F; gap = repeated external read of x (32 el x 2 B)"
+  }
+ },
+ "rebind": {
+  "reason": "an earlier independent review found that the frozen reports came from an older baseline revision; the composed baseline emits nine additional report-provenance leaves, so report-minus-metadata could no longer equal the old whole reports",
+  "from": {
+   "head": "earlier baseline revision (recorded privately)",
+   "perf_model_sha256": "aa0d20d19517778b18af384a70f83fee2a825c6c02a97f9f4bf7909b1966e2ac",
+   "files": {
+    "analysis.yaml": {
+     "sha256": "9f8b8e8b0543654b57dfebc097fe23098d97f8fb100ea11d0c0d58f66adee28c",
+     "bytes": 2700
+    },
+    "perf_dtype_H100_PCIe.yaml": {
+     "sha256": "5d7f1534a82dd0875cb5584ce076b93def7053c73005b47c14993a7fd96f68ad",
+     "bytes": 1745
+    },
+    "perf_uniform_H100_PCIe.yaml": {
+     "sha256": "393d621bffccee244ece324ce4550792ef4205a844a431b9207b8d0fc70c903d",
+     "bytes": 1732
+    }
+   }
+  },
+  "added_leaves_per_mode": {
+   "uniform": {
+    "arch.mac_per_cycle_key_applied": [
+     "str",
+     "MAC_per_cycle_fp32_sm"
+    ],
+    "arch.mac_rate_class_applied": [
+     "str",
+     "sm"
+    ],
+    "workload.default_rate_remainder.macs": [
+     "int",
+     160
+    ],
+    "workload.default_rate_remainder.rate_key": [
+     "str",
+     "MAC_per_cycle_fp32_sm"
+    ],
+    "workload.default_rate_remainder.rate_class": [
+     "str",
+     "sm"
+    ],
+    "workload.default_rate_remainder.requested_rate_key": [
+     "str",
+     "MAC_per_cycle_fp32_tc"
+    ],
+    "workload.default_rate_remainder.rate_is_fallback": [
+     "bool",
+     true
+    ],
+    "workload.default_rate_remainder.precision": [
+     "str",
+     "fp32"
+    ],
+    "workload.default_rate_remainder.note": [
+     "str",
+     "160 MACs priced at MAC_per_cycle_fp32_sm (the CUDA-core (SM) rate; the profile declares no MAC_per_cycle_fp32_tc, so the fallback chain selected MAC_per_cycle_fp32_sm); the analysis predates typed MAC components, so the share of scalar multiply statements (non-einsum kernels) inside this remainder is not separable here"
+    ]
+   },
+   "dtype": {
+    "arch.mac_per_cycle_key_applied": [
+     "str",
+     "MAC_per_cycle_fp32_sm"
+    ],
+    "arch.mac_rate_class_applied": [
+     "str",
+     "sm"
+    ],
+    "workload.default_rate_remainder.macs": [
+     "int",
+     160
+    ],
+    "workload.default_rate_remainder.rate_key": [
+     "str",
+     "MAC_per_cycle_fp32_sm"
+    ],
+    "workload.default_rate_remainder.rate_class": [
+     "str",
+     "sm"
+    ],
+    "workload.default_rate_remainder.requested_rate_key": [
+     "str",
+     "MAC_per_cycle_fp32_tc"
+    ],
+    "workload.default_rate_remainder.rate_is_fallback": [
+     "bool",
+     true
+    ],
+    "workload.default_rate_remainder.precision": [
+     "str",
+     "fp32"
+    ],
+    "workload.default_rate_remainder.note": [
+     "str",
+     "160 MACs priced at MAC_per_cycle_fp32_sm (the CUDA-core (SM) rate; the profile declares no MAC_per_cycle_fp32_tc, so the fallback chain selected MAC_per_cycle_fp32_sm); the analysis predates typed MAC components, so the share of scalar multiply statements (non-einsum kernels) inside this remainder is not separable here"
+    ]
+   }
+  },
+  "old_values_changed": {
+   "uniform": {},
+   "dtype": {}
+  },
+  "line_diff": {
+   "uniform": "insertions only (13 lines)",
+   "dtype": "insertions only (13 lines)"
+  },
+  "analysis_yaml": "unchanged",
+  "assertions": "unchanged (the module's byte/value/type/field-set assertions are kept as written)"
+ },
+ "public_view": "internal source/review lineage replaced by portable wording (overlay v9); the original record is retained privately; the files mapping, every golden sha256/byte count and the arithmetic are unchanged"
+}

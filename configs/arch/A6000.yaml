@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "A6000"
+SRAM_capacity: 6291456  # 6 MB L2 (NVIDIA Ampere GA102 GPU architecture whitepaper); not used by the roofline
+DRAM_capacity: 48000000000  # 48GB GDDR6
+DRAM_byte_per_cycle: 427  # 768GB/s at 1.8GHz boost clock
+freq_GHz: 1.8  # Boost clock frequency
+MAC_per_cycle_int8_tc: 172032  # Estimated based on tensor cores
+MAC_per_cycle_bf16_tc: 86016   # 154.83 TFLOPS / 1.8 GHz = ~86K MAC/cycle for BF16 tensor cores
+MAC_per_cycle_fp32_tc: 86016   # Estimated FP32 tensor core performance (half of BF16)
+MAC_per_cycle_fp32_sm: 10752  # 38.71 TFLOPS / 1.8 GHz = ~21.5K ops/cycle, but divided by 2 for MAC operations

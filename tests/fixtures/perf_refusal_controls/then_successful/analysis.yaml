@@ -1,0 +1,16 @@
+model_name: independent
+metadata:
+  bytes_accounting: per-tensor-dtype
+layers:
+  bf16:
+    macs: 1000000
+  fp4_copy:
+    macs: 0
+total:
+  macs: 1000000
+  flops: 2000000
+  other_ops: 0
+  unfused_elements: 16
+  fused_elements: 16
+  unfused_bytes: 16
+  fused_bytes: 16

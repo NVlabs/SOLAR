@@ -1,0 +1,10 @@
+DRAM_byte_per_cycle: 1019.4
+DRAM_capacity: 85899345920
+MAC_per_cycle_bf16_tc: 189000
+MAC_per_cycle_fp16_tc: 189000
+MAC_per_cycle_fp32_sm: 12750
+MAC_per_cycle_int8_tc: 378000
+MAC_per_cycle_tf32_tc: 94500
+SRAM_capacity: 52428800
+freq_GHz: 2
+name: H100_without_fp8_for_control

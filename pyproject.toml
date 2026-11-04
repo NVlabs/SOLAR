@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solar"
+# Single source of truth: solar/__init__.py::__version__ (read statically by setuptools).
+dynamic = ["version"]
+description = "SOLAR: program-to-Einsum graph analysis and hardware-aware speed-of-light (SOL) performance modeling"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [
+    { name = "NVIDIA Corporation" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+# Must match requirements.txt (core section).
+#
+# torch floor: the lowest version with recorded full-suite evidence for this
+# tree is 2.7.1 (release checks, Oct 2026).  The earlier ">=2.9.0" floor was
+# declared without evidence and is not reachable in the recorded environments;
+# no code in the package gates on a torch version.  Raise the floor only with
+# evidence that an older version fails.
+dependencies = [
+    "torch>=2.7.1",
+    "torchview>=0.2.6",
+    "networkx>=3.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24.0",
+    "matplotlib>=3.5.0",
+    "scipy>=1.10.0",
+    "pandas>=1.5.0",
+    "einops>=0.6.0",
+    "huggingface-hub>=0.16.0",
+    "safetensors>=0.3.0",
+    "openai>=1.0.0",
+    "graphviz>=0.20",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/NVlabs/SOLAR"
+Repository = "https://github.com/NVlabs/SOLAR"
+Issues = "https://github.com/NVlabs/SOLAR/issues"
+
+[project.optional-dependencies]
+# Agentic (v2) verification path: numba-accelerated execution of einsum_lib
+# programs and the RSS memory guard used by the isolated verifier.
+verify = [
+    "numba>=0.57.0",
+    "psutil>=5.9.0",
+]
+# JAX/Flax source adapters for the agentic path.
+jax = [
+    "jax[cpu]>=0.4.20",
+    "jaxlib>=0.4.20",
+    "flax>=0.8.0",
+]
+dev = [
+    "black>=23.0.0",
+    "pylint>=2.17.0",
+    "mypy>=1.0.0",
+]
+all = [
+    "solar[verify,jax,dev]",
+]
+
+[project.scripts]
+# Mechanical (classic 5-stage) pipeline, one model per invocation
+solar-process-model = "solar.cli.process_model:main"
+solar-toeinsum-model = "solar.cli.toeinsum_model:main"
+solar-analyze-model = "solar.cli.analyze_model:main"
+solar-predict-perf-model = "solar.cli.predict_perf_model:main"
+solar-totimeloop = "solar.cli.totimeloop:main"
+# Agentic (v2) path: deterministic verify/sol/scaffold facade and the
+# API-backed translator (the latter needs an explicitly configured endpoint
+# and key; see docs/SOLAR_V2_FLOW.md).
+solar-translate = "solar.cli.translate:main"
+solar-toDSL-model = "solar.cli.toDSL_model:main"
+# Locate shipped workflow resources (configs, skills, scripts) in any layout.
+solar-resource = "solar.resources:main"
+
+[tool.setuptools]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES", "REUSE.toml", "LICENSES/*"]
+
+# The tracked fallback-protocol specification is read by tests/test_fallback_contract.py
+# from the installed package, so it ships in the wheel (and, via MANIFEST.in, the sdist).
+[tool.setuptools.package-data]
+"solar.einsum_lib.fallback_protocol" = ["PROTOCOL.json", "PROTOCOL.md"]
+
+[tool.setuptools.dynamic]
+version = { attr = "solar.__version__" }
+
+# Only the ``solar`` package and its subpackages are distributed.  Generated
+# handler caches (``solar_handlers_cache/``, ``node_handlers_cache/``) are
+# written next to the package at runtime; with ``namespaces = true`` (the
+# default) and a bare ``solar*`` pattern they were picked up as PEP 420
+# namespace packages and shipped in the wheel.  Keep both guards.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["solar", "solar.*"]
+exclude = ["solar_handlers_cache*", "node_handlers_cache*", "tests*"]
+namespaces = false

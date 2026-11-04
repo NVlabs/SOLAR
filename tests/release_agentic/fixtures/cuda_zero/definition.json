@@ -1,0 +1,6 @@
+{
+  "name": "release_agentic_zero_reference",
+  "axes": {"M": {"type": "const", "value": 3}, "N": {"type": "const", "value": 4}},
+  "inputs": {"x": {"shape": ["M", "N"], "dtype": "float32"}},
+  "outputs": {"output": {"shape": ["M", "N"], "dtype": "float32"}}
+}

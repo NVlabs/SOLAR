@@ -1,0 +1,49 @@
+# Propagate collect_attributes to model-input and hidden RecorderTensors.
+#
+# Upstream torchview commit edbe1fae97d94bb413c8fecace4f28b7ef9a59b0 ("Collect attributes with
+# input tensor (#128)", 2025-04-23), which is not in the torchview 0.2.7 release installed by
+# validate-install.  Without it draw_graph(collect_attributes=True) records attributes for no
+# FunctionNode: the flag is read from the first input tensor node and the model inputs /
+# hidden tensors are created with the default False.  Apply after
+# torchview-parameter-tensors.patch with: patch -p3 -d "$TORCHVIEW_PATH" < this file.
+# validate-install skips it when torchview.py already contains the propagation (>= #128).
+diff --git a/src/torchview/recorder_tensor.py b/src/torchview/recorder_tensor.py
+index e19cc37..c0e2aee 100644
+--- a/src/torchview/recorder_tensor.py
++++ b/src/torchview/recorder_tensor.py
+@@ -279,7 +279,8 @@ class RecorderTensor(torch.Tensor):
+         attach_kwargs = {
+             'parents': cur_node, 'depth': cur_depth, "context": input_context,
+             'is_aux': False, 'parent_hierarchy': {cur_depth: cur_node},
+-            'name': 'output-tensor' if cur_depth == 0 else 'hidden-tensor'
++            'name': 'output-tensor' if cur_depth == 0 else 'hidden-tensor',
++            'collect_attributes': collect_attributes
+         }
+         traverse_data_inplace(out, attach_node(attach_kwargs))
+ 
+diff --git a/src/torchview/torchview.py b/src/torchview/torchview.py
+index 339cc51..2c2a8a6 100644
+--- a/src/torchview/torchview.py
++++ b/src/torchview/torchview.py
+@@ -11,6 +11,8 @@ import torch
+ from torch import nn
+ from torch.jit import ScriptModule
+ 
++from functools import partial
++
+ from .computation_node import NodeContainer
+ from .computation_graph import ComputationGraph
+ from .computation_node import TensorNode
+@@ -284,10 +286,10 @@ def process_input(
+     """Reads sample input data to get the input size."""
+     x = None
+     correct_input_size = []
+-    kwargs_recorder_tensor = traverse_data(kwargs, get_recorder_tensor, type)
++    kwargs_recorder_tensor = traverse_data(kwargs, partial(get_recorder_tensor, collect_attributes=collect_attributes), type)
+     if input_data is not None:
+         x = set_device(input_data, device)
+-        x = traverse_data(x, get_recorder_tensor, type)
++        x = traverse_data(x, partial(get_recorder_tensor, collect_attributes=collect_attributes), type)
+         if isinstance(x, RecorderTensor):
+             x = [x]
+ 

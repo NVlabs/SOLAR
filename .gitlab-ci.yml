@@ -1,0 +1,152 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# GitLab CI for SOLAR (public layout: the package, tests, configs and scripts
+# live at the repository root).
+#   any push or MR        -> validate-install + unit-tests
+#   MR targeting main     -> + regression-tests (the whole suite)
+#
+# Assumes a shell executor with python3 available; CPU only, offline for
+# model weights (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE), no inference endpoint.
+
+stages: [validate, test]
+
+.cache: &cache
+  cache:
+    - key: pip-$CI_COMMIT_REF_SLUG
+      paths: ["$HOME/.cache/pip"]
+
+.always: &always
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+.mr-to-main: &mr-to-main
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"'
+
+validate-install:
+  stage: validate
+  <<: *cache
+  <<: *always
+  timeout: 10 minutes
+  retry:
+    max: 2
+    when: [runner_system_failure, stuck_or_timeout_failure]
+  script:
+    - export PATH="$HOME/.local/bin:$PATH"
+    - pip3 install --user --quiet -r requirements.txt
+    # Reinstall pristine torchview every run: a shell runner keeps ~/.local between
+    # jobs, so a copy patched by an earlier revision of a patch would reject the current one.
+    - pip3 install --user --quiet --force-reinstall --no-deps torchview
+    - TORCHVIEW_PATH=$(python3 -c "import torchview, os; print(os.path.dirname(torchview.__file__))")
+    - patch -p3 -d "$TORCHVIEW_PATH" < patches/torchview-parameter-tensors.patch
+    # The 0.2.7 release predates upstream #128: collect_attributes is not propagated to the
+    # input / hidden recorder tensors, so no FunctionNode gets call attributes.  Skip when
+    # the installed tree already has it (install.sh clones the pinned commit, which does).
+    - grep -q "partial(get_recorder_tensor, collect_attributes" "$TORCHVIEW_PATH/torchview.py" && echo "torchview already propagates collect_attributes" || patch -p3 -d "$TORCHVIEW_PATH" < patches/torchview-collect-attributes-inputs.patch
+    - pip3 install --user --quiet . --no-deps
+    - python3 -c "import torchview; from solar.graph import PyTorchProcessor; import solar.resources; print('install OK')"
+
+unit-tests:
+  stage: test
+  needs: [validate-install]
+  <<: *cache
+  <<: *always
+  timeout: 25 minutes
+  before_script:
+    - export PATH="$HOME/.local/bin:$PATH"
+    # The packaging tests (tests/release_packaging/test_packaging_metadata.py) read
+    # pyproject.toml through setuptools.config.pyprojecttoml and fail closed below
+    # the [build-system] floor (setuptools>=61).  validate-install only needs that
+    # version inside pip's isolated build environment, so the interpreter that runs
+    # pytest may still carry an older setuptools (59.6.0 on the shell runner).
+    # Provision the declared build backend in THAT interpreter, with its own pip,
+    # the same --user way the other dependencies are provisioned, and print what
+    # pytest will import.
+    - python3 -m pip install --user --quiet "setuptools>=61"
+    - python3 -c "import sys, setuptools; print('test interpreter:', sys.executable); print('setuptools:', setuptools.__version__, setuptools.__file__)"
+  script:
+    - python3 -m pytest -q -p no:cacheprovider --junitxml=report-unit.xml
+        tests/test_multioperand_einsum_macs.py
+        tests/test_graph_processing.py
+        tests/test_einsum_analyzer.py
+        tests/test_rank_label_determinism.py
+        tests/test_model_analyzer.py
+        tests/test_torchview_capability_gate.py
+        tests/test_capture_ignores_dynamo_import_probe.py
+        tests/test_pytorch_to_einsum_regressions.py
+        tests/test_graph_analyzer_regression.py
+        tests/test_addmm_mac_accounting.py
+        tests/test_scaled_mm_accounting.py
+        tests/test_unknown_op_fail_closed.py
+        tests/test_sparse_cost.py
+        tests/test_density_guard.py
+        tests/test_loop_basis_completeness.py
+        tests/test_fp32_cast_helper.py
+        tests/test_dsl_scalar_precision_contract.py
+        tests/test_rnn_loop_macs.py
+        tests/test_numba_unresolved_dim.py
+        tests/test_numba_prange_index_integrality.py
+        tests/test_lowered_index_check.py
+        tests/test_convtranspose_minwork.py
+        tests/test_translation_agent.py
+        tests/test_sdpa_qk_mac_accounting.py
+        tests/test_transpose_args.py
+        tests/test_grouped_conv_macs.py
+        tests/test_extended_einsum.py
+        tests/test_norm_param_traffic.py
+        tests/test_equation_utils.py
+        tests/test_convtranspose_macs.py
+        tests/test_alias_view_accounting.py
+        tests/test_rnn_provenance.py
+        tests/test_cast_dtype_capture.py
+        tests/test_arch_mac_rates.py
+        tests/test_handler_cost_precedence.py
+        tests/test_broadcast_cost_cap.py
+        tests/test_inplace_view_alias.py
+        tests/test_einsum_operand_evidence.py
+        tests/test_grouped_conv_integration.py
+        tests/test_scalar_index_af_coverage.py
+        tests/test_af_unresolved_operands.py
+        tests/test_inplace_collect_attributes.py
+        tests/test_sdpa_scalar_kwargs_capture.py
+        tests/test_nested_tensor_keywords.py
+        tests/test_sdpa_nested_delta.py
+        tests/test_weight_elements.py
+        tests/test_numba_narrow_carrier.py
+        tests/test_einsum_lib.py::TestCapEscalation
+        tests/test_capture_restores_registered_buffers.py
+        tests/test_capture_buffer_aliases_and_retry_state.py
+        tests/test_capture_returned_outputs.py
+        tests/test_gather_traffic.py
+        tests/test_nonreduction_loop_evidence.py
+        tests/test_dsl_compute_dtype_binding.py
+        tests/release_packaging/test_packaging_metadata.py
+  artifacts:
+    when: always
+    reports:
+      junit: report-unit.xml
+    expire_in: 7 days
+
+regression-tests:
+  stage: test
+  needs: [validate-install]
+  <<: *cache
+  <<: *mr-to-main
+  timeout: 60 minutes
+  retry:
+    max: 1
+    when: [runner_system_failure]
+  before_script:
+    - export PATH="$HOME/.local/bin:$PATH"
+    # scripts/run_tests.sh all runs the same packaging tests with python3: same setup gap, same provisioning.
+    - python3 -m pip install --user --quiet "setuptools>=61"
+    - python3 -c "import sys, setuptools; print('test interpreter:', sys.executable); print('setuptools:', setuptools.__version__, setuptools.__file__)"
+  script:
+    - JUNITXML=$CI_PROJECT_DIR/report-regression.xml bash scripts/run_tests.sh all
+  artifacts:
+    when: always
+    reports:
+      junit: report-regression*.xml
+    expire_in: 7 days

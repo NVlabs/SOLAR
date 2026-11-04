@@ -1,0 +1,22 @@
+model_name: independent
+metadata:
+  bytes_accounting: per-tensor-dtype
+layers:
+  q:
+    macs: 1000000
+    compute_dtype: nvfp4
+  k:
+    macs: 1000000
+    compute_dtype: nvfp4
+  bf16:
+    macs: 1000000
+total:
+  macs: 3000000
+  flops: 6000000
+  other_ops: 0
+  unfused_elements: 16
+  fused_elements: 16
+  unfused_bytes: 16
+  fused_bytes: 16
+  macs_by_compute_dtype:
+    nvfp4: 2000000

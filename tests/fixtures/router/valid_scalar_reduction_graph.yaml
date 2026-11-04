@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+model_name: model
+layers:
+  Model.auxiliary-tensor:
+    type: auxiliary-tensor
+    node_class: TensorNode
+    input_shapes: []
+    output_shapes:
+    - - 8
+    input_dtypes: []
+    output_dtypes:
+    - torch.float32
+    input_types: []
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.Model.auxiliary-tensor
+    connections:
+      inputs: []
+      outputs:
+      - Model.sum
+  Model.sum:
+    type: sum
+    node_class: FunctionNode
+    input_shapes:
+    - - 8
+    output_shapes:
+    - []
+    input_dtypes:
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    input_types:
+    - input
+    output_types:
+    - output
+    module_args:
+      function_name: sum
+      hierarchical_name: Model.Model.sum
+    connections:
+      inputs:
+      - Model.auxiliary-tensor
+      outputs:
+      - Model.hidden-tensor
+  Model.hidden-tensor:
+    type: hidden-tensor
+    node_class: TensorNode
+    input_shapes: []
+    output_shapes: []
+    input_dtypes: []
+    output_dtypes: []
+    input_types:
+    - input
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.hidden-tensor
+    connections:
+      inputs:
+      - Model.sum
+      outputs:
+      - Model.mul
+  Model.mul:
+    type: mul
+    node_class: FunctionNode
+    input_shapes:
+    - []
+    - []
+    output_shapes:
+    - []
+    input_dtypes:
+    - torch.float32
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    input_types:
+    - input
+    - input
+    output_types:
+    - output
+    module_args:
+      function_name: mul
+      hierarchical_name: Model.mul
+    connections:
+      inputs:
+      - Model.hidden-tensor
+      - Model.hidden-tensor
+      outputs:
+      - Model.output-tensor
+  Model.output-tensor:
+    type: output-tensor
+    node_class: TensorNode
+    input_shapes: []
+    output_shapes: []
+    input_dtypes: []
+    output_dtypes: []
+    input_types:
+    - input
+    output_types: []
+    module_args:
+      hierarchical_name: Model.output-tensor
+    connections:
+      inputs:
+      - Model.mul
+      outputs: []

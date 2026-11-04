@@ -1,0 +1,4 @@
+dtype_conversions:
+- operation: dtype_annotation
+  orig_dtypes: nvfp4 float4_e2m1fn_x2
+  new_dtypes: traced as-is

@@ -1,0 +1,128 @@
+layers:
+  P:
+    type: einsum
+    einsum_equation: IJ->IJ
+    is_real_einsum: true
+    is_einsum_supportable: true
+    elementwise_op: mul
+    reduction_op: add
+    tensor_names:
+      inputs:
+      - P.Weight
+      outputs:
+      - P.Output
+    tensor_types:
+      inputs:
+      - weight
+      outputs:
+      - intermediate
+    tensor_shapes:
+      inputs:
+      - - 2
+        - 2
+      outputs:
+      - - 2
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs: []
+      outputs: []
+    operands:
+      Input:
+      - I
+      - J
+      Output:
+      - I
+      - J
+  Q:
+    type: einsum
+    einsum_equation: IJ->IJ
+    is_real_einsum: true
+    is_einsum_supportable: true
+    elementwise_op: mul
+    reduction_op: add
+    tensor_names:
+      inputs:
+      - Q.Weight
+      outputs:
+      - Q.Output
+    tensor_types:
+      inputs:
+      - weight
+      outputs:
+      - intermediate
+    tensor_shapes:
+      inputs:
+      - - 2
+        - 2
+      outputs:
+      - - 2
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs: []
+      outputs: []
+    operands:
+      Input:
+      - I
+      - J
+      Output:
+      - I
+      - J
+  C:
+    type: einsum
+    einsum_equation: IK,KJ->IJ
+    is_real_einsum: true
+    is_einsum_supportable: true
+    elementwise_op: mul
+    reduction_op: add
+    tensor_names:
+      inputs:
+      - P.Output
+      - Q.Output
+      outputs:
+      - C.Output
+    tensor_types:
+      inputs:
+      - input
+      - input
+      outputs:
+      - intermediate
+    tensor_shapes:
+      inputs:
+      - - 2
+        - 2
+      - - 2
+        - 2
+      outputs:
+      - - 2
+        - 2
+    tensor_dtypes:
+      inputs:
+      - torch.float32
+      - torch.float32
+      outputs:
+      - torch.float32
+    connections:
+      inputs:
+      - Q
+      - P
+      outputs: []
+    operands:
+      Input:
+      - I
+      - K
+      Input_1:
+      - K
+      - J
+      Output:
+      - I
+      - J

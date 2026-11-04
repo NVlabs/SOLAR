@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+model_name: Matmul
+layers:
+  Model.auxiliary-tensor:
+    type: auxiliary-tensor
+    node_class: TensorNode
+    input_shapes: []
+    output_shapes:
+    - - 64
+      - 128
+    input_dtypes: []
+    output_dtypes:
+    - torch.float32
+    input_types: []
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.Model.auxiliary-tensor
+    connections:
+      inputs: []
+      outputs:
+      - Model.matmul
+  Model.matmul:
+    type: matmul
+    node_class: FunctionNode
+    input_shapes:
+    - - 4
+      - 32
+      - 64
+    - - 64
+      - 128
+    output_shapes:
+    - - 4
+      - 32
+      - 128
+    input_dtypes:
+    - torch.float32
+    - torch.float32
+    output_dtypes:
+    - torch.float32
+    input_types:
+    - weight
+    - input
+    output_types:
+    - output
+    module_args:
+      function_name: matmul
+      hierarchical_name: Model.Model.matmul
+    connections:
+      inputs:
+      - Model.parameter-tensor
+      - Model.auxiliary-tensor
+      outputs:
+      - Model.output-tensor
+  Model.output-tensor:
+    type: output-tensor
+    node_class: TensorNode
+    input_shapes:
+    - - 4
+      - 32
+      - 128
+    output_shapes: []
+    input_dtypes:
+    - torch.float32
+    output_dtypes: []
+    input_types:
+    - input
+    output_types: []
+    module_args:
+      hierarchical_name: Model.output-tensor
+    connections:
+      inputs:
+      - Model.matmul
+      outputs: []
+  Model.parameter-tensor:
+    type: parameter-tensor
+    node_class: TensorNode
+    input_shapes: []
+    output_shapes:
+    - - 4
+      - 32
+      - 64
+    input_dtypes: []
+    output_dtypes:
+    - torch.float32
+    input_types: []
+    output_types:
+    - output
+    module_args:
+      hierarchical_name: Model.parameter-tensor
+    connections:
+      inputs: []
+      outputs:
+      - Model.matmul

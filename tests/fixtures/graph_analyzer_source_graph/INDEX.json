@@ -1,0 +1,62 @@
+{
+ "base": "<internal-revision>",
+ "precision": "fp32",
+ "note": "issue #63: analysis of each in-repo fixture graph with metadata.source_graph removed -- the exact non-provenance output the regression pins (first produced by the <internal-revision> analyzer; regenerated additively by issue #58, see golden_pin); base_source_graph_value shows the clobbered provenance",
+ "cases": {
+  "mr106__round5_gate__round4-dense-graph": {
+   "graph": "loop_evidence/round5_gate/round4-dense-graph.yaml",
+   "base_source_graph_value": "<private-path>/tests/fixtures/mr106/round5_gate/round4-dense-graph.yaml",
+   "base_source_graph_is_path": true,
+   "has_model_outputs": false
+  },
+  "rnn_state_consumers__round4_lstm_einsum_hhc_saved": {
+   "graph": "rnn_state_consumers/round4_lstm_einsum_hhc_saved.yaml",
+   "base_source_graph_value": "Model.einsum",
+   "base_source_graph_is_path": false,
+   "has_model_outputs": true
+  },
+  "rnn_state_consumers__round4_lstm_einsum_hhc_unmarked": {
+   "graph": "rnn_state_consumers/round4_lstm_einsum_hhc_unmarked.yaml",
+   "base_source_graph_value": "Model.einsum",
+   "base_source_graph_is_path": false,
+   "has_model_outputs": true
+  },
+  "rnn_state_consumers__round8_matrix_permuted": {
+   "graph": "rnn_state_consumers/round8_matrix_permuted.yaml",
+   "base_source_graph_value": "<private-path>/tests/fixtures/rnn_state_consumers/round8_matrix_permuted.yaml",
+   "base_source_graph_is_path": true,
+   "has_model_outputs": false
+  },
+  "rnn_state_consumers__round8_matrix_valid": {
+   "graph": "rnn_state_consumers/round8_matrix_valid.yaml",
+   "base_source_graph_value": "<private-path>/tests/fixtures/rnn_state_consumers/round8_matrix_valid.yaml",
+   "base_source_graph_is_path": true,
+   "has_model_outputs": false
+  },
+  "rnn_state_consumers__round8_mixed_boundary_explicit_edge": {
+   "graph": "rnn_state_consumers/round8_mixed_boundary_explicit_edge.yaml",
+   "base_source_graph_value": "Model.einsum",
+   "base_source_graph_is_path": false,
+   "has_model_outputs": true
+  },
+  "rnn_state_consumers__round8_mixed_boundary_start_slot": {
+   "graph": "rnn_state_consumers/round8_mixed_boundary_start_slot.yaml",
+   "base_source_graph_value": "Model.einsum",
+   "base_source_graph_is_path": false,
+   "has_model_outputs": true
+  },
+  "rnn_state_consumers__round8_mixed_boundary_without_edge": {
+   "graph": "rnn_state_consumers/round8_mixed_boundary_without_edge.yaml",
+   "base_source_graph_value": "Model.einsum",
+   "base_source_graph_is_path": false,
+   "has_model_outputs": true
+  }
+ },
+ "fixtures_not_analyzable_on_base": {
+  "rnn_state_consumers/round4_lstm_capture_pytorch_graph.yaml": "ValueError: Layer 'Model.auxiliary-tensor' (type=auxiliary-tensor) is missing 'is_real_einsum' field. All layers in the einsum graph",
+  "router/prefix_defect_matmul_graph.yaml": "ValueError: Layer 'Model.auxiliary-tensor' (type=auxiliary-tensor) is missing 'is_real_einsum' field. All layers in the einsum graph",
+  "router/valid_matmul_graph.yaml": "ValueError: Layer 'Model.auxiliary-tensor' (type=auxiliary-tensor) is missing 'is_real_einsum' field. All layers in the einsum graph",
+  "router/valid_scalar_reduction_graph.yaml": "ValueError: Layer 'Model.auxiliary-tensor' (type=auxiliary-tensor) is missing 'is_real_einsum' field. All layers in the einsum graph"
+ },
+ "golden_pin": "issue #58 branch (<internal-revision> + the additive typed-presentation fields macs_kind / macs_typed / equation_unfaithful_layers / binary_schedule_applicability); every pre-existing value identical to the <internal-revision> analyzer's output -- evidence GOLDEN_DIFF.json in the issue-58 round-1 delivery"
+}

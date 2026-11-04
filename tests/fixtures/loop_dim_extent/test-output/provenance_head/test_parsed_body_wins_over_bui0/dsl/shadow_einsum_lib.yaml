@@ -1,0 +1,26 @@
+tensors:
+  x:
+    dims:
+      N: 16
+      H: 4
+    dtype: fp32
+    role: input
+  i:
+    dims:
+      I: 2
+    dtype: int64
+    role: input
+  out:
+    dims:
+      I: 2
+      H: 4
+    dtype: fp32
+graph:
+  gather#0:
+    function: gather
+    inputs:
+    - tensor: x
+      from: input
+    - tensor: i
+      from: input
+    output: out

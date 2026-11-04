@@ -1,0 +1,78 @@
+arch:
+  name: H100_PCIe
+  freq_GHz: 2.0
+  DRAM_byte_per_cycle: 1019.4
+  mac_per_cycle_key: MAC_per_cycle_fp32_tc
+  mac_per_cycle_key_applied: MAC_per_cycle_fp32_sm
+  mac_rate_class_applied: sm
+  MAC_per_cycle: 12750.0
+  MAC_per_cycle_fp32_sm: 12750.0
+  ridge_point: 12.507357268981755
+workload:
+  total_macs: 160
+  default_rate_remainder:
+    macs: 160
+    rate_key: MAC_per_cycle_fp32_sm
+    rate_class: sm
+    requested_rate_key: MAC_per_cycle_fp32_tc
+    rate_is_fallback: true
+    precision: fp32
+    note: 160 MACs priced at MAC_per_cycle_fp32_sm (the CUDA-core (SM) rate; the profile
+      declares no MAC_per_cycle_fp32_tc, so the fallback chain selected MAC_per_cycle_fp32_sm);
+      the analysis predates typed MAC components, so the share of scalar multiply
+      statements (non-einsum kernels) inside this remainder is not separable here
+  total_other_ops: 40
+  total_flops: 360
+  bytes_per_element: per-tensor-dtype
+  mac_rate_bytes_per_element: 4
+  boundary_billing: uniform_precision_width
+unfused:
+  description: Each op in isolation, all tensors from DRAM
+  memory_elements: 204
+  memory_bytes: 488
+  compute_tc_cycles: 0
+  compute_sm_cycles: 0
+  compute_cycles: 0
+  memory_cycles: 0
+  total_cycles: 0
+  runtime_ms: 2.3935648420639593e-07
+  arithmetic_intensity: 0.32786885245901637
+  bottleneck: memory
+fused:
+  description: Per-op roofline, intermediate tensors excluded
+  memory_elements: 92
+  memory_bytes: 264
+  compute_tc_cycles: 0
+  compute_sm_cycles: 0
+  compute_cycles: 0
+  memory_cycles: 0
+  total_cycles: 0
+  runtime_ms: 1.2948793407886994e-07
+  arithmetic_intensity: 0.6060606060606061
+  bottleneck: memory
+fused_prefetched:
+  description: Single roofline for entire graph, perfect overlap
+  memory_elements: 92
+  memory_bytes: 264
+  compute_tc_cycles: 0
+  compute_sm_cycles: 0
+  compute_cycles: 0
+  memory_cycles: 0
+  total_cycles: 0
+  runtime_ms: 1.2948793407886994e-07
+  arithmetic_intensity: 0.6060606060606061
+  bottleneck: memory
+memory_breakdown:
+  weight_elements: 20
+  weight_bytes: 0
+  model_io_elements: 104
+  model_io_bytes: 264
+  intermediate_elements: 80
+  intermediate_bytes: 160
+speedup:
+  fused_vs_unfused: 1.8484848484848484
+  fused_prefetched_vs_unfused: 1.8484848484848484
+  fused_prefetched_vs_fused: 1.0
+memory_reduction:
+  fused_vs_unfused: 0.4590163934426229
+  fused_prefetched_vs_unfused: 0.4590163934426229

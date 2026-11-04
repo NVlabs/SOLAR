@@ -1,0 +1,9 @@
+ea0a1e7092c20a2604571c2ee3c3984b93d917477779c4ec8df60d2d7cbd4e56  graph.yaml
+f96bdc5aec04d1216230e279765815951d1afc05c381851264beb2b24f9b56a9  <review-run>/head-extra_states/lstm-h-h-c-einsum/einsum/einsum_graph.yaml -> lstm_hhc_einsum_graph (source of the extra-states replay)
+# independent reviewer controls, copied verbatim (sha256 of the reviewer's source file)
+1d8ab443d2ebd359acdd40643785b7baf560fc55ef21cbf2ee75332cbdc21af3  <review-run>/runs/head-mixed_boundary/boundary-without-edge/graph.yaml -> round8_mixed_boundary_without_edge.yaml
+bc2f79706a06df66341ae8288daa5b7dcca7a94b6875a1d4ed85e90ef23ef8f1  <review-run>/runs/head-mixed_boundary/explicit-edge-control/graph.yaml -> round8_mixed_boundary_explicit_edge.yaml
+a9d63b7c0e390f687956d0bb1b0f87b633c0aaeeaddd65281aec89e91cae3460  <review-run>/runs/head-correspondence/mixed-boundary/graph.yaml -> round8_mixed_boundary_start_slot.yaml
+cae178f42359439ea9e4b8eb0dcc2cd3e4cf06d76e8103f8692ea76926497f40  <review-run>/runs/head-correspondence/matrix-valid/graph.yaml -> round8_matrix_valid.yaml
+d17b3702122c25326a1d9583f17366ce4931e91b8faac5618ab940685628b29e  <review-run>/runs/head-correspondence/matrix-permuted/graph.yaml -> round8_matrix_permuted.yaml
+475f8394e6ccacbe42fc3042d4ea4bcfe1139d141a6a6acc3492c89b4bbdcabf  <review-run>/evidence/round4/capture/pytorch_graph.yaml -> round4_lstm_capture_pytorch_graph.yaml

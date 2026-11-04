@@ -1,0 +1,11 @@
+{
+  "name": "rmsnorm_h128_documentation_smoke",
+  "axes": {
+    "B": {"type": "var"},
+    "H": {"type": "const", "value": 128}
+  },
+  "inputs": {
+    "hidden_states": {"shape": ["B", "H"], "dtype": "float32"},
+    "weight": {"shape": ["H"], "dtype": "float32"}
+  }
+}

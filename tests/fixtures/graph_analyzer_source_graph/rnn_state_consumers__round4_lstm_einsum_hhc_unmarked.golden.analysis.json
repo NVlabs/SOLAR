@@ -1,0 +1,1008 @@
+{
+ "layers": {
+  "Model.einsum": {
+   "binary_schedule": "((In0 x In1: scale, 2 mults) x In2: scale, 2 mults)",
+   "binary_schedule_applicability": "descriptive_alternative_not_selected_basis",
+   "bytes_per_element": {
+    "inputs": [
+     4.0,
+     4.0,
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.h_n.stack",
+     "Model.lstm.c_n.stack"
+    ],
+    "outputs": []
+   },
+   "einsum_equation": "ABC,ABC,ABC->ABC",
+   "flops": 0,
+   "fused_elements": 2,
+   "input_elements": 6,
+   "input_is_intermediate": true,
+   "intermediate_bytes": 24,
+   "intermediate_elements": 6,
+   "is_orphaned": false,
+   "is_real_einsum": true,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_as_written_all_index_dense": 2,
+   "macs_dense": 0,
+   "macs_dense_binary_schedule": 0,
+   "memory_elements": {
+    "inputs": [
+     2,
+     2,
+     2
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "model_io_elements": 2,
+   "model_output_elements": 2,
+   "orojenesis_elements": null,
+   "other_ops": 4,
+   "output_elements": 2,
+   "output_is_intermediate": false,
+   "parameter_sources": {
+    "inputs": [
+     null,
+     null,
+     null
+    ]
+   },
+   "scalar_multiplies": 4,
+   "scalar_multiplies_dense_binary_schedule": 4,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      1,
+      2
+     ],
+     [
+      1,
+      1,
+      2
+     ],
+     [
+      1,
+      1,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      1,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     2,
+     2,
+     2
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input",
+     "input",
+     "input"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "einsum",
+   "unfused_bytes": 32,
+   "unfused_elements": 8,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.c_n.stack": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.l0.c_n"
+    ],
+    "outputs": [
+     "Model.einsum"
+    ]
+   },
+   "einsum_equation": "BH->ZBH",
+   "flops": 0,
+   "fused_elements": 0,
+   "input_elements": 2,
+   "input_is_intermediate": true,
+   "intermediate_bytes": 16,
+   "intermediate_elements": 4,
+   "is_orphaned": false,
+   "is_real_einsum": false,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_dense": 0,
+   "memory_elements": {
+    "inputs": [
+     2
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 2,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      1,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     2
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "stack",
+   "unfused_bytes": 16,
+   "unfused_elements": 4,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.h0_unbind": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.h0_zeros"
+    ],
+    "outputs": [
+     "Model.lstm.l0.h0_expand"
+    ]
+   },
+   "einsum_equation": "ZBH->BH",
+   "flops": 0,
+   "fused_elements": 0,
+   "input_elements": 0,
+   "input_is_intermediate": false,
+   "intermediate_bytes": 0,
+   "intermediate_elements": 0,
+   "is_orphaned": false,
+   "is_real_einsum": false,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_dense": 0,
+   "memory_elements": {
+    "inputs": [
+     0
+    ],
+    "outputs": [
+     0
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 0,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      1,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     2
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "chunk",
+   "unfused_bytes": 0,
+   "unfused_elements": 0,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.h0_zeros": {
+   "bytes_per_element": {
+    "inputs": [],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [],
+    "outputs": [
+     "Model.lstm.h0_unbind"
+    ]
+   },
+   "einsum_equation": "->ZBH",
+   "flops": 0,
+   "fused_elements": 0,
+   "input_elements": 0,
+   "input_is_intermediate": false,
+   "intermediate_bytes": 8,
+   "intermediate_elements": 2,
+   "is_orphaned": false,
+   "is_real_einsum": false,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_dense": 0,
+   "memory_elements": {
+    "inputs": [],
+    "outputs": [
+     2
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 2,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [],
+    "outputs": [
+     [
+      1,
+      1,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [],
+    "outputs": [
+     2
+    ]
+   },
+   "tensor_types": {
+    "inputs": [],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "zeros",
+   "unfused_bytes": 8,
+   "unfused_elements": 2,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.h_n.stack": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.l0.h_n"
+    ],
+    "outputs": [
+     "Model.einsum"
+    ]
+   },
+   "einsum_equation": "BH->ZBH",
+   "flops": 0,
+   "fused_elements": 0,
+   "input_elements": 2,
+   "input_is_intermediate": true,
+   "intermediate_bytes": 16,
+   "intermediate_elements": 4,
+   "is_orphaned": false,
+   "is_real_einsum": false,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_dense": 0,
+   "memory_elements": {
+    "inputs": [
+     2
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 2,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      1,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     2
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "stack",
+   "unfused_bytes": 16,
+   "unfused_elements": 4,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.l0.c_n": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.l0.gates"
+    ],
+    "outputs": [
+     "Model.lstm.c_n.stack"
+    ]
+   },
+   "einsum_equation": "BSH->BH",
+   "flops": 0,
+   "fused_elements": 0,
+   "input_elements": 2,
+   "input_is_intermediate": true,
+   "intermediate_bytes": 8,
+   "intermediate_elements": 2,
+   "is_orphaned": false,
+   "is_real_einsum": false,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_dense": 0,
+   "memory_elements": {
+    "inputs": [
+     2
+    ],
+    "outputs": [
+     0
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 0,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      2,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     4
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "select",
+   "unfused_bytes": 8,
+   "unfused_elements": 2,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.l0.gates": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0,
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.l0.ih_linear",
+     "Model.lstm.l0.hh_linear"
+    ],
+    "outputs": []
+   },
+   "einsum_equation": "BSG,BSG->BSH",
+   "flops": 0,
+   "fused_elements": 0,
+   "input_elements": 32,
+   "input_is_intermediate": true,
+   "intermediate_bytes": 144,
+   "intermediate_elements": 36,
+   "is_orphaned": false,
+   "is_real_einsum": false,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_dense": 0,
+   "memory_elements": {
+    "inputs": [
+     16,
+     16
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 16,
+   "output_elements": 4,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      2,
+      8
+     ],
+     [
+      1,
+      2,
+      8
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      2,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     16,
+     16
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input",
+     "input"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "add",
+   "unfused_bytes": 144,
+   "unfused_elements": 36,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.l0.h0_expand": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.h0_unbind"
+    ],
+    "outputs": [
+     "Model.lstm.l0.hh_linear"
+    ]
+   },
+   "einsum_equation": "BH->BSH",
+   "flops": 0,
+   "fused_elements": 0,
+   "input_elements": 0,
+   "input_is_intermediate": false,
+   "intermediate_bytes": 0,
+   "intermediate_elements": 0,
+   "is_orphaned": false,
+   "is_real_einsum": false,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_dense": 0,
+   "memory_elements": {
+    "inputs": [
+     0
+    ],
+    "outputs": [
+     0
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 0,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      2,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     2
+    ],
+    "outputs": [
+     4
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "expand",
+   "unfused_bytes": 0,
+   "unfused_elements": 0,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.l0.h_n": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.l0.gates"
+    ],
+    "outputs": [
+     "Model.lstm.h_n.stack"
+    ]
+   },
+   "einsum_equation": "BSH->BH",
+   "flops": 0,
+   "fused_elements": 0,
+   "input_elements": 2,
+   "input_is_intermediate": true,
+   "intermediate_bytes": 8,
+   "intermediate_elements": 2,
+   "is_orphaned": false,
+   "is_real_einsum": false,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 0,
+   "macs_dense": 0,
+   "memory_elements": {
+    "inputs": [
+     2
+    ],
+    "outputs": [
+     0
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 0,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      2,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      2
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     4
+    ],
+    "outputs": [
+     2
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "select",
+   "unfused_bytes": 8,
+   "unfused_elements": 2,
+   "weight_elements": 0,
+   "weight_read_elements": 0
+  },
+  "Model.lstm.l0.hh_linear": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0,
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "Model.lstm.l0.h0_expand"
+    ],
+    "outputs": [
+     "Model.lstm.l0.gates"
+    ]
+   },
+   "einsum_equation": "BSH,GH->BSG",
+   "flops": 64,
+   "fused_elements": 16,
+   "input_elements": 20,
+   "input_is_intermediate": true,
+   "intermediate_bytes": 80,
+   "intermediate_elements": 20,
+   "is_orphaned": false,
+   "is_real_einsum": true,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 32,
+   "macs_dense": 32,
+   "macs_kind": "contraction",
+   "memory_elements": {
+    "inputs": [
+     4,
+     16
+    ],
+    "outputs": [
+     16
+    ]
+   },
+   "model_io_elements": 0,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 16,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      2,
+      2
+     ],
+     [
+      8,
+      2
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      2,
+      8
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     4,
+     16
+    ],
+    "outputs": [
+     16
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input",
+     "weight"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "linear",
+   "unfused_bytes": 144,
+   "unfused_elements": 36,
+   "weight_elements": 16,
+   "weight_read_elements": 16
+  },
+  "Model.lstm.l0.ih_linear": {
+   "bytes_per_element": {
+    "inputs": [
+     4.0,
+     4.0
+    ],
+    "outputs": [
+     4.0
+    ]
+   },
+   "connections": {
+    "inputs": [
+     "start"
+    ],
+    "outputs": [
+     "Model.lstm.l0.gates"
+    ]
+   },
+   "einsum_equation": "BSI,GI->BSG",
+   "flops": 96,
+   "fused_elements": 30,
+   "input_elements": 30,
+   "input_is_intermediate": false,
+   "intermediate_bytes": 64,
+   "intermediate_elements": 16,
+   "is_orphaned": false,
+   "is_real_einsum": true,
+   "mac_sparsity_fraction": 1.0,
+   "macs": 48,
+   "macs_dense": 48,
+   "macs_kind": "contraction",
+   "memory_elements": {
+    "inputs": [
+     6,
+     24
+    ],
+    "outputs": [
+     16
+    ]
+   },
+   "model_io_elements": 6,
+   "model_output_elements": 0,
+   "orojenesis_elements": null,
+   "other_ops": 0,
+   "output_elements": 16,
+   "output_is_intermediate": true,
+   "tensor_shapes": {
+    "inputs": [
+     [
+      1,
+      2,
+      3
+     ],
+     [
+      8,
+      3
+     ]
+    ],
+    "outputs": [
+     [
+      1,
+      2,
+      8
+     ]
+    ]
+   },
+   "tensor_sizes": {
+    "inputs": [
+     6,
+     24
+    ],
+    "outputs": [
+     16
+    ]
+   },
+   "tensor_types": {
+    "inputs": [
+     "input",
+     "weight"
+    ],
+    "outputs": [
+     "output"
+    ]
+   },
+   "type": "linear",
+   "unfused_bytes": 184,
+   "unfused_elements": 46,
+   "weight_elements": 24,
+   "weight_read_elements": 24
+  }
+ },
+ "metadata": {
+  "bytes_accounting": "per-tensor-dtype",
+  "bytes_per_element": 4,
+  "capture_capability": {
+   "call_attributes": true,
+   "capable": true,
+   "checked_utc": "2026-10-25T23:07:24.789592+00:00",
+   "degraded": false,
+   "dynamo_warmup": true,
+   "error": null,
+   "parameter_tensors": true,
+   "probe": {
+    "chain_consumers_with_attributes": {
+     "relu": true,
+     "softmax": true
+    },
+    "draw_context": "solar.graph.pytorch_processor._patch_torchview_collect_attributes",
+    "model": "nn.Linear(4,3) -> softmax(h + 1.0, dim=-1); F.conv2d(stride=2, padding=1, groups=2) -> relu(c * 2.0) on CPU",
+    "ops_total": 6,
+    "ops_with_attributes": 6,
+    "parameter_tensor_nodes": 3
+   },
+   "reason": "capable",
+   "source": "patched",
+   "torchview_file": "<torchview-src>/torchview/__init__.py",
+   "torchview_version": "0.2.7"
+  },
+  "precision": "fp32"
+ },
+ "total": {
+  "binary_schedule_applicability": "descriptive_alternative_not_selected_basis",
+  "equation_unfaithful_layers": [],
+  "external_input_bytes": 184,
+  "external_output_bytes": 8,
+  "flops": 160,
+  "fused_bytes": 192,
+  "fused_elements": 48,
+  "fused_prefetched_bytes": 192,
+  "fused_prefetched_elements": 48,
+  "intermediate_bytes": 368,
+  "intermediate_elements": 92,
+  "macs": 80,
+  "macs_dense_binary_schedule": 80,
+  "macs_incomplete_layers": [],
+  "macs_typed": {
+   "aggregate": 80,
+   "components_sum_to_aggregate": true,
+   "contraction": {
+    "by_compute_dtype": {
+     "workload_precision": 80
+    },
+    "macs": 80
+   },
+   "scalar_statement_multiplies": {
+    "layers": {},
+    "macs": 0,
+    "note": "multiply statements of non-einsum kernels counted as MACs by the per-statement classifier (unit_basis per_statement); not tensor-core contraction work"
+   }
+  },
+  "min_work_macs": 80,
+  "model_io_elements": 8,
+  "multi_operand_einsum_layers": [
+   "Model.einsum"
+  ],
+  "nonreturned_store_bytes": 0,
+  "nonreturned_store_layers": [],
+  "num_intermediate_tensors": 10,
+  "num_layers": 11,
+  "num_orphaned_layers": 0,
+  "num_start_nodes_filtered": 1,
+  "operand_evidence_warning_layers": [],
+  "orojenesis_elements": null,
+  "other_ops": 20,
+  "scalar_multiplies_dense_binary_schedule": 4,
+  "unfused_bytes": 560,
+  "unfused_elements": 140,
+  "weight_elements": 40,
+  "weight_read_elements": 40
+ }
+}
