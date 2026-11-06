@@ -1,12 +1,70 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# NVIDIA RTX A6000 (Ampere GA102, 48 GB GDDR6, 768 GB/s).
+#
+# Issue #14 schema: every tensor-core precision <p> carries BOTH vendor peaks and the two derived rates
+#   peak_TFLOPS_<p>_dense / peak_TFLOPS_<p>_sparse        (TFLOPS as printed; TOPS for integer types)
+#   MAC_per_cycle_<p>_tc_dense / MAC_per_cycle_<p>_tc_sparse = peak x 1e12 / 2 FLOP per MAC / (freq_GHz x 1e9)
+#                                                          = peak_TFLOPS x 1000 / 2 / freq_GHz
+# MAC_per_cycle_* are MACs per cycle, not FLOPs (one FMA = one MAC = two FLOPs); freq_GHz is a nominal
+# conversion clock.  `--sol-mode` (default sparse) selects the set the headline SOL is priced at: the sparse
+# SOL ASSUMES the workload is eligible for the 2:4 structured-sparsity tensor-core rate (a lower bound dense
+# kernels cannot reach); the dense SOL is the realistic bound for dense work.  Both are always written.
+# No sparse figure for FP32 (CUDA cores).  No fp32 tensor-core key: fp32 uses the SM rate.
+#
+# source: NVIDIA Ampere GA102 GPU Architecture whitepaper v2, Table 3 "NVIDIA RTX A6000 and NVIDIA A40 Specs",
+#         RTX A6000 column, GPU Boost Clock 1800 MHz, pairs printed "dense/sparse" with footnote 2 "Effective
+#         TOPS / TFLOPS using the new Sparsity Feature": FP16 Tensor 154.8/309.6 (FP16 and FP32 accumulate),
+#         BF16 Tensor 154.8/309.6, TF32 Tensor 77.4/154.8, INT8 Tensor 309.7/619.4 TOPS, FP32 (non-Tensor) 38.7,
+#         L2 6144 KB, 768 GB/sec -- https://www.nvidia.com/content/PDF/nvidia-ampere-ga-102-gpu-architecture-whitepaper-v2.pdf ;
+#         NVIDIA RTX A6000 datasheet (nvidia.com PDF): CUDA cores 10,752; Tensor Cores 336; FP32 38.7 TFLOPS;
+#         "Tensor performance 309.7 TFLOPS" with footnote 8 "Effective teraFLOPS using the new sparsity feature"
+#         (= the whitepaper's 309.6 sparse FP16 figure up to rounding; exact 84 SMs x 512 FP16 FMA/clk x 2 x 1.8 GHz
+#         = 309.66 TFLOPS) -- https://www.nvidia.com/en-us/design-visualization/rtx-a6000/ .
+#         Both captured under sources/arch_datasheets/ (SOURCES.json: URL, fetch date, sha256).
+# Units example: FP16 dense 154.8 TFLOPS -> 154.8 x 1000 / 2 / 1.8 = 43000 MAC/cycle (exact hardware rate: 84 SMs x
+#         4 Tensor Cores x 128 FP16 FMA/clk = 43008; the printed TFLOPS are rounded, the derived rates follow the print).
+#
+# History / provenance (issue #14, GitHub "A6000 has twice the tensor-core peak"): before this change the
+# file carried MAC_per_cycle_bf16_tc 86016 ("154.83 TFLOPS / 1.8 GHz"), MAC_per_cycle_int8_tc 172032 and
+# an estimated MAC_per_cycle_fp32_tc 86016.  86016 = 154.83e12 / 1.8e9 is the dense FLOP rate per cycle,
+# i.e. twice the dense MAC rate; numerically it equals the SPARSE MAC rate (309.7 TFLOPS).  Those legacy
+# values are therefore relabelled here as the sparse set (86000 when derived from the printed 309.6 TFLOPS;
+# 86016 is the exact hardware rate) and the dense set is half; the estimated fp32 tensor-core key is dropped
+# (fp32 falls back to the SM rate, as on every other profile).  Legacy bare MAC_per_cycle_<p>_tc keys in USER
+# profiles are still read as DENSE rates.
 
 name: "A6000"
-SRAM_capacity: 6291456  # 6 MB L2 (NVIDIA Ampere GA102 GPU architecture whitepaper); not used by the roofline
-DRAM_capacity: 48000000000  # 48GB GDDR6
-DRAM_byte_per_cycle: 427  # 768GB/s at 1.8GHz boost clock
-freq_GHz: 1.8  # Boost clock frequency
-MAC_per_cycle_int8_tc: 172032  # Estimated based on tensor cores
-MAC_per_cycle_bf16_tc: 86016   # 154.83 TFLOPS / 1.8 GHz = ~86K MAC/cycle for BF16 tensor cores
-MAC_per_cycle_fp32_tc: 86016   # Estimated FP32 tensor core performance (half of BF16)
-MAC_per_cycle_fp32_sm: 10752  # 38.71 TFLOPS / 1.8 GHz = ~21.5K ops/cycle, but divided by 2 for MAC operations
+SRAM_capacity: 6291456  # source: GA102 whitepaper Table 3, L2 Cache Size 6144 KB; not used by the roofline
+DRAM_capacity: 48000000000  # source: RTX A6000 datasheet, 48 GB GDDR6 (whitepaper: 49152 MB)
+DRAM_byte_per_cycle: 427  # source: RTX A6000 datasheet / GA102 whitepaper, 768 GB/s; / 1.8 GHz = 426.7
+freq_GHz: 1.8  # nominal conversion clock (boost clock; see header)
+
+# CUDA-core (SM) FP32: no sparsity variant
+peak_TFLOPS_fp32_sm: 38.7  # source: RTX A6000 datasheet and GA102 whitepaper Table 3, FP32 38.7 TFLOPS (10,752 CUDA cores x 2 FLOP x 1.8 GHz = 38.71)
+MAC_per_cycle_fp32_sm: 10752  # = 10,752 CUDA cores x one FMA per cycle (38.7 x 1000 / 2 / 1.8 = 10750; the printed TFLOPS is rounded)
+
+# TF32 Tensor Core
+peak_TFLOPS_tf32_dense: 77.4  # source: GA102 whitepaper Table 3, RTX A6000 "Peak TF32 Tensor TFLOPS 77.4/154.8" (dense/sparse)
+peak_TFLOPS_tf32_sparse: 154.8  # source: GA102 whitepaper Table 3, RTX A6000 "Peak TF32 Tensor TFLOPS 77.4/154.8" (sparse)
+MAC_per_cycle_tf32_tc_dense: 21500  # = 77.4 x 1000 / 2 / 1.8
+MAC_per_cycle_tf32_tc_sparse: 43000  # = 154.8 x 1000 / 2 / 1.8
+
+# FP16 Tensor Core
+peak_TFLOPS_fp16_dense: 154.8  # source: GA102 whitepaper Table 3, RTX A6000 "Peak FP16 Tensor TFLOPS 154.8/309.6" (dense/sparse)
+peak_TFLOPS_fp16_sparse: 309.6  # source: GA102 whitepaper Table 3, RTX A6000 "Peak FP16 Tensor TFLOPS 154.8/309.6" (sparse); the RTX A6000 datasheet prints the same figure rounded as "Tensor performance 309.7 TFLOPS" (sparsity footnote)
+MAC_per_cycle_fp16_tc_dense: 43000  # = 154.8 x 1000 / 2 / 1.8
+MAC_per_cycle_fp16_tc_sparse: 86000  # = 309.6 x 1000 / 2 / 1.8
+
+# BF16 Tensor Core (same rate as FP16 on GA102)
+peak_TFLOPS_bf16_dense: 154.8  # source: GA102 whitepaper Table 3, RTX A6000 "Peak BF16 Tensor TFLOPS 154.8/309.6" (dense/sparse)
+peak_TFLOPS_bf16_sparse: 309.6  # source: GA102 whitepaper Table 3, RTX A6000 "Peak BF16 Tensor TFLOPS 154.8/309.6" (sparse)
+MAC_per_cycle_bf16_tc_dense: 43000  # = 154.8 x 1000 / 2 / 1.8
+MAC_per_cycle_bf16_tc_sparse: 86000  # = 309.6 x 1000 / 2 / 1.8
+
+# INT8 Tensor Core (TOPS)
+peak_TFLOPS_int8_dense: 309.7  # source: GA102 whitepaper Table 3, RTX A6000 "Peak INT8 Tensor TOPS 309.7/619.4" (dense/sparse; TOPS)
+peak_TFLOPS_int8_sparse: 619.4  # source: GA102 whitepaper Table 3, RTX A6000 "Peak INT8 Tensor TOPS 309.7/619.4" (sparse; TOPS)
+MAC_per_cycle_int8_tc_dense: 86028  # = 309.7 x 1000 / 2 / 1.8 (86027.8)
+MAC_per_cycle_int8_tc_sparse: 172056  # = 619.4 x 1000 / 2 / 1.8 (172055.6)

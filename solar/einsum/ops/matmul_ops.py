@@ -21,6 +21,8 @@ This module provides einsum handlers for:
 - bmm (batch matrix multiplication)
 - mm (2D matrix multiplication)
 - addmm (bias + 2D matrix multiplication, e.g. Hugging Face Conv1D)
+- addmv, baddbmm, addbmm (bias + matrix-vector / batched / batch-reduced matmul)
+- mv, dot (matrix-vector product, vector dot product)
 """
 
 from dataclasses import dataclass
@@ -38,7 +40,12 @@ from solar.common.types import TensorShape, TensorShapes
 class MatmulHandler(EinsumOpHandler):
     """Handler for matmul operations."""
 
-    supported_ops = ["matmul", "mm"]
+    supported_ops = ["matmul", "mm", "mv", "dot"]
+
+    # torch.mv is [M, K] x [K] -> [M]; torch.dot is [K] x [K] -> scalar.  Their
+    # operand ranks are part of the op's contract, so a recorded shape that
+    # breaks it is refused rather than billed as some other contraction.
+    _STRICT_RANKS = {"mv": (2, 1), "dot": (1, 1)}
 
     def generate_einsum(
         self,
@@ -47,6 +54,15 @@ class MatmulHandler(EinsumOpHandler):
         **kwargs: Any
     ) -> EinsumOp:
         """Generate einsum for matrix multiplication."""
+        strict = self._STRICT_RANKS.get(op_name)
+        if strict is not None:
+            shapes = list(tensor_shapes.inputs)
+            if len(shapes) != 2 or tuple(len(sh) for sh in shapes) != strict:
+                raise ValueError(
+                    f"{op_name} expects operands of rank {strict[0]} and {strict[1]}, "
+                    f"got {[list(sh) for sh in shapes]}")
+            if int(shapes[0][-1]) != int(shapes[1][0]):
+                raise ValueError(f"{op_name} inner dimensions disagree: {shapes[0]} vs {shapes[1]}")
         input_shape = tensor_shapes.inputs[0]
         weight_shape = tensor_shapes.inputs[1] if tensor_shapes.num_inputs > 1 else None
 
@@ -392,12 +408,141 @@ class AddmmHandler(EinsumOpHandler):
         return mat1, mat2
 
 
+class _BiasedContractionHandler(EinsumOpHandler):
+    """Shared base of ``addmv``, ``baddbmm`` and ``addbmm`` (bias + contraction).
+
+    ``out = beta * bias + alpha * contraction``: the contraction is billed as
+    MACs (product of its unique ranks) and the bias add as one elementwise op
+    per output by the converter, which splits the node exactly like ``addmm``.
+    Called with the contraction operands only (the split's matmul layer) the
+    handler returns the bare contraction; with ``(bias, mat1, mat2)`` it
+    returns the fused three-operand einsum with the bias first, the layout the
+    TACO converter expects.  A bias axis that broadcasts (extent 1) gets its
+    own label (``P``, ``Q``, ``R``) so it never redefines a contraction rank;
+    the bias operand keeps its storage extent for traffic.  Anything that does
+    not bind (operand count, rank, extents, non-broadcastable bias) is refused.
+    """
+
+    #: (mat1 rank, mat2 rank)
+    _ranks: Tuple[int, int] = (2, 2)
+    _mat1_dims: List[str] = []
+    _mat2_dims: List[str] = []
+    _out_dims: List[str] = []
+    _fresh_labels = ("P", "Q", "R")
+
+    def _check_contraction(self, op_name: str, mat1: Any, mat2: Any) -> Dict[str, int]:
+        """Validate the contraction operands and return the extent of every label."""
+        for label, shape, rank in (("mat1", mat1, self._ranks[0]), ("mat2", mat2, self._ranks[1])):
+            if not isinstance(shape, (list, tuple)) or len(shape) != rank:
+                got = len(shape) if isinstance(shape, (list, tuple)) else None
+                raise ValueError(f"{op_name} expects a rank-{rank} {label}, got rank {got} ({shape!r})")
+        extents: Dict[str, int] = {}
+        for dims, shape in ((self._mat1_dims, mat1), (self._mat2_dims, mat2)):
+            for label, extent in zip(dims, shape):
+                extent = int(extent)
+                if extents.setdefault(label, extent) != extent:
+                    raise ValueError(
+                        f"{op_name} operand extents disagree on {label}: "
+                        f"mat1 {list(mat1)} vs mat2 {list(mat2)}")
+        return extents
+
+    def _contraction(self) -> Tuple[List[EinsumOperand], str]:
+        operands = [
+            EinsumOperand("Input", list(self._mat1_dims), is_output=False),
+            EinsumOperand("Weight", list(self._mat2_dims), is_output=False),
+            EinsumOperand("Output", list(self._out_dims), is_output=True),
+        ]
+        equation = (f"{''.join(self._mat1_dims)},{''.join(self._mat2_dims)}"
+                    f"->{''.join(self._out_dims)}")
+        return operands, equation
+
+    def generate_einsum(
+        self,
+        op_name: str,
+        tensor_shapes: TensorShapes,
+        **kwargs: Any
+    ) -> EinsumOp:
+        inputs = list(tensor_shapes.inputs)
+        if len(inputs) not in (2, 3):
+            raise ValueError(
+                f"{op_name} expects (bias, mat1, mat2) or the two contraction operands, "
+                f"got {len(inputs)} input shape(s)")
+        bias_shape = inputs[0] if len(inputs) == 3 else None
+        extents = self._check_contraction(op_name, inputs[-2], inputs[-1])
+        operands, equation = self._contraction()
+        if bias_shape is not None:
+            if not isinstance(bias_shape, (list, tuple)) or len(bias_shape) > len(self._out_dims):
+                raise ValueError(
+                    f"{op_name} bias {bias_shape!r} does not broadcast to the "
+                    f"{[extents[d] for d in self._out_dims]} output")
+            offset = len(self._out_dims) - len(bias_shape)
+            fresh = iter(self._fresh_labels)
+            bias_dims: List[str] = []
+            for i, extent in enumerate(bias_shape):
+                label = self._out_dims[offset + i]
+                extent = int(extent)
+                if extent == extents[label]:
+                    bias_dims.append(label)
+                elif extent == 1:
+                    bias_dims.append(next(fresh))
+                else:
+                    raise ValueError(
+                        f"{op_name} bias {list(bias_shape)} does not broadcast to the "
+                        f"{[extents[d] for d in self._out_dims]} output")
+            operands = [EinsumOperand("Bias", bias_dims, is_output=False)] + operands
+            equation = f"{''.join(bias_dims)},{equation}"
+        return EinsumOp(
+            operands=operands,
+            equation=equation,
+            name=op_name,
+            elementwise_op="mul",
+            reduction_op="add",
+        )
+
+
+class AddmvHandler(_BiasedContractionHandler):
+    """``torch.addmv(bias, mat[M, K], vec[K])`` -> ``[M]``: M*K MACs."""
+
+    supported_ops = ["addmv"]
+    _ranks = (2, 1)
+    _mat1_dims = ["M", "K"]
+    _mat2_dims = ["K"]
+    _out_dims = ["M"]
+
+
+class BaddbmmHandler(_BiasedContractionHandler):
+    """``torch.baddbmm(bias, b1[B, M, K], b2[B, K, N])`` -> ``[B, M, N]``: B*M*K*N MACs."""
+
+    supported_ops = ["baddbmm"]
+    _ranks = (3, 3)
+    _mat1_dims = ["B", "M", "K"]
+    _mat2_dims = ["B", "K", "N"]
+    _out_dims = ["B", "M", "N"]
+
+
+class AddbmmHandler(_BiasedContractionHandler):
+    """``torch.addbmm(bias, b1[B, M, K], b2[B, K, N])`` -> ``[M, N]``: B*M*K*N MACs.
+
+    The batch is summed inside the contraction (``BMK,BKN->MN``), so the
+    accumulation over B is part of the MACs and no extra reduction is billed.
+    """
+
+    supported_ops = ["addbmm"]
+    _ranks = (3, 3)
+    _mat1_dims = ["B", "M", "K"]
+    _mat2_dims = ["B", "K", "N"]
+    _out_dims = ["M", "N"]
+
+
 # Register handlers with global registry (without loading other handlers)
 _registry = get_global_registry(load_handlers=False)
 _registry.register_handler(MatmulHandler)
 _registry.register_handler(LinearHandler)
 _registry.register_handler(BmmHandler)
 _registry.register_handler(AddmmHandler)
+_registry.register_handler(AddmvHandler)
+_registry.register_handler(BaddbmmHandler)
+_registry.register_handler(AddbmmHandler)
 
 
 

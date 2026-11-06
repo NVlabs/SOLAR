@@ -89,6 +89,18 @@ reports `total.macs: 262144` (32 x 64 x 128) and `total.unfused_elements:
 The full command reference, a learned-parameter example and an audited
 attention example are in [the mechanical route page](docs/SOLAR_V1_FLOW.md).
 
+**SOL assumptions: sparse vs dense peak.** Each `configs/arch/<name>.yaml`
+carries both the dense and the structured-sparsity tensor-core peak for every
+precision it declares, with their sources. `--sol-mode {sparse,dense}` (also
+`sol_mode=` in the Python API) selects which set prices the headline SOL;
+the default is **sparse**. The sparse SOL assumes the workload is eligible for
+the 2:4 structured-sparsity tensor-core rate and is a lower bound no dense
+kernel can reach; the **dense SOL is the more realistic estimate** for dense
+work. Every `perf_<arch>.yaml` and `result.json` carries both as
+`sol_sparse` / `sol_dense` next to `sol_mode`; see
+[configs/arch/README.md](configs/arch/README.md) and
+[docs/SOL_GUIDE.md](docs/SOL_GUIDE.md) ("Sparse vs dense tensor-core peak").
+
 ### Agentic route: deterministic tools on the shipped example
 
 The skill route's tools need no API key. The shipped RMSNorm example carries
@@ -214,7 +226,7 @@ python3 -m pytest tests/test_learned_param_matmul.py \
 │   └── cli/          # console scripts (solar-*) and python -m solar.cli.<name> entry points
 ├── skills/           # vendor-neutral coding-agent skills (symlinked from .claude/ and .agents/)
 ├── scripts/          # verify_saved_ir.py, trace_saved_ir.py, diff_ir_stages.py, gen_solexecbench_adapter.py
-├── configs/arch/     # A6000, B200, H100_PCIe, H100_SXM, H200_SXM, L40S, Jetson_Thor_T5000
+├── configs/arch/     # A6000, B200, H100_PCIe, H100_SXM, H200_SXM, L40S, Jetson_Thor_T5000 (dense + sparse peaks per precision; README.md there)
 ├── patches/          # torchview patches applied by install.sh
 ├── examples/, examples_jax/   # pytorch examples; jax fixtures
 └── tests/

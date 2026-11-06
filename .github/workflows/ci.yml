@@ -79,8 +79,10 @@ jobs:
         run: |
           git clone https://github.com/mert-kurttutan/torchview.git ../torchview
           git -C ../torchview checkout edbe1fa
-          git -C ../torchview apply --check patches/torchview-parameter-tensors.patch
-          git -C ../torchview apply patches/torchview-parameter-tensors.patch
+          # absolute path: with `git -C ../torchview` a relative patch path is resolved inside
+          # ../torchview ("can't open patch", exit 128); install.sh uses ${SCRIPT_DIR}/patches/... likewise
+          git -C ../torchview apply --check "$GITHUB_WORKSPACE/patches/torchview-parameter-tensors.patch"
+          git -C ../torchview apply "$GITHUB_WORKSPACE/patches/torchview-parameter-tensors.patch"
           python -m pip install --no-deps ../torchview
       - name: install SOLAR from the built wheel WITH dependency resolution
         run: |

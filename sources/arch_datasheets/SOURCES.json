@@ -1,0 +1,738 @@
+{
+ "schema": "solar-arch-datasheet-sources-v2",
+ "purpose": "Provenance for every figure in configs/arch/*.yaml (GitHub issue #14: explicit dense and sparse tensor-core peaks). Each capture below is an NVIDIA-authored page or document fetched read-only on 2026-11-06; ten were fetched from nvidia.com / developer.nvidia.com and one (the H100 datasheet PDF) from a partner mirror because the nvidia.com candidates did not serve the PCIe column. The text files next to this file are short public excerpts (specification rows and footnotes) of the full text extracts that were read; each excerpt names the full-extract line numbers it reproduces, and the full extracts and raw bytes are identified here by sha256 and retained privately by the release lane.",
+ "method": {
+  "fetch": "curl -sSL -m 90 (read-only GET, no credentials, generic Mozilla/5.0 user agent naming this capture), 2026-11-06 UTC",
+  "pdf_extract": "pdftotext -layout (poppler)",
+  "html_extract": "script/style/noscript blocks removed, tags replaced by whitespace, entities unescaped, blank lines collapsed",
+  "derivation": "MAC_per_cycle_<p>_tc_{dense,sparse} = peak_TFLOPS x 1000 / 2 / freq_GHz (one MAC = two FLOP); freq_GHz is a nominal conversion clock except where a source states it (Jetson Thor 1.57 GHz)",
+  "public_excerpt": "each shipped .txt = header line + the listed full-extract lines (excerpt_of_full_extract_lines, 1-based inclusive), whitespace right-trimmed; where a PDF layout extract interleaves prose and table columns the prose column is cut (excerpt_columns_from); HTML attribute residue lines are dropped where noted. extract_sha256 is the excerpt's hash; full_extract.sha256 and raw_sha256 identify what was fetched (distinct from the excerpt).",
+  "full_extracts": "retained by the release lane outside the repository together with the raw bytes (sha256 manifest); identified by full_extract.sha256 here",
+  "attribution": "the excerpts are factual specification figures published by NVIDIA, reproduced verbatim for citation; copyright NVIDIA Corporation; they are not licensed under the project's Apache-2.0 licence and no redistribution right beyond this citation is asserted (see README.md, REUSE.toml)"
+ },
+ "captures": [
+  {
+   "id": "h100_datasheet_megware_pdf",
+   "url": "https://www.megware.com/fileadmin/user_upload/LandingPage%20NVIDIA/nvidia-h100-datasheet.pdf",
+   "url_effective": "https://www.megware.com/fileadmin/user_upload/LandingPage%20NVIDIA/nvidia-h100-datasheet.pdf",
+   "http_status": "200",
+   "content_type": "application/pdf",
+   "fetched_utc": "2026-11-06T06:57:59Z",
+   "raw_bytes": 790040,
+   "raw_sha256": "e636e226f957b4540715f4def7fb3ca933098569c037fd8b348756997b1f444b",
+   "kind": "pdf",
+   "extract_file": "h100_datasheet_pdf.txt",
+   "extract_sha256": "09ccf4ab1098b60e8c911a36ddfaeacd4199e7bb9058678a6a9541acc615f916",
+   "previous_extract_sha256": "996ea1c9ffaf6a2f86146b1fe9cc1b9a317b74eef87fbf7ddeed455356191044",
+   "full_extract": {
+    "how": "pdftotext -layout",
+    "sha256": "996ea1c9ffaf6a2f86146b1fe9cc1b9a317b74eef87fbf7ddeed455356191044",
+    "lines": 206,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     12,
+     63
+    ]
+   ],
+   "excerpt_columns_from": 78,
+   "excerpt_lines": 54,
+   "document_author": "NVIDIA Corporation",
+   "host": "partner mirror (megware.com), not an nvidia.com URL; the document is NVIDIA-authored (H100 datasheet) and its SXM column matches the nvidia.com product page figure for figure"
+  },
+  {
+   "id": "h100_product_page",
+   "url": "https://www.nvidia.com/en-us/data-center/h100/",
+   "url_effective": "https://www.nvidia.com/en-us/data-center/h100/",
+   "http_status": "200",
+   "content_type": "text/html; charset=UTF-8",
+   "fetched_utc": "2026-11-06T06:57:57Z",
+   "raw_bytes": 293532,
+   "raw_sha256": "9effd128f2e2bd84906029a4999872a2f989bf3c4ca8302a3dd3c96532a2d9af",
+   "kind": "html",
+   "extract_file": "h100_product_page.txt",
+   "extract_sha256": "2a5aa100ac992dc5c1f1899b214a0ef960924b39e8f27cadeabdf509bf735643",
+   "previous_extract_sha256": "138c624800fb626aba088d27181d4e18157a31ae3499c2a3af2c9ea7cbe625ba",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "138c624800fb626aba088d27181d4e18157a31ae3499c2a3af2c9ea7cbe625ba",
+    "lines": 477,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     353,
+     414
+    ]
+   ],
+   "excerpt_lines": 64,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "h200_product_page",
+   "url": "https://www.nvidia.com/en-us/data-center/h200/",
+   "url_effective": "https://www.nvidia.com/en-us/data-center/h200/",
+   "http_status": "200",
+   "content_type": "text/html; charset=UTF-8",
+   "fetched_utc": "2026-11-06T06:58:00Z",
+   "raw_bytes": 285927,
+   "raw_sha256": "1ff6d53286a019a2e8964891ef8591143e3f786bfc703c913af658e15cdd2c88",
+   "kind": "html",
+   "extract_file": "h200_product_page.txt",
+   "extract_sha256": "2d0a66e4fb765ea135475791c06d29dfb2067c9556979837005293f0192831b0",
+   "previous_extract_sha256": "ef815c88238fab782c9ba94105563b75968a4bca26b65f3e071d235c8ab9b252",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "ef815c88238fab782c9ba94105563b75968a4bca26b65f3e071d235c8ab9b252",
+    "lines": 492,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     355,
+     419
+    ]
+   ],
+   "excerpt_lines": 67,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "l40s_product_page",
+   "url": "https://www.nvidia.com/en-us/data-center/l40s/",
+   "url_effective": "https://www.nvidia.com/en-us/data-center/l40s/",
+   "http_status": "200",
+   "content_type": "text/html; charset=UTF-8",
+   "fetched_utc": "2026-11-06T06:58:01Z",
+   "raw_bytes": 577559,
+   "raw_sha256": "570cdb7670caaba6f1c0250ce62d8062115ab8c239e1cc64d96584a020527985",
+   "kind": "html",
+   "extract_file": "l40s_product_page.txt",
+   "extract_sha256": "15867bbcd71d111f31c8d28592cc5960e04ae5b15221c558763875fba7579afe",
+   "previous_extract_sha256": "23680f1e09198603eb89943664c81947354515d4c52227557f2e1622cf75f2ea",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "23680f1e09198603eb89943664c81947354515d4c52227557f2e1622cf75f2ea",
+    "lines": 881,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     769,
+     824
+    ]
+   ],
+   "excerpt_lines": 58,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "hgx_product_page",
+   "url": "https://www.nvidia.com/en-us/data-center/hgx/",
+   "url_effective": "https://www.nvidia.com/en-us/data-center/hgx/",
+   "http_status": "200",
+   "content_type": "text/html; charset=UTF-8",
+   "fetched_utc": "2026-11-06T06:58:02Z",
+   "raw_bytes": 331233,
+   "raw_sha256": "bac050ca63ef28ce42ee5ffed36ec9ce0600ff0ac22f51c0874e133a5076fc22",
+   "kind": "html",
+   "extract_file": "hgx_product_page.txt",
+   "extract_sha256": "1ae1d54c34953796a8b6feeb7bd4d943e45210fda09f9fefbe8d7fcbb88e2289",
+   "previous_extract_sha256": "e7763dbf7d02c50d8a7a0719ed51233bb2f3b35d3dd902be47aa7b45d38732cf",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "e7763dbf7d02c50d8a7a0719ed51233bb2f3b35d3dd902be47aa7b45d38732cf",
+    "lines": 592,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     419,
+     419
+    ],
+    [
+     421,
+     424
+    ],
+    [
+     426,
+     428
+    ],
+    [
+     430,
+     432
+    ],
+    [
+     434,
+     436
+    ],
+    [
+     438,
+     440
+    ],
+    [
+     442,
+     468
+    ],
+    [
+     470,
+     476
+    ]
+   ],
+   "excerpt_dropped": "lines carrying HTML table attribute residue (data-col-index ...)",
+   "excerpt_lines": 53,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "dgx_b200_page",
+   "url": "https://www.nvidia.com/en-us/data-center/dgx-b200/",
+   "url_effective": "https://www.nvidia.com/en-us/data-center/dgx-b200/",
+   "http_status": "200",
+   "content_type": "text/html; charset=UTF-8",
+   "fetched_utc": "2026-11-06T06:58:02Z",
+   "raw_bytes": 294188,
+   "raw_sha256": "3ad63bb03436aa2823a20a0656455911af4ee873032ea6e64a1bfa03219d0760",
+   "kind": "html",
+   "extract_file": "dgx_b200_page.txt",
+   "extract_sha256": "9ff029006627224f7c98a8ac8495a870aae8e614dd2cc5f2b3e009a1695a1203",
+   "previous_extract_sha256": "c19f31c4e6ef586c5d471884b4bd6c10e4a95db22ff995a46c96db5196635107",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "c19f31c4e6ef586c5d471884b4bd6c10e4a95db22ff995a46c96db5196635107",
+    "lines": 469,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     336,
+     343
+    ],
+    [
+     382,
+     383
+    ]
+   ],
+   "excerpt_lines": 12,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "a6000_datasheet_pdf",
+   "url": "https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/quadro-product-literature/proviz-print-nvidia-rtx-a6000-datasheet-us-nvidia-1454980-r9-web%20(1).pdf",
+   "url_effective": "https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/quadro-product-literature/proviz-print-nvidia-rtx-a6000-datasheet-us-nvidia-1454980-r9-web%20(1).pdf",
+   "http_status": "200",
+   "content_type": "application/pdf",
+   "fetched_utc": "2026-11-06T06:58:03Z",
+   "raw_bytes": 402341,
+   "raw_sha256": "749a45d06f55f7657ce3f9a8a51167be6bd1153f6a5149769b2048b50bc0299e",
+   "kind": "pdf",
+   "extract_file": "rtx_a6000_datasheet_pdf.txt",
+   "extract_sha256": "688f7dd175c380f3061ae12d26f2d9e38ee9232a8225325d47414d1fecc1ea95",
+   "previous_extract_sha256": "7a86216389d86a0d6055b9f5881bb396f6853904f4459806bd72e5dd2be51462",
+   "full_extract": {
+    "how": "pdftotext -layout",
+    "sha256": "7a86216389d86a0d6055b9f5881bb396f6853904f4459806bd72e5dd2be51462",
+    "lines": 153,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     8,
+     31
+    ],
+    [
+     143,
+     144
+    ]
+   ],
+   "excerpt_columns_from": 84,
+   "excerpt_lines": 28,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "ga102_whitepaper_pdf",
+   "url": "https://www.nvidia.com/content/PDF/nvidia-ampere-ga-102-gpu-architecture-whitepaper-v2.pdf",
+   "url_effective": "https://www.nvidia.com/content/PDF/nvidia-ampere-ga-102-gpu-architecture-whitepaper-v2.pdf",
+   "http_status": "200",
+   "content_type": "application/pdf",
+   "fetched_utc": "2026-11-06T06:58:03Z",
+   "raw_bytes": 10053698,
+   "raw_sha256": "28887b489ecd250911b912fead603ce8aa25e8fc3128c9ba0933cf452334868a",
+   "kind": "pdf",
+   "extract_file": "ga102_whitepaper_v2_table3_excerpt.txt",
+   "extract_sha256": "5cafbbaadbf682bc047512de92bcda54a7da4fec9ce1a9851ebe7cce8045ff0c",
+   "previous_extract_sha256": "a734c70a992d5f78121c9eee0542812a431e8902d8c1ebcea44f861e92509f5d",
+   "full_extract": {
+    "how": "pdftotext -layout; excerpt (see first line)",
+    "sha256": "d611c4890d62a65dde8e087ac6c03d6944af3b3aab09e6cfd20658e235a60d04",
+    "lines": 2013,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     1,
+     3
+    ],
+    [
+     8,
+     8
+    ],
+    [
+     532,
+     534
+    ],
+    [
+     537,
+     613
+    ],
+    [
+     622,
+     631
+    ]
+   ],
+   "excerpt_lines": 96,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "jetson_thor_page",
+   "url": "https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/",
+   "url_effective": "https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/",
+   "http_status": "200",
+   "content_type": "text/html; charset=UTF-8",
+   "fetched_utc": "2026-11-06T06:58:03Z",
+   "raw_bytes": 553168,
+   "raw_sha256": "2faf0d97d38c27a830860d64575213de07e2d73a7eb3370bb78da93f4c618689",
+   "kind": "html",
+   "extract_file": "jetson_thor_page.txt",
+   "extract_sha256": "0295f363ab3bfb2848e75eb8098da31e38a28434e6710e4a903c41d6b174b693",
+   "previous_extract_sha256": "2cf812f1ddb343209930f10a56cc81601b6305d3ff6519a1bded0199d63c1e0b",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "2cf812f1ddb343209930f10a56cc81601b6305d3ff6519a1bded0199d63c1e0b",
+    "lines": 886,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     296,
+     326
+    ]
+   ],
+   "excerpt_lines": 33,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "jetson_thor_blog",
+   "url": "https://developer.nvidia.com/blog/introducing-nvidia-jetson-thor-the-ultimate-platform-for-physical-ai/",
+   "url_effective": "https://developer.nvidia.com/blog/introducing-nvidia-jetson-thor-the-ultimate-platform-for-physical-ai/",
+   "http_status": "200",
+   "content_type": "text/html; charset=UTF-8",
+   "fetched_utc": "2026-11-06T07:03:33Z",
+   "raw_bytes": 337602,
+   "raw_sha256": "f9617a29aeae2afaefe4dfa2b9362ef7bdc6142f8f9b04179e36ebe3441cd0ff",
+   "kind": "html",
+   "extract_file": "jetson_thor_developer_blog.txt",
+   "extract_sha256": "9e49ea2978565540bac34a02fc588acb026cb1c3dc33bf6709bc5c3ae78998d8",
+   "previous_extract_sha256": "bb79b91277856c333816fda94bcfb07d07ff3c20d92e44f84db10916c80d2443",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "bb79b91277856c333816fda94bcfb07d07ff3c20d92e44f84db10916c80d2443",
+    "lines": 295,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     57,
+     75
+    ],
+    [
+     101,
+     102
+    ]
+   ],
+   "excerpt_lines": 23,
+   "document_author": "NVIDIA Corporation",
+   "host": "developer.nvidia.com"
+  },
+  {
+   "id": "jetson_modules_page",
+   "url": "https://developer.nvidia.com/embedded/jetson-modules",
+   "url_effective": "https://developer.nvidia.com/embedded/jetson-modules",
+   "http_status": "200",
+   "content_type": "text/html; charset=utf-8",
+   "fetched_utc": "2026-11-06T06:58:03Z",
+   "raw_bytes": 34616,
+   "raw_sha256": "d2fe451b487a60a8a54402a4b30e76337b5ff9f7921037f4acc47e18d4f9f90a",
+   "kind": "html",
+   "extract_file": "jetson_modules_page.txt",
+   "extract_sha256": "8ee633f86e7a1f41fc009669ca3a0fc13f085e7a5e4e4482ac4a2e6d8665754a",
+   "previous_extract_sha256": "5b009cfd7ef66f27f87f804c7a79da92d153097a69f2c7136d945da2652f65f9",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "5b009cfd7ef66f27f87f804c7a79da92d153097a69f2c7136d945da2652f65f9",
+    "lines": 52,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     7,
+     9
+    ]
+   ],
+   "excerpt_lines": 5,
+   "document_author": "NVIDIA Corporation",
+   "host": "developer.nvidia.com"
+  }
+ ],
+ "figures_by_config": {
+  "H100_PCIe": {
+   "capture": "h100_datasheet_megware_pdf",
+   "column": "H100 PCIe",
+   "printed": {
+    "FP64": "26 TFLOPS",
+    "FP64 Tensor Core": "51 TFLOPS",
+    "FP32": "51 TFLOPS",
+    "TF32 Tensor Core": "756 TFLOPS*",
+    "BFLOAT16 Tensor Core": "1,513 TFLOPS*",
+    "FP16 Tensor Core": "1,513 TFLOPS*",
+    "FP8 Tensor Core": "3,026 TFLOPS*",
+    "INT8 Tensor Core": "3,026 TOPS*",
+    "GPU memory": "80GB",
+    "GPU memory bandwidth": "2TB/s"
+   },
+   "footnote": "* Shown with sparsity. Specifications 1/2 lower without sparsity.",
+   "note": "The nvidia.com H100 product page (h100_product_page) now lists the H100 SXM and H100 NVL columns only (NVL: TF32 835, FP16/BF16 1,671, FP8 3,341 TFLOPS*, 94GB, 3.9TB/s); the PCIe column is only in the datasheet PDF. The NVIDIA document was fetched from a partner mirror (megware.com) because the nvidia.com PDF candidates returned the H100 NVL product brief (PB-11773-001_v01), an HTML page (pny.com) or HTTP 403 (cisco.com); its SXM column matches the nvidia.com page figure for figure.",
+   "dense_rule": "dense = printed sparse figure / 2 (footnote)",
+   "unverified_from_source": [
+    "SRAM_capacity 50 MB L2 (Hopper architecture whitepaper not fetched; not used by the roofline)"
+   ]
+  },
+  "H100_SXM": {
+   "capture": [
+    "h100_product_page",
+    "h100_datasheet_megware_pdf"
+   ],
+   "column": "H100 SXM",
+   "printed": {
+    "FP64": "34 teraFLOPS",
+    "FP64 Tensor Core": "67 teraFLOPS",
+    "FP32": "67 teraFLOPS",
+    "TF32 Tensor Core *": "989 teraFLOPS",
+    "BFLOAT16 Tensor Core *": "1,979 teraFLOPS",
+    "FP16 Tensor Core *": "1,979 teraFLOPS",
+    "FP8 Tensor Core *": "3,958 teraFLOPS",
+    "INT8 Tensor Core *": "3,958 TOPS",
+    "GPU Memory": "80GB",
+    "GPU Memory Bandwidth": "3.35TB/s"
+   },
+   "footnote": "* With sparsity",
+   "dense_rule": "dense = printed sparse figure / 2"
+  },
+  "H200_SXM": {
+   "capture": "h200_product_page",
+   "column": "H200 SXM",
+   "printed": {
+    "FP64": "34 TFLOPS",
+    "FP64 Tensor Core": "67 TFLOPS",
+    "FP32": "67 TFLOPS",
+    "TF32 Tensor Core(2)": "989 TFLOPS",
+    "BFLOAT16 Tensor Core(2)": "1,979 TFLOPS",
+    "FP16 Tensor Core(2)": "1,979 TFLOPS",
+    "FP8 Tensor Core(2)": "3,958 TFLOPS",
+    "INT8 Tensor Core(2)": "3,958 TFLOPS",
+    "GPU Memory": "141GB",
+    "GPU Memory Bandwidth": "4.8TB/s"
+   },
+   "footnote": "2 With sparsity.",
+   "dense_rule": "dense = printed sparse figure / 2",
+   "gap": "the H200 datasheet PDF link (h200_datasheet_pdf, h200_datasheet_alt) returned HTTP 404 / a JavaScript viewer; the product page carries the full table"
+  },
+  "L40S": {
+   "capture": "l40s_product_page",
+   "column": "NVIDIA L40S GPU (full specifications table)",
+   "printed": {
+    "FP32 TFLOPS": "91.6",
+    "TF32 Tensor Core TFLOPS": "183 I 366*",
+    "BFLOAT16 Tensor Core TFLOPS": "362.05 I 733*",
+    "FP16 Tensor Core": "362.05 I 733*",
+    "FP8 Tensor Core": "733 I 1,466*",
+    "Peak INT8 Tensor TOPS": "733 I 1,466*",
+    "Peak INT4 Tensor TOPS": "733 I 1,466*",
+    "GPU Memory": "48GB GDDR6 with ECC",
+    "Memory Bandwidth": "864GB/s"
+   },
+   "footnote": "*With Sparsity (pairs are printed dense I sparse)",
+   "note": "FP16/BF16 pair 362.05 I 733 is not an exact 2x (733 / 362.05 = 2.0246); both kept as printed (maintainer correction C4)",
+   "gap": "the L40S datasheet PDF links (l40s_datasheet_pdf, l40s_datasheet_alt1/2/3, l40s_datasheet_resources) returned HTTP 404 or a JavaScript viewer; the product page carries the full table"
+  },
+  "B200": {
+   "capture": [
+    "hgx_product_page",
+    "dgx_b200_page"
+   ],
+   "column": "HGX B200 (per 8-GPU system; per-GPU = / 8)",
+   "printed": {
+    "FP4 Tensor Core(1)": "144 PFLOPS | 72 PFLOPS",
+    "FP8/FP6 Tensor Core(2)": "72 PFLOPS",
+    "INT8 Tensor Core(2)": "72 POPS",
+    "FP16/BF16 Tensor Core(2)": "36 PFLOPS",
+    "TF32 Tensor Core(2)": "18 PFLOPS",
+    "FP32": "600 TFLOPS",
+    "FP64/FP64 Tensor Core": "296 TFLOPS",
+    "Total Memory": "1.4 TB",
+    "DGX B200 GPU Memory": "1,440 GB total, 64 TB/s HBM3e bandwidth"
+   },
+   "footnote": "1. Specification in Sparse | Dense; 2. Specification in Sparse. Dense is 1/2 sparse spec shown. (DGX B200: *Shown in sparse | dense; **Specification shown in sparse. Dense performance is 1/2 sparse spec shown.)",
+   "dense_rule": "per-GPU sparse = system figure / 8; dense = sparse / 2 (FP4: both printed)",
+   "note": "replaces the former unsourced 'existing SOLAR model rates'; DRAM capacity 180 GB per GPU from 1,440 GB / 8; DRAM bandwidth 8 TB/s per GPU from 64 TB/s / 8"
+  },
+  "A6000": {
+   "capture": [
+    "ga102_whitepaper_pdf",
+    "a6000_datasheet_pdf"
+   ],
+   "column": "GA102 whitepaper v2 Table 3, NVIDIA RTX A6000 column (GPU Boost Clock 1800 MHz)",
+   "printed": {
+    "Peak FP32 TFLOPS (non-Tensor)": "38.7",
+    "Peak FP16 Tensor TFLOPS with FP16 Accumulate": "154.8/309.6",
+    "Peak FP16 Tensor TFLOPS with FP32 Accumulate": "154.8/309.6",
+    "Peak BF16 Tensor TFLOPS with FP32 Accumulate": "154.8/309.6",
+    "Peak TF32 Tensor TFLOPS": "77.4/154.8",
+    "Peak INT8 Tensor TOPS": "309.7/619.4",
+    "Peak INT4 Tensor TOPS": "619.3/1238.6",
+    "L2 Cache Size": "6144 KB",
+    "Memory Bandwidth": "768 GB/sec",
+    "RTX A6000 datasheet: Single-precision performance": "38.7 TFLOPS(7)",
+    "RTX A6000 datasheet: Tensor performance": "309.7 TFLOPS(8)",
+    "RTX A6000 datasheet: Memory bandwidth": "768 GB/s",
+    "RTX A6000 datasheet: GPU memory": "48 GB GDDR6"
+   },
+   "footnote": "whitepaper: 1. Peak rates are based on GPU Boost Clock. 2. Effective TOPS / TFLOPS using the new Sparsity Feature; datasheet: 7 Peak rates based on GPU Boost Clock. 8 Effective teraFLOPS (TFLOPS) using the new sparsity feature.",
+   "note": "pairs recorded as printed in the whitepaper table (dense/sparse); the datasheet's 309.7 TFLOPS headline is the sparse FP16 figure rounded (exact 84 SMs x 512 FP16 FMA/clk x 2 x 1.8 GHz = 309.66). The former file's 86016 MAC/cycle was this sparse rate (FLOP/cycle of the dense figure); relabelled, dense = half."
+  },
+  "Jetson_Thor_T5000": {
+   "capture": [
+    "jetson_thor_page",
+    "jetson_thor_blog",
+    "jetson_modules_page"
+   ],
+   "column": "Jetson T5000",
+   "printed": {
+    "AI Performance (product page)": "2070 TFLOPS (FP4-Sparse)",
+    "GPU Max Frequency": "1.57 GHz",
+    "GPU": "2560-core NVIDIA Blackwell architecture GPU with fifth-gen Tensor Cores",
+    "Memory": "128 GB 256-bit LPDDR5X, 273 GB/s",
+    "AI performance (blog Table 1)": "2070 TFLOPS (Sparse FP4) 1035 TFLOPS (Dense FP4 | Sparse FP8 | Sparse INT8) 517 TFLOPs (Dense FP8 | Sparse FP16)",
+    "Tensor Cores (blog)": "96 fifth-generation Tensor Core"
+   },
+   "published": [
+    "nvfp4 1035 dense | 2070 sparse",
+    "fp8 517 dense | 1035 sparse",
+    "int8 1035 sparse",
+    "fp16 517 sparse"
+   ],
+   "derived": [
+    "fp16 dense 258.5 = half of the published sparse 517",
+    "bf16 = fp16",
+    "tf32 = half of fp16 (129.25 | 258.5)",
+    "int8 dense 517 = half of the published sparse 1035"
+   ],
+   "unverified_from_source": [
+    "peak_TFLOPS_fp32_sm 15 (previous revision of the file; no fetched NVIDIA page states an FP32 rate; sanity bound 2560 cores x 2 FLOP x 1.57 GHz = 8.0 TFLOPS)",
+    "the module data sheet note 'FP8 TFLOPs is equivalent to INT8 TOPs' (relayed by the maintainers; data sheet not fetchable)"
+   ],
+   "gap": "Jetson AGX Thor Series Module Data Sheet: jetson_thor_datasheet HTTP 404; jetson_thor_ds_alt returned a 3 KB HTML footer page (no document); jetson_thor_devkit_page HTTP 404"
+  }
+ },
+ "other_fetches_and_gaps": [
+  {
+   "id": "h100_datasheet_nvidia_pdf",
+   "url": "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/h100/PB-11773-001_v01.pdf",
+   "url_effective": "https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/h100/PB-11773-001_v01.pdf",
+   "http_status": "200",
+   "raw_bytes": 478807,
+   "raw_sha256": "08fdff16f08b72010c206dd9c1aa6291620e108d11cbfea84080ff8be728b6ef",
+   "fetched_utc": "2026-11-06T06:57:57Z"
+  },
+  {
+   "id": "h100_datasheet_pny_pdf",
+   "url": "https://www.pny.com/file%20library/company/support/product%20brochures/data%20sheets/nvidia/nvidia-h100-datasheet.pdf",
+   "url_effective": "https://www.pny.com/file%20library/company/support/product%20brochures/data%20sheets/nvidia/nvidia-h100-datasheet.pdf",
+   "http_status": "200",
+   "raw_bytes": 60830,
+   "raw_sha256": "79a8264f668ea5d27dc4c3e2a6bacef2d3665a3291af3bc1743a854a116f2527",
+   "fetched_utc": "2026-11-06T06:57:57Z"
+  },
+  {
+   "id": "h100_datasheet_cisco_pdf",
+   "url": "https://www.cisco.com/c/dam/en/us/products/collateral/servers-unified-computing/ucs-c-series-rack-servers/nvidia-h100-80-gpu.pdf",
+   "url_effective": "https://www.cisco.com/c/dam/en/us/products/collateral/servers-unified-computing/ucs-c-series-rack-servers/nvidia-h100-80-gpu.pdf",
+   "http_status": "403",
+   "raw_bytes": 543,
+   "raw_sha256": "8ced04ccb77d1f0f9dd6e810134b42b3bbb32e78c80fafc59b72247657679bc0",
+   "fetched_utc": "2026-11-06T06:57:58Z"
+  },
+  {
+   "id": "h100_datasheet_resources",
+   "url": "https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet",
+   "url_effective": "https://www.nvidia.com/en-us/",
+   "http_status": "200",
+   "raw_bytes": 750917,
+   "raw_sha256": "646e4e8096199f8635b6b7d06c1f59c8733a690e87a2310538473d12ccfde0f9",
+   "fetched_utc": "2026-11-06T06:57:57Z"
+  },
+  {
+   "id": "h100_datasheet_alt",
+   "url": "https://resources.nvidia.com/en-us-hopper-architecture/nvidia-tensor-core-gpu-datasheet",
+   "url_effective": "https://resources.nvidia.com/en-us-hopper-architecture/nvidia-tensor-core-gpu-datasheet",
+   "http_status": "200",
+   "raw_bytes": 520839,
+   "raw_sha256": "de2b502252497fd3061225842dd0189aef503b3a3f4cb97054cb21d974a5d6b1",
+   "fetched_utc": "2026-11-06T07:03:36Z"
+  },
+  {
+   "id": "h200_datasheet_pdf",
+   "url": "https://nvdam.widen.net/s/nb5zzzsjdf/hpc-datasheet-sc23-h200-datasheet-3002446",
+   "url_effective": "https://nvdam.widen.net/s/nb5zzzsjdf/hpc-datasheet-sc23-h200-datasheet-3002446",
+   "http_status": "404",
+   "raw_bytes": 417,
+   "raw_sha256": "a188e7ddaab8c4fff1cd41388a9028a7e9d8faf73e5bf1543972f47e14509b76",
+   "fetched_utc": "2026-11-06T06:58:00Z"
+  },
+  {
+   "id": "h200_datasheet_alt",
+   "url": "https://resources.nvidia.com/en-us-data-center-overview-mc/en-us-data-center-overview/hpc-datasheet-sc23-h200-datasheet-3002446",
+   "url_effective": "https://www.nvidia.com/en-us/",
+   "http_status": "200",
+   "raw_bytes": 750917,
+   "raw_sha256": "646e4e8096199f8635b6b7d06c1f59c8733a690e87a2310538473d12ccfde0f9",
+   "fetched_utc": "2026-11-06T07:03:36Z"
+  },
+  {
+   "id": "l40s_datasheet_pdf",
+   "url": "https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/support-guide/NVIDIA-L40S-Datasheet-January-2023.pdf",
+   "url_effective": "https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/support-guide/NVIDIA-L40S-Datasheet-January-2023.pdf",
+   "http_status": "404",
+   "raw_bytes": 299558,
+   "raw_sha256": "b2740cd8c95ec79ba329e15376fdf9bd3827abfff5e0a34c453cb6076f3c3f3f",
+   "fetched_utc": "2026-11-06T06:58:01Z"
+  },
+  {
+   "id": "l40s_datasheet_resources",
+   "url": "https://resources.nvidia.com/en-us-l40s/l40s-datasheet-28413",
+   "url_effective": "https://www.nvidia.com/en-us/",
+   "http_status": "200",
+   "raw_bytes": 750917,
+   "raw_sha256": "646e4e8096199f8635b6b7d06c1f59c8733a690e87a2310538473d12ccfde0f9",
+   "fetched_utc": "2026-11-06T06:58:01Z"
+  },
+  {
+   "id": "l40s_datasheet_alt1",
+   "url": "https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/support-guide/NVIDIA-L40S-Datasheet-January-2023.pdf",
+   "url_effective": "https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/support-guide/NVIDIA-L40S-Datasheet-January-2023.pdf",
+   "http_status": "404",
+   "raw_bytes": 299558,
+   "raw_sha256": "b2740cd8c95ec79ba329e15376fdf9bd3827abfff5e0a34c453cb6076f3c3f3f",
+   "fetched_utc": "2026-11-06T07:03:34Z"
+  },
+  {
+   "id": "l40s_datasheet_alt2",
+   "url": "https://images.nvidia.com/content/Solutions/data-center/vgpu-L40S-datasheet.pdf",
+   "url_effective": "https://images.nvidia.com/content/Solutions/data-center/vgpu-L40S-datasheet.pdf",
+   "http_status": "404",
+   "raw_bytes": 10,
+   "raw_sha256": "493fda53120050f85836032324409be6c6484f90a0755ae0c6a673ba7626818b",
+   "fetched_utc": "2026-11-06T07:03:35Z"
+  },
+  {
+   "id": "l40s_datasheet_alt3",
+   "url": "https://resources.nvidia.com/en-us-l40s/l40s-datasheet-28413?lx=CPwSfP",
+   "url_effective": "https://www.nvidia.com/en-us/",
+   "http_status": "200",
+   "raw_bytes": 750917,
+   "raw_sha256": "646e4e8096199f8635b6b7d06c1f59c8733a690e87a2310538473d12ccfde0f9",
+   "fetched_utc": "2026-11-06T07:03:35Z"
+  },
+  {
+   "id": "blackwell_datasheet_resources",
+   "url": "https://resources.nvidia.com/en-us-blackwell-architecture/datasheet",
+   "url_effective": "https://www.nvidia.com/en-us/",
+   "http_status": "200",
+   "raw_bytes": 750917,
+   "raw_sha256": "646e4e8096199f8635b6b7d06c1f59c8733a690e87a2310538473d12ccfde0f9",
+   "fetched_utc": "2026-11-06T06:58:02Z"
+  },
+  {
+   "id": "jetson_thor_datasheet",
+   "url": "https://developer.nvidia.com/downloads/jetson-agx-thor-series-module-data-sheet",
+   "url_effective": "https://developer.nvidia.com/downloads/jetson-agx-thor-series-module-data-sheet",
+   "http_status": "404",
+   "raw_bytes": 13064,
+   "raw_sha256": "1189eb62f1054b6d82341f074e746afcda3b4cf3542e8ebc2c3a56563fb6cac9",
+   "fetched_utc": "2026-11-06T06:58:04Z"
+  },
+  {
+   "id": "jetson_thor_ds_alt",
+   "url": "https://developer.download.nvidia.com/assets/embedded/secure/jetson/thor/Jetson_AGX_Thor_Series_Module_Data_Sheet.pdf",
+   "url_effective": "https://developer.nvidia.com/w/403.html",
+   "http_status": "200",
+   "raw_bytes": 3168,
+   "raw_sha256": "671b5b4354b963a60d4f6342fcd73893fce378f929e8e2c2300ab30efdac53c0",
+   "fetched_utc": "2026-11-06T07:03:34Z"
+  },
+  {
+   "id": "jetson_thor_devkit_page",
+   "url": "https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/developer-kit/",
+   "url_effective": "https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/developer-kit/",
+   "http_status": "404",
+   "raw_bytes": 299558,
+   "raw_sha256": "67bb5e78975a4cfabbf9e80ef39ea68e38724c5c82115c8112e468e3628d4c5c",
+   "fetched_utc": "2026-11-06T07:03:33Z"
+  },
+  {
+   "id": "a6000_product_page",
+   "url": "https://www.nvidia.com/en-us/design-visualization/rtx-a6000/",
+   "url_effective": "https://www.nvidia.com/en-us/products/workstations/rtx-a6000/",
+   "http_status": "200",
+   "raw_bytes": 724692,
+   "raw_sha256": "3bbaec59e0f9fcd0ebbfd5ffa390f373d3e74caf92bf451a011e891073e076b4",
+   "fetched_utc": "2026-11-06T06:58:02Z"
+  },
+  {
+   "id": "blackwell_arch_page",
+   "url": "https://www.nvidia.com/en-us/data-center/technologies/blackwell-architecture/",
+   "url_effective": "https://www.nvidia.com/en-us/data-center/technologies/blackwell-architecture/",
+   "http_status": "200",
+   "raw_bytes": 303739,
+   "raw_sha256": "b959ef5455be8a7bf1dea392d974bc1ae92eda9b1cc7ddd269921acbac27dc9e",
+   "fetched_utc": "2026-11-06T06:58:02Z"
+  },
+  {
+   "id": "ga102_whitepaper_pdf_v1",
+   "url": "https://images.nvidia.com/aem-dam/en-zz/Solutions/geforce/ampere/pdf/NVIDIA-ampere-GA102-GPU-Architecture-Whitepaper-V1.pdf",
+   "url_effective": "https://images.nvidia.com/aem-dam/en-zz/Solutions/geforce/ampere/pdf/NVIDIA-ampere-GA102-GPU-Architecture-Whitepaper-V1.pdf",
+   "http_status": "200",
+   "raw_bytes": 10054436,
+   "raw_sha256": "14a63f094fd064ee24dc2521f02ce30ba37707473783d0d570f00393b90455c8",
+   "fetched_utc": "2026-11-06T06:58:03Z"
+  }
+ ],
+ "maintainer_relayed_figures": "Figures relayed by the maintainers (task notes) were used only as a checklist; every value cited as 'source:' in the yaml files points at a capture listed above. Where a relayed figure could not be matched to a capture it is marked unverified-from-source in the yaml comment and here."
+}

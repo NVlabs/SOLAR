@@ -37,6 +37,7 @@ from solar.einsum.node_type_registry import (
     NodeTypeRegistry,
 )
 from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
+from solar.perf.arch_rates import DEFAULT_SOL_MODE, resolve_arch_rates
 from solar.common.types import AnalysisResult, NodeInfo, TensorShapes
 from solar.common.utils import convert_numpy_types, ensure_directory, format_number
 import logging
@@ -645,7 +646,8 @@ class ModelAnalyzer:
                                        compute_macs: int,
                                        memory_elements: int,
                                        arch_config: Dict[str, Any],
-                                       precision: str) -> Dict[str, Any]:
+                                       precision: str,
+                                       sol_mode: str = DEFAULT_SOL_MODE) -> Dict[str, Any]:
         """Calculate roofline model performance.
 
         Args:
@@ -653,11 +655,13 @@ class ModelAnalyzer:
             memory_elements: Total memory elements.
             arch_config: Architecture configuration.
             precision: Precision setting.
+            sol_mode: issue #14 -- "sparse" (default) or "dense" tensor-core peak set.
 
         Returns:
             Roofline performance metrics.
         """
-        # Get architecture parameters
+        # Get architecture parameters (issue #14: the bare MAC_per_cycle_<p>_tc view for the selected peak set)
+        arch_config = resolve_arch_rates(arch_config, sol_mode)
         freq_ghz = arch_config.get("freq_GHz", 1.0)
         mac_key = f"MAC_per_cycle_{precision}_tc"
         mac_per_cycle = arch_config.get(mac_key, arch_config.get("MAC_per_cycle_fp32_tc", 1000))

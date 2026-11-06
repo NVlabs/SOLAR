@@ -20,6 +20,14 @@ The roofline in ``EinsumGraphPerfModel`` reads a fixed set of keys from
 ``name`` does not match its file name, silently degrades to zero throughput.
 These checks run over whichever configs are present so a new one is covered
 the moment it is added.
+
+Issue #14: tensor-core rates are spelled explicitly per peak set,
+``MAC_per_cycle_<p>_tc_dense`` / ``MAC_per_cycle_<p>_tc_sparse`` (the bare
+``MAC_per_cycle_<p>_tc`` is the legacy spelling of a DENSE rate in user
+profiles).  The perf model resolves them through
+``solar.perf.arch_rates.resolve_arch_rates``; the schema itself (both peaks
+per precision, sparse >= dense, derivation from the peaks) is checked in
+``tests/test_issue14_sparse_dense_peaks.py``.
 """
 
 from pathlib import Path
@@ -27,16 +35,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+from solar.perf.arch_rates import SOL_MODES, resolve_arch_rates, tensor_core_precisions
 from solar.perf.perf_model import EinsumGraphPerfModel
 
 ARCH_DIR = Path(__file__).resolve().parents[1] / "configs" / "arch"
 ARCH_FILES = sorted(ARCH_DIR.glob("*.yaml"))
 
 # Keys the perf model reads unconditionally (memory roofline, clock and the
-# CUDA-core rate). A 16-bit tensor-core rate must exist under either name
-# (fp16 falls back to bf16 and vice versa); SRAM_* and the other
-# MAC_per_cycle_* keys are optional (SRAM_* is informational, the rest are
-# selected by precision).
+# CUDA-core rate). A 16-bit tensor-core rate must exist under fp16 or bf16 (fp16
+# falls back to bf16 and vice versa); SRAM_* and the other MAC_per_cycle_* keys
+# are optional (SRAM_* is informational, the rest are selected by precision).
 REQUIRED_KEYS = (
     "DRAM_capacity",
     "DRAM_byte_per_cycle",
@@ -62,12 +70,13 @@ def test_arch_config_is_complete(path):
         assert isinstance(value, (int, float)) and not isinstance(value, bool), (
             f"{path.name}: {key} must be numeric, got {value!r}")
         assert value > 0, f"{path.name}: {key} must be positive"
-    half = cfg.get("MAC_per_cycle_fp16_tc", cfg.get("MAC_per_cycle_bf16_tc"))
-    assert half is not None, f"{path.name} has neither fp16 nor bf16 tensor-core rate"
-    # Tensor-core rates are ordered by width: 16-bit >= tf32, fp8 >= 16-bit when present.
-    assert half >= cfg.get("MAC_per_cycle_tf32_tc", 0)
-    if "MAC_per_cycle_fp8_tc" in cfg:
-        assert cfg["MAC_per_cycle_fp8_tc"] >= half
+    for kind in ("dense", "sparse"):
+        half = cfg.get(f"MAC_per_cycle_fp16_tc_{kind}", cfg.get(f"MAC_per_cycle_bf16_tc_{kind}"))
+        assert half is not None, f"{path.name} has neither fp16 nor bf16 {kind} tensor-core rate"
+        # Tensor-core rates are ordered by width: 16-bit >= tf32, fp8 >= 16-bit when present.
+        assert half >= cfg.get(f"MAC_per_cycle_tf32_tc_{kind}", 0)
+        if f"MAC_per_cycle_fp8_tc_{kind}" in cfg:
+            assert cfg[f"MAC_per_cycle_fp8_tc_{kind}"] >= half
 
 
 @pytest.mark.parametrize("path", ARCH_FILES, ids=[p.stem for p in ARCH_FILES])
@@ -75,3 +84,16 @@ def test_perf_model_resolves_config_by_name(path):
     model = EinsumGraphPerfModel()
     cfg = model._load_arch_config(path.stem)
     assert cfg and cfg["name"] == path.stem
+
+
+@pytest.mark.parametrize("path", ARCH_FILES, ids=[p.stem for p in ARCH_FILES])
+@pytest.mark.parametrize("mode", SOL_MODES)
+def test_resolver_gives_the_perf_model_a_bare_key_per_precision_and_mode(path, mode):
+    """What the roofline reads (``MAC_per_cycle_<p>_tc``) exists for every declared precision in both modes and equals
+    the explicit key of that mode; no shipped config needs the legacy fallback."""
+    cfg = yaml.safe_load(path.read_text())
+    view = resolve_arch_rates(cfg, mode)
+    for p in tensor_core_precisions(cfg):
+        assert view[f"MAC_per_cycle_{p}_tc"] == cfg[f"MAC_per_cycle_{p}_tc_{mode}"], (path.name, p, mode)
+        rec = view["sol_rate_resolution"]["precisions"][p]
+        assert rec["applied_key"] == f"MAC_per_cycle_{p}_tc_{mode}" and rec["sparse_fallback_to_dense"] is False

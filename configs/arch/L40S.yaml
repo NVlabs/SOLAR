@@ -1,19 +1,61 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# NVIDIA L40S (48 GB GDDR6 with ECC, 864 GB/s).
+#
+# Issue #14 schema: every tensor-core precision <p> carries BOTH vendor peaks and the two derived rates
+#   peak_TFLOPS_<p>_dense / peak_TFLOPS_<p>_sparse        (TFLOPS as printed; TOPS for integer types)
+#   MAC_per_cycle_<p>_tc_dense / MAC_per_cycle_<p>_tc_sparse = peak x 1e12 / 2 FLOP per MAC / (freq_GHz x 1e9)
+#                                                          = peak_TFLOPS x 1000 / 2 / freq_GHz
+# MAC_per_cycle_* are MACs per cycle, not FLOPs (one FMA = one MAC = two FLOPs); freq_GHz is a nominal
+# conversion clock.  `--sol-mode` (default sparse) selects the set the headline SOL is priced at: the sparse
+# SOL ASSUMES the workload is eligible for the 2:4 structured-sparsity tensor-core rate (a lower bound dense
+# kernels cannot reach); the dense SOL is the realistic bound for dense work.  Both are always written.
+# The L40S datasheet prints BOTH figures per tensor-core row as "dense | sparse" pairs; both are recorded as
+# printed.  NOTE the FP16/BF16 pair 362.05 | 733 is not an exact 2x (733 / 362.05 = 2.0246): the two printed
+# figures are kept, neither is derived from the other.  No sparse figure for FP32 (CUDA cores); the datasheet
+# publishes no L2 size and no FP64 rate, so those keys are omitted.  No fp32 tensor-core key: fp32 uses the SM rate.
+#
+# source: NVIDIA L40S datasheet / https://www.nvidia.com/en-us/data-center/l40s/ (specifications table,
+#         "dense | sparse" pairs), captured under sources/arch_datasheets/ (SOURCES.json: URL, fetch date, sha256).
+# Units example: FP16 dense 362.05 TFLOPS -> 362.05 x 1000 / 2 / 2.5 = 72410 MAC/cycle.
+# History: before issue #14 the same dense rates were carried under bare MAC_per_cycle_<p>_tc keys (unchanged).
 
 name: "L40S"
-# NVIDIA L40S. Every value below is taken from the public L40S datasheet
-# (https://www.nvidia.com/en-us/data-center/l40s/, dense peak rates).
-# freq_GHz is a nominal clock: each MAC_per_cycle value is the published dense
-# peak divided by 2 (FLOP per MAC) and by that clock, so predicted runtimes
-# depend only on the published peaks. The datasheet publishes no L2 size or
-# FP64 rate, so those keys are omitted (the roofline does not use them).
 DRAM_capacity: 51539607552  # 48 GB GDDR6 with ECC
 DRAM_byte_per_cycle: 345.6  # 864 GB/s / 2.5 GHz
-freq_GHz: 2.5  # nominal clock (see header)
-MAC_per_cycle_fp32_sm: 18320  # 91.6 TFLOPS FP32 (CUDA cores)
-MAC_per_cycle_tf32_tc: 36600  # 183 TFLOPS TF32 Tensor Core, dense
-MAC_per_cycle_fp16_tc: 72410  # 362.05 TFLOPS FP16 Tensor Core, dense
-MAC_per_cycle_bf16_tc: 72410  # 362.05 TFLOPS BF16 Tensor Core, dense
-MAC_per_cycle_fp8_tc: 146600  # 733 TFLOPS FP8 Tensor Core, dense
-MAC_per_cycle_int8_tc: 146600  # 733 TOPS INT8 Tensor Core, dense
+freq_GHz: 2.5  # nominal conversion clock (see header)
+
+# CUDA-core (SM) FP32: no sparsity variant
+peak_TFLOPS_fp32_sm: 91.6  # source: L40S datasheet, FP32 91.6 TFLOPS
+MAC_per_cycle_fp32_sm: 18320  # = 91.6 x 1000 / 2 / 2.5
+
+# TF32 Tensor Core
+peak_TFLOPS_tf32_dense: 183  # source: L40S datasheet, TF32 Tensor Core 183 | 366 TFLOPS (dense | sparse)
+peak_TFLOPS_tf32_sparse: 366  # source: L40S datasheet, TF32 Tensor Core 183 | 366 TFLOPS (dense | sparse)
+MAC_per_cycle_tf32_tc_dense: 36600  # = 183 x 1000 / 2 / 2.5
+MAC_per_cycle_tf32_tc_sparse: 73200  # = 366 x 1000 / 2 / 2.5
+
+# FP16 Tensor Core (printed pair is NOT exactly 2x: 733 / 362.05 = 2.0246; both kept as printed)
+peak_TFLOPS_fp16_dense: 362.05  # source: L40S datasheet, FP16 Tensor Core 362.05 | 733 TFLOPS (dense | sparse)
+peak_TFLOPS_fp16_sparse: 733  # source: L40S datasheet, FP16 Tensor Core 362.05 | 733 TFLOPS (dense | sparse)
+MAC_per_cycle_fp16_tc_dense: 72410  # = 362.05 x 1000 / 2 / 2.5
+MAC_per_cycle_fp16_tc_sparse: 146600  # = 733 x 1000 / 2 / 2.5
+
+# BF16 Tensor Core (same printed pair as FP16)
+peak_TFLOPS_bf16_dense: 362.05  # source: L40S datasheet, BFLOAT16 Tensor Core 362.05 | 733 TFLOPS (dense | sparse)
+peak_TFLOPS_bf16_sparse: 733  # source: L40S datasheet, BFLOAT16 Tensor Core 362.05 | 733 TFLOPS (dense | sparse)
+MAC_per_cycle_bf16_tc_dense: 72410  # = 362.05 x 1000 / 2 / 2.5
+MAC_per_cycle_bf16_tc_sparse: 146600  # = 733 x 1000 / 2 / 2.5
+
+# FP8 Tensor Core
+peak_TFLOPS_fp8_dense: 733  # source: L40S datasheet, FP8 Tensor Core 733 | 1,466 TFLOPS (dense | sparse)
+peak_TFLOPS_fp8_sparse: 1466  # source: L40S datasheet, FP8 Tensor Core 733 | 1,466 TFLOPS (dense | sparse)
+MAC_per_cycle_fp8_tc_dense: 146600  # = 733 x 1000 / 2 / 2.5
+MAC_per_cycle_fp8_tc_sparse: 293200  # = 1466 x 1000 / 2 / 2.5
+
+# INT8 Tensor Core (TOPS)
+peak_TFLOPS_int8_dense: 733  # source: L40S datasheet, INT8 Tensor Core 733 | 1,466 TOPS (dense | sparse)
+peak_TFLOPS_int8_sparse: 1466  # source: L40S datasheet, INT8 Tensor Core 733 | 1,466 TOPS (dense | sparse)
+MAC_per_cycle_int8_tc_dense: 146600  # = 733 x 1000 / 2 / 2.5
+MAC_per_cycle_int8_tc_sparse: 293200  # = 1466 x 1000 / 2 / 2.5

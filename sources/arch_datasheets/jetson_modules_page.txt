@@ -1,0 +1,5 @@
+[SOLAR provenance excerpt: lines 7-9 of the HTML tag-stripped text extract of the developer.nvidia.com Jetson Modules page, Jetson AGX Thor Series lineup entry, URL https://developer.nvidia.com/embedded/jetson-modules, fetched 2026-11-06T06:58:03Z; full extract sha256 5b009cfd7ef66f27f87f804c7a79da92d153097a69f2c7136d945da2652f65f9 (52 lines, retained privately by the release lane); raw document sha256 d2fe451b487a60a8a54402a4b30e76337b5ff9f7921037f4acc47e18d4f9f90a. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+ Jetson AGX Thor Series
+ NVIDIA® Jetson Thor™ series modules give you the ultimate platform for physical AI and robotics, delivering up to 2070 FP4 TFLOPS of AI compute and 128 GB of memory with power configurable between 40 W and 130 W. They deliver over 7.5x higher AI compute than NVIDIA AGX Orin™, with 3.5x better energy efficiency.
+ Jetson T5000 | Jetson T4000

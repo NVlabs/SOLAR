@@ -1,22 +1,67 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# NVIDIA H200 SXM (141 GB HBM3e, 4.8 TB/s).  Compute rates equal the H100 SXM; the memory is larger and faster.
+#
+# Issue #14 schema: every tensor-core precision <p> carries BOTH vendor peaks and the two derived rates
+#   peak_TFLOPS_<p>_dense / peak_TFLOPS_<p>_sparse        (TFLOPS as printed; TOPS for integer types)
+#   MAC_per_cycle_<p>_tc_dense / MAC_per_cycle_<p>_tc_sparse = peak x 1e12 / 2 FLOP per MAC / (freq_GHz x 1e9)
+#                                                          = peak_TFLOPS x 1000 / 2 / freq_GHz
+# MAC_per_cycle_* are MACs per cycle, not FLOPs (one FMA = one MAC = two FLOPs); freq_GHz is a nominal
+# conversion clock.  `--sol-mode` (default sparse) selects the set the headline SOL is priced at: the sparse
+# SOL ASSUMES the workload is eligible for the 2:4 structured-sparsity tensor-core rate (a lower bound dense
+# kernels cannot reach); the dense SOL is the realistic bound for dense work.  Both are always written.
+# The product page prints tensor-core rates "with sparsity"; dense is half.  No sparse figure is published
+# for FP32 (CUDA cores) or FP64, so sparse == dense there.  No fp32 tensor-core key: fp32 uses the SM rate.
+#
+# source: https://www.nvidia.com/en-us/data-center/h200/ ("H200 SXM" column; footnote "With sparsity"),
+#         captured under sources/arch_datasheets/ (SOURCES.json: URL, fetch date, sha256).
+#         L2 size: NVIDIA Hopper architecture whitepaper.
+# Units example: FP8 dense 1979 TFLOPS -> 1979 x 1000 / 2 / 2.0 = 494750 MAC/cycle.
+# History: before issue #14 the same dense rates were carried under bare MAC_per_cycle_<p>_tc keys (unchanged).
 
 name: "H200_SXM"
-# NVIDIA H200 SXM. Every value below is taken from the public H200 datasheet
-# (https://www.nvidia.com/en-us/data-center/h200/; compute rates equal the
-# H100 SXM) and the Hopper architecture whitepaper (L2 size). The datasheet
-# lists tensor-core rates with sparsity; the dense rate is half of that figure.
-# freq_GHz is a nominal clock: each MAC_per_cycle value is the dense peak
-# divided by 2 (FLOP per MAC) and by that clock, so predicted runtimes depend
-# only on the peaks.
-SRAM_capacity: 52428800  # 50 MB L2 (whitepaper)
+SRAM_capacity: 52428800  # 50 MB L2 (Hopper whitepaper); not used by the roofline
 DRAM_capacity: 151397597184  # 141 GB HBM3e
 DRAM_byte_per_cycle: 2400  # 4.8 TB/s / 2.0 GHz
-freq_GHz: 2.0  # nominal clock (see header)
-MAC_per_cycle_fp32_sm: 16750  # 67 TFLOPS FP32 (CUDA cores)
-MAC_per_cycle_tf32_tc: 123625  # 494.5 TFLOPS TF32 Tensor Core, dense (989 with sparsity)
-MAC_per_cycle_fp16_tc: 247375  # 989.5 TFLOPS FP16 Tensor Core, dense (1979 with sparsity)
-MAC_per_cycle_bf16_tc: 247375  # 989.5 TFLOPS BF16 Tensor Core, dense (1979 with sparsity)
-MAC_per_cycle_fp8_tc: 494750  # 1979 TFLOPS FP8 Tensor Core, dense (3958 with sparsity)
-MAC_per_cycle_int8_tc: 494750  # 1979 TOPS INT8 Tensor Core, dense (3958 with sparsity)
-MAC_per_cycle_fp64_tc: 16750  # 67 TFLOPS FP64 Tensor Core
+freq_GHz: 2.0  # nominal conversion clock (see header)
+
+# CUDA-core (SM) FP32: no sparsity variant
+peak_TFLOPS_fp32_sm: 67  # source: H200 product page, FP32 67 TFLOPS
+MAC_per_cycle_fp32_sm: 16750  # = 67 x 1000 / 2 / 2.0
+
+# TF32 Tensor Core
+peak_TFLOPS_tf32_dense: 494.5  # source: H200 product page, TF32 Tensor Core 989 TFLOPS (with sparsity) -> dense = half
+peak_TFLOPS_tf32_sparse: 989  # source: H200 product page, TF32 Tensor Core 989 TFLOPS (with sparsity)
+MAC_per_cycle_tf32_tc_dense: 123625  # = 494.5 x 1000 / 2 / 2.0
+MAC_per_cycle_tf32_tc_sparse: 247250  # = 989 x 1000 / 2 / 2.0
+
+# FP16 Tensor Core
+peak_TFLOPS_fp16_dense: 989.5  # source: H200 product page, FP16 Tensor Core 1,979 TFLOPS (with sparsity) -> dense = half
+peak_TFLOPS_fp16_sparse: 1979  # source: H200 product page, FP16 Tensor Core 1,979 TFLOPS (with sparsity)
+MAC_per_cycle_fp16_tc_dense: 247375  # = 989.5 x 1000 / 2 / 2.0
+MAC_per_cycle_fp16_tc_sparse: 494750  # = 1979 x 1000 / 2 / 2.0
+
+# BF16 Tensor Core (same rate as FP16 on Hopper)
+peak_TFLOPS_bf16_dense: 989.5  # source: H200 product page, BFLOAT16 Tensor Core 1,979 TFLOPS (with sparsity) -> dense = half
+peak_TFLOPS_bf16_sparse: 1979  # source: H200 product page, BFLOAT16 Tensor Core 1,979 TFLOPS (with sparsity)
+MAC_per_cycle_bf16_tc_dense: 247375  # = 989.5 x 1000 / 2 / 2.0
+MAC_per_cycle_bf16_tc_sparse: 494750  # = 1979 x 1000 / 2 / 2.0
+
+# FP8 Tensor Core
+peak_TFLOPS_fp8_dense: 1979  # source: H200 product page, FP8 Tensor Core 3,958 TFLOPS (with sparsity) -> dense = half
+peak_TFLOPS_fp8_sparse: 3958  # source: H200 product page, FP8 Tensor Core 3,958 TFLOPS (with sparsity)
+MAC_per_cycle_fp8_tc_dense: 494750  # = 1979 x 1000 / 2 / 2.0
+MAC_per_cycle_fp8_tc_sparse: 989500  # = 3958 x 1000 / 2 / 2.0
+
+# INT8 Tensor Core (TOPS)
+peak_TFLOPS_int8_dense: 1979  # source: H200 product page, INT8 Tensor Core 3,958 TOPS (with sparsity) -> dense = half
+peak_TFLOPS_int8_sparse: 3958  # source: H200 product page, INT8 Tensor Core 3,958 TOPS (with sparsity)
+MAC_per_cycle_int8_tc_dense: 494750  # = 1979 x 1000 / 2 / 2.0
+MAC_per_cycle_int8_tc_sparse: 989500  # = 3958 x 1000 / 2 / 2.0
+
+# FP64 Tensor Core: the vendor publishes no sparse rate, sparse == dense
+peak_TFLOPS_fp64_dense: 67  # source: H200 product page, FP64 Tensor Core 67 TFLOPS (no sparsity figure)
+peak_TFLOPS_fp64_sparse: 67  # = dense (no sparse FP64 rate is published)
+MAC_per_cycle_fp64_tc_dense: 16750  # = 67 x 1000 / 2 / 2.0
+MAC_per_cycle_fp64_tc_sparse: 16750  # = dense

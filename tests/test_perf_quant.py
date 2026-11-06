@@ -259,6 +259,13 @@ def get_init_inputs():
 """
 
 
+# issue #14: at the B200 sparse fp16 peak (1,500,000 MAC/cycle) the 1,048,576-MAC fixtures above take < 1 cycle, which the
+# integer cycle count renders as 0; the "> 0" structural checks use a 16x batch (16,777,216 MACs, ~11 cycles) instead
+_MATMUL_MODEL_SOURCE_64 = MATMUL_MODEL_SOURCE.replace("torch.randn(4, 32, 64)", "torch.randn(64, 32, 64)")
+_MATMUL_RELU_MODEL_SOURCE_64 = MATMUL_RELU_MODEL_SOURCE.replace("torch.randn(4, 32, 64)", "torch.randn(64, 32, 64)")
+assert _MATMUL_MODEL_SOURCE_64 != MATMUL_MODEL_SOURCE and _MATMUL_RELU_MODEL_SOURCE_64 != MATMUL_RELU_MODEL_SOURCE
+
+
 def _run_pipeline_from_source(tmp_path: Path, source: str) -> Path:
     """Run graph extraction + einsum conversion for given source."""
     model_file = tmp_path / "model.py"
@@ -331,7 +338,7 @@ class TestPerfSMCycles:
 
     def test_matmul_relu_both_cycles(self, tmp_path):
         """Matmul + relu: TC cycles > 0, SM cycles >= 0, other_ops tracked."""
-        analysis, perf = self._analyze_and_predict(tmp_path, MATMUL_RELU_MODEL_SOURCE)
+        analysis, perf = self._analyze_and_predict(tmp_path, _MATMUL_RELU_MODEL_SOURCE_64)
 
         assert analysis["total"]["macs"] > 0
         assert analysis["total"]["other_ops"] > 0
@@ -345,7 +352,7 @@ class TestPerfSMCycles:
 
     def test_matmul_only_sm_cycles_zero(self, tmp_path):
         """Pure matmul model: other_ops == 0, compute_sm_cycles == 0."""
-        _, perf = self._analyze_and_predict(tmp_path, MATMUL_MODEL_SOURCE)
+        _, perf = self._analyze_and_predict(tmp_path, _MATMUL_MODEL_SOURCE_64)
 
         assert perf["unfused"]["compute_tc_cycles"] > 0
         assert perf["unfused"]["compute_sm_cycles"] == 0

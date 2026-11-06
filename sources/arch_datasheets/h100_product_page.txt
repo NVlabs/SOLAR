@@ -1,0 +1,64 @@
+[SOLAR provenance excerpt: lines 353-414 of the HTML tag-stripped text extract of the nvidia.com NVIDIA H100 product page, 'Product Specifications' table, URL https://www.nvidia.com/en-us/data-center/h100/, fetched 2026-11-06T06:57:57Z; full extract sha256 138c624800fb626aba088d27181d4e18157a31ae3499c2a3af2c9ea7cbe625ba (477 lines, retained privately by the release lane); raw document sha256 9effd128f2e2bd84906029a4999872a2f989bf3c4ca8302a3dd3c96532a2d9af. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+ Product Specifications
+ H100 SXM
+ H100 NVL
+ FP64
+ 34 teraFLOPS
+ 30 teraFLOPs
+ FP64 Tensor Core
+ 67 teraFLOPS
+ 60 teraFLOPs
+ FP32
+ 67 teraFLOPS
+ 60 teraFLOPs
+ TF32 Tensor Core *
+ 989 teraFLOPS
+ 835 teraFLOPs
+ BFLOAT16 Tensor Core *
+ 1,979 teraFLOPS
+ 1,671 teraFLOPS
+ FP16 Tensor Core *
+ 1,979 teraFLOPS
+ 1,671 teraFLOPS
+ FP8 Tensor Core *
+ 3,958 teraFLOPS
+ 3,341 teraFLOPS
+ INT8 Tensor Core *
+ 3,958 TOPS
+ 3,341 TOPS
+ GPU Memory
+ 80GB
+ 94GB
+ GPU Memory Bandwidth
+ 3.35TB/s
+ 3.9TB/s
+ Decoders
+ 7 NVDEC
+ 7 JPEG
+ 7 NVDEC
+ 7 JPEG
+ Max Thermal Design Power (TDP)
+ Up to 700W (configurable)
+ 350-400W (configurable)
+ Multi-Instance GPUs
+ Up to 7 MIGS @ 10GB each
+ Up to 7 MIGS @ 12GB each
+ Form Factor
+ SXM
+ PCIe
+ dual-slot air-cooled
+ Interconnect
+ NVIDIA NVLink™: 900GB/s
+ PCIe Gen5: 128GB/s
+ NVIDIA NVLink: 600GB/s
+ PCIe Gen5: 128GB/s
+ Server Options
+ NVIDIA HGX H100 Partner and NVIDIA-
+ Certified Systems ™ with 4 or 8 GPUs
+ NVIDIA DGX H100 with 8 GPUs
+ Partner and NVIDIA-Certified Systems with 1–8 GPUs
+ NVIDIA AI Enterprise
+ Add-on
+ Included
+ * With sparsity

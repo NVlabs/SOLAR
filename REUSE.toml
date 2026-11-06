@@ -53,3 +53,20 @@ path = ["patches/*.patch"]
 precedence = "closest"
 SPDX-FileCopyrightText = ["Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.", "Copyright (c) 2022 Mert Kurttutan (torchview, MIT License)"]
 SPDX-License-Identifier = "Apache-2.0"
+
+# Verbatim excerpts of NVIDIA-published product specification tables kept for
+# citation of configs/arch (sources/arch_datasheets/README.md). Third-party
+# material: not licensed under the project licence, no redistribution right
+# asserted; SOURCES.json is the project-authored provenance record (JSON, no
+# inline header).
+[[annotations]]
+path = ["sources/arch_datasheets/*.txt"]
+precedence = "closest"
+SPDX-FileCopyrightText = "Copyright NVIDIA Corporation (excerpts of NVIDIA-published product specifications, reproduced for citation)"
+SPDX-License-Identifier = "LicenseRef-NVIDIA-Published-Specification-Excerpt"
+
+[[annotations]]
+path = ["sources/arch_datasheets/SOURCES.json"]
+precedence = "closest"
+SPDX-FileCopyrightText = "Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved."
+SPDX-License-Identifier = "Apache-2.0"

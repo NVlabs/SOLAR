@@ -1157,7 +1157,7 @@ _LAYOUT_PRESERVING_VIEWS = frozenset({
 })
 # Fresh row-major output regardless of the inputs' strides (new allocation).
 _FRESH_ROW_MAJOR_OPS = frozenset({
-    "matmul", "mm", "bmm", "linear", "addmm", "embedding",
+    "matmul", "mm", "bmm", "linear", "addmm", "addmv", "baddbmm", "addbmm", "mv", "dot", "embedding",
 })
 # Output follows the inputs' memory format (TensorIterator / memory-format
 # propagation, including convolutions and concatenations): established only

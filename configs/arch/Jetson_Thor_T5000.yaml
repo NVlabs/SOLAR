@@ -1,18 +1,91 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# NVIDIA Jetson AGX Thor, T5000 module (Blackwell GPU: 2560 CUDA cores, 96 fifth-generation Tensor Cores,
+# 1.57 GHz; 128 GB LPDDR5X, 273 GB/s).
+#
+# Issue #14 schema: every tensor-core precision <p> carries BOTH vendor peaks and the two derived rates
+#   peak_TFLOPS_<p>_dense / peak_TFLOPS_<p>_sparse        (TFLOPS as printed; TOPS for integer types)
+#   MAC_per_cycle_<p>_tc_dense / MAC_per_cycle_<p>_tc_sparse = peak x 1e12 / 2 FLOP per MAC / (freq_GHz x 1e9)
+#                                                          = peak_TFLOPS x 1000 / 2 / freq_GHz
+# MAC_per_cycle_* are MACs per cycle, not FLOPs (one FMA = one MAC = two FLOPs); freq_GHz is the module's GPU
+# clock, used as the conversion clock.  `--sol-mode` (default sparse) selects the set the headline SOL is
+# priced at: the sparse SOL ASSUMES the workload is eligible for the 2:4 structured-sparsity tensor-core rate
+# (a lower bound dense kernels cannot reach); the dense SOL is the realistic bound for dense work.  Both are
+# always written.  No sparse figure for FP32 (CUDA cores).  No fp32 tensor-core key: fp32 uses the SM rate.
+#
+# source: NVIDIA Jetson Thor page -- https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/
+#         (Jetson T5000: "AI Performance 2070 TFLOPS (FP4-Sparse)", 2560-core Blackwell GPU, GPU Max Frequency
+#         1.57 GHz, 128 GB 256-bit LPDDR5X 273 GB/s); NVIDIA Technical Blog "Introducing NVIDIA Jetson Thor",
+#         Table 1 (Jetson T5000) -- https://developer.nvidia.com/blog/introducing-nvidia-jetson-thor-the-ultimate-platform-for-physical-ai/ :
+#         "2070 TFLOPS (Sparse FP4)  1035 TFLOPS (Dense FP4 | Sparse FP8 | Sparse INT8)  517 TFLOPs (Dense FP8 |
+#         Sparse FP16)", 96 fifth-generation Tensor Cores, 1.57 GHz max GPU; https://developer.nvidia.com/embedded/jetson-modules
+#         ("up to 2070 FP4 TFLOPS").  Captures under sources/arch_datasheets/ (SOURCES.json: URL, fetch date, sha256).
+#         The Jetson AGX Thor Series Module Data Sheet download returned HTTP 404 at capture time (recorded in
+#         SOURCES.json), so figures that only the data sheet states are marked unverified-from-source below.
+# PUBLISHED (blog Table 1 / product page): FP4 1035 dense | 2070 sparse; FP8 517 dense | 1035 sparse;
+#            INT8 1035 sparse; FP16 517 sparse.
+# DERIVED (NOT published by NVIDIA for Thor, kept as the repository's stated inference):
+#            FP16 dense 258.5 = half of the published sparse 517; BF16 = FP16; TF32 = half of FP16
+#            (dense 129.25 | sparse 258.5), the usual Tensor Core TF32:FP16 ratio; INT8 dense 517 = half of
+#            the published sparse 1035 (the data sheet's "FP8 TFLOPs is equivalent to INT8 TOPs" note, relayed
+#            by the maintainers, could not be fetched: unverified-from-source).
+# UNVERIFIED-FROM-SOURCE: FP32 (CUDA cores) 15 TFLOPS is the figure the previous revision of this file carried;
+#            no fetched NVIDIA page states an FP32 rate for Thor and the data sheet was unreachable.  Note the
+#            sanity bound 2560 CUDA cores x 2 FLOP x 1.57 GHz = 8.0 TFLOPS; the 15 TFLOPS figure is kept
+#            unchanged and flagged rather than replaced by an unsourced derivation.
+# Units example: FP8 dense 517 TFLOPS -> 517 x 1000 / 2 / 1.57 = 164650 MAC/cycle.
+#
+# History / provenance (issue #14, GitHub "Jetson_Thor_T5000 has twice the tensor-core peak"): before this
+# change the file carried MAC_per_cycle_fp8_tc 329299 ("517 Dense FP8 TFLOPS @ 1.57 GHz"), nvfp4 659236,
+# fp16/bf16 164649, tf32 82325, int8 329299 and MAC_per_cycle_fp32_sm 9554 ("15 FP32 TFLOPS").  Each is
+# peak_TFLOPS x 1000 / 1.57, i.e. the FLOP rate per cycle: twice the dense MAC rate and numerically equal
+# to the SPARSE MAC rate.  Those legacy values are therefore relabelled here as the sparse set (exact
+# derivation: 329618 / 659236 / 164650 / 82325) and the dense set is half.  The legacy FP32 SM value 9554
+# encoded 30 TFLOPS against the documented 15 (test_arch_mac_rates had pinned this as an expected failure)
+# and is corrected to 4777.  Legacy bare MAC_per_cycle_<p>_tc keys in USER profiles are still read as DENSE.
 
 name: "Jetson_Thor_T5000"
-# Jetson AGX Thor: Blackwell GPU, 2560 CUDA cores, 96 Gen5 Tensor Cores, 1.57 GHz
-DRAM_capacity: 137438953472  # 128GB LPDDR5X
-DRAM_byte_per_cycle: 173.9  # 273 GB/s at 1.57 GHz
-freq_GHz: 1.57  # GPU base/boost (Jetson AGX Thor)
-# AI perf from Jetson Thor/T5000 spec: 517 Dense FP8 | Sparse FP16; 1035 Dense FP4 | Sparse FP8; 2070 Sparse FP4
-MAC_per_cycle_int8_tc: 329299   # Sparse INT8 1035 TFLOPS → dense ~2x FP8; 658598 @ 1.57 GHz
-# 15 FP32 TFLOPS is SM (CUDA core) FP32; Thor has no separate published FP32 tensor-core number
-MAC_per_cycle_fp32_sm: 9554  # 15 FP32 TFLOPS (SM only) @ 1.57 GHz
-# TF32 runs on tensor cores; no pub spec for Thor — TC TF32 is half of FP16 throughput
-MAC_per_cycle_tf32_tc: 82325   # half of FP16 TC (164649/2) @ 1.57 GHz
-MAC_per_cycle_fp16_tc: 164649   # 258.5 TFLOPS dense FP16 (half of 517 Sparse FP16) @ 1.57 GHz
-MAC_per_cycle_bf16_tc: 164649   # same as FP16
-MAC_per_cycle_fp8_tc: 329299   # 517 Dense FP8 TFLOPS @ 1.57 GHz
-MAC_per_cycle_nvfp4_tc: 659236  # 1035 Dense FP4 TFLOPS @ 1.57 GHz (2070 Sparse)
+DRAM_capacity: 137438953472  # source: Jetson Thor product page, 128 GB 256-bit LPDDR5X
+DRAM_byte_per_cycle: 173.9  # source: Jetson Thor product page, 273 GB/s; / 1.57 GHz = 173.9
+freq_GHz: 1.57  # source: Jetson Thor product page, "GPU Max Frequency 1.57 GHz" (Jetson T5000)
+
+# CUDA-core (SM) FP32: no sparsity variant
+peak_TFLOPS_fp32_sm: 15  # source: previous revision of this file ("15 FP32 TFLOPS"); unverified-from-source (module data sheet HTTP 404 at capture; see header); no FP32 tensor-core figure
+MAC_per_cycle_fp32_sm: 4777  # = 15 x 1000 / 2 / 1.57 (4777.1)
+
+# TF32 Tensor Core -- derived: not published for Thor; TF32 = half the FP16 tensor rate
+peak_TFLOPS_tf32_dense: 129.25  # derived: half of the derived FP16 dense 258.5 (TF32:FP16 = 1:2 as on every published Tensor Core generation)
+peak_TFLOPS_tf32_sparse: 258.5  # derived: half of the FP16 sparse 517
+MAC_per_cycle_tf32_tc_dense: 41162  # = 129.25 x 1000 / 2 / 1.57 (41162.4)
+MAC_per_cycle_tf32_tc_sparse: 82325  # = 258.5 x 1000 / 2 / 1.57 (82324.8)
+
+# FP16 Tensor Core -- sparse 517 is published (blog Table 1: "517 TFLOPs (Dense FP8 | Sparse FP16)"); dense = half (unpublished, derived)
+peak_TFLOPS_fp16_dense: 258.5  # derived: half of the published sparse FP16 517 (NVIDIA publishes no dense FP16 figure for Thor)
+peak_TFLOPS_fp16_sparse: 517  # source: NVIDIA Jetson Thor blog Table 1, "517 TFLOPs (Dense FP8 | Sparse FP16)"
+MAC_per_cycle_fp16_tc_dense: 82325  # = 258.5 x 1000 / 2 / 1.57 (82324.8)
+MAC_per_cycle_fp16_tc_sparse: 164650  # = 517 x 1000 / 2 / 1.57 (164649.7)
+
+# BF16 Tensor Core -- derived: same as FP16 (unpublished for Thor)
+peak_TFLOPS_bf16_dense: 258.5  # derived: = FP16 dense
+peak_TFLOPS_bf16_sparse: 517  # derived: = FP16 sparse
+MAC_per_cycle_bf16_tc_dense: 82325  # = 258.5 x 1000 / 2 / 1.57
+MAC_per_cycle_bf16_tc_sparse: 164650  # = 517 x 1000 / 2 / 1.57
+
+# FP8 Tensor Core
+peak_TFLOPS_fp8_dense: 517  # source: NVIDIA Jetson Thor blog Table 1, "517 TFLOPs (Dense FP8 | Sparse FP16)"
+peak_TFLOPS_fp8_sparse: 1035  # source: NVIDIA Jetson Thor blog Table 1, "1035 TFLOPS (Dense FP4 | Sparse FP8 | Sparse INT8)"
+MAC_per_cycle_fp8_tc_dense: 164650  # = 517 x 1000 / 2 / 1.57 (164649.7)
+MAC_per_cycle_fp8_tc_sparse: 329618  # = 1035 x 1000 / 2 / 1.57 (329617.8)
+
+# INT8 Tensor Core (TOPS) -- sparse 1035 is published (blog Table 1 "Sparse INT8"); dense = half (derived; the data sheet's FP8 = INT8 equivalence note is unverified-from-source)
+peak_TFLOPS_int8_dense: 517  # derived: half of the published sparse INT8 1035 (= FP8 dense; the data sheet's equivalence note could not be fetched)
+peak_TFLOPS_int8_sparse: 1035  # source: NVIDIA Jetson Thor blog Table 1, "1035 TFLOPS (Dense FP4 | Sparse FP8 | Sparse INT8)" (TOPS)
+MAC_per_cycle_int8_tc_dense: 164650  # = 517 x 1000 / 2 / 1.57
+MAC_per_cycle_int8_tc_sparse: 329618  # = 1035 x 1000 / 2 / 1.57
+
+# FP4 Tensor Core (NVFP4)
+peak_TFLOPS_nvfp4_dense: 1035  # source: NVIDIA Jetson Thor blog Table 1, "1035 TFLOPS (Dense FP4 | Sparse FP8 | Sparse INT8)"
+peak_TFLOPS_nvfp4_sparse: 2070  # source: Jetson Thor product page, "AI Performance 2070 TFLOPS (FP4-Sparse)"; blog Table 1 "2070 TFLOPS (Sparse FP4)"
+MAC_per_cycle_nvfp4_tc_dense: 329618  # = 1035 x 1000 / 2 / 1.57 (329617.8)
+MAC_per_cycle_nvfp4_tc_sparse: 659236  # = 2070 x 1000 / 2 / 1.57 (659235.7)

@@ -1,0 +1,53 @@
+[SOLAR provenance excerpt: lines 419, 421-424, 426-428, 430-432, 434-436, 438-440, 442-468, 470-476 of the HTML tag-stripped text extract of the nvidia.com NVIDIA HGX page, HGX B300 / HGX B200 specifications table, URL https://www.nvidia.com/en-us/data-center/hgx/, fetched 2026-11-06T06:58:02Z; full extract sha256 e7763dbf7d02c50d8a7a0719ed51233bb2f3b35d3dd902be47aa7b45d38732cf (592 lines, retained privately by the release lane); raw document sha256 bac050ca63ef28ce42ee5ffed36ec9ce0600ff0ac22f51c0874e133a5076fc22. HTML attribute residue lines dropped. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+ HGX B300<sup>4</sup>
+ HGX B200<sup>4</sup>
+ Form Factor
+ 8x NVIDIA Blackwell Ultra SXM
+ 8x NVIDIA Blackwell SXM
+ FP4 Tensor Core<sup>1</sup>
+ 144 PFLOPS | 108 PFLOPS
+ 144 PFLOPS | 72 PFLOPS
+ FP8/FP6 Tensor Core<sup>2</sup>
+ 72 PFLOPS
+ 72 PFLOPS
+ INT8 Tensor Core<sup>2</sup>
+ 3 POPS
+ 72 POPS
+ FP16/BF16 Tensor Core<sup>2</sup>
+ 36 PFLOPS
+ 36 PFLOPS
+ TF32 Tensor Core<sup>2</sup>
+ 18 PFLOPS
+ 18 PFLOPS
+ FP32
+ 600 TFLOPS
+ 600 TFLOPS
+ FP64/FP64 Tensor Core
+ 10 TFLOPS
+ 296 TFLOPS
+ Total Memory
+ 2.1 TB
+ 1.4 TB
+ NVIDIA NVLink
+ Fifth generation
+ Fifth generation
+ NVIDIA NVLink Switch™
+ NVLink 5 Switch
+ NVLink 5 Switch
+ NVLink GPU-to-GPU Bandwidth
+ 1.8 TB/s
+ 1.8 TB/s
+ Total NVLink Bandwidth
+ 14.4 TB/s
+ 14.4 TB/s
+ Networking Bandwidth
+ 1.6 TB/s
+ 0.8 TB/s
+ Attention Performance<sup>3</sup>
+ 2x
+ 1x
+ 1. Specification in Sparse | Dense
+ 2. Specification in Sparse. Dense is ½ sparse spec shown.
+ 3. vs. NVIDIA Blackwell.
+ 4. HGX B300 and HGX B200 shipping now.

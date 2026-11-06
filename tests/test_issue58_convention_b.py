@@ -18,6 +18,7 @@ import sys
 import pytest
 import yaml
 
+from solar.perf.arch_rates import DEFAULT_SOL_MODE, resolve_arch_rates
 from solar.perf.perf_model import EinsumGraphPerfModel, PerfProjectionUnavailable
 from test_mac_report_provenance import H, MIXED, MIXED_INPUTS, ROOT, _analyze, _dsl_graph
 
@@ -73,7 +74,11 @@ def _predict(analysis_path, out, profile="unit", precision="fp16"):
 
 
 def _rate(profile, key):
-    return UNIT_PROFILE[key] if profile == "unit" else yaml.safe_load((ARCH / profile).read_text())[key]
+    """The rate ``_predict`` applies for ``key``: the unit profile's bare key, or a shipped profile resolved at the default SOL mode
+    (issue #14: shipped profiles carry explicit ``_dense`` / ``_sparse`` keys only, so the bare key is read through the resolver)."""
+    if profile == "unit":
+        return UNIT_PROFILE[key]
+    return resolve_arch_rates(yaml.safe_load((ARCH / profile).read_text()), DEFAULT_SOL_MODE)[key]
 
 
 def _strip_typed(a):

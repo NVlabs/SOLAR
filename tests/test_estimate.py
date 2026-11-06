@@ -29,12 +29,17 @@ def test_explicit_v0_never_calls_llm(monkeypatch, source, tmp_path):
     assert not list(tmp_path.glob("run-*/result.json"))
 
 
+# issue #14: the fifth value of the private _analyze contract (both peak sets; the stub prices them equal)
+_BLOCK = {"fused_ms": 1, "unfused_ms": 2, "fused_prefetched_ms": 1, "rate_keys": {"MAC_per_cycle_fp16_tc": "MAC_per_cycle_fp16_tc_sparse"}}
+SOLS = {"sol_mode": "sparse", "sol_mode_default": "sparse", "sol_sparse": _BLOCK, "sol_dense": _BLOCK}
+
+
 def test_auto_supported_no_llm(monkeypatch, source, tmp_path):
     monkeypatch.setattr(api, "_mechanical", lambda *args: (source, {"kind": "mechanical"}))
     llm = Mock(side_effect=AssertionError("LLM must not be called"))
     monkeypatch.setattr(api, "_translate_api", llm)
     typed = {"aggregate": 3, "contraction": {"macs": 3, "by_compute_dtype": {"workload_precision": 3}}, "scalar_statement_multiplies": {"macs": 0, "layers": {}}, "components_sum_to_aggregate": True}
-    monkeypatch.setattr(api, "_analyze", lambda *args: (1, 2, 3, typed))   # issue #58: _analyze returns (fused, unfused, macs, macs_typed)
+    monkeypatch.setattr(api, "_analyze", lambda *args: (1, 2, 3, typed, SOLS))   # issue #58 / #14: _analyze returns (fused, unfused, macs, macs_typed, sol blocks)
     r = api.estimate(source, tmp_path)
     assert r.requested_mode == "auto" and r.used_mode == "v0"
     llm.assert_not_called()
@@ -47,7 +52,7 @@ def test_auto_only_falls_back_on_unsupported(monkeypatch, source, tmp_path):
     monkeypatch.setattr(api, "_translate_api", llm)
     monkeypatch.setattr(api, "_validated_ir", lambda *args: (source, {"numeric_comparison": True}))
     typed = {"aggregate": 3, "contraction": {"macs": 3, "by_compute_dtype": {"workload_precision": 3}}, "scalar_statement_multiplies": {"macs": 0, "layers": {}}, "components_sum_to_aggregate": True}
-    monkeypatch.setattr(api, "_analyze", lambda *args: (1, 2, 3, typed))   # issue #58: four-value private result contract
+    monkeypatch.setattr(api, "_analyze", lambda *args: (1, 2, 3, typed, SOLS))   # issue #58 / #14: five-value private result contract
     for error in (api.PipelineError("broken environment"), MemoryError("oom"), TimeoutError("timeout")):
         monkeypatch.setattr(api, "_mechanical", Mock(side_effect=error))
         with pytest.raises(type(error)):

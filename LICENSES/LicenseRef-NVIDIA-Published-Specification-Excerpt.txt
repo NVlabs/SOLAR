@@ -1,0 +1,14 @@
+LicenseRef-NVIDIA-Published-Specification-Excerpt
+
+The files annotated with this identifier (sources/arch_datasheets/*.txt) are
+short verbatim excerpts of product specification tables and their footnotes
+from documents and web pages published by NVIDIA Corporation. Copyright
+NVIDIA Corporation. They are reproduced in this repository solely to cite and
+allow verification of the hardware figures in configs/arch/*.yaml; each file
+names its source URL, fetch date and the hashes of the original document in
+its first line and in sources/arch_datasheets/SOURCES.json.
+
+This is not a licence grant. The excerpts are third-party material, are not
+covered by the Apache License 2.0 that applies to the SOLAR project, and no
+right to redistribute them beyond this citation is asserted. Obtain the
+documents from the URLs recorded in SOURCES.json.

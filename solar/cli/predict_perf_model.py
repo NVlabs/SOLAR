@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 from solar.perf import EinsumGraphPerfModel, PerfProjectionUnavailable
+from solar.perf.arch_rates import DEFAULT_SOL_MODE, SOL_MODES
 from solar.common.utils import ensure_directory
 
 
@@ -65,6 +66,14 @@ def main() -> None:
              "instead of one bytes_per_element for the whole graph; --precision then only picks the MAC rate.",
     )
     parser.add_argument(
+        "--sol-mode",
+        choices=list(SOL_MODES),
+        default=DEFAULT_SOL_MODE,
+        help="Which tensor-core peak set prices the headline SOL (issue #14): 'sparse' (default; the vendor's "
+             "structured-sparsity peak, a lower bound) or 'dense' (the more realistic estimate for dense work). "
+             "perf_<arch>.yaml always carries both as sol_sparse / sol_dense.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug output.",
@@ -89,6 +98,7 @@ def main() -> None:
             arch_config=args.arch_config,
             precision=args.precision,
             copy_analysis=not args.no_copy_analysis,
+            sol_mode=args.sol_mode,
         )
     except PerfProjectionUnavailable as exc:
         # Jenny's decision (2026-10-26): a declared compute dtype without a
@@ -105,6 +115,10 @@ def main() -> None:
     print(f"  Arch: {perf.get('arch', {}).get('name', 'unknown')}")
     print(f"  Unfused runtime (ms): {perf.get('unfused', {}).get('runtime_ms', 0.0):.4f}")
     print(f"  Fused runtime (ms): {perf.get('fused', {}).get('runtime_ms', 0.0):.4f}")
+    sp = perf.get("sol_sparse", {}); dn = perf.get("sol_dense", {})
+    print(f"  SOL mode: {perf.get('sol_mode')} (headline; default {perf.get('sol_mode_default')}). Both sets in the record: "
+          f"sparse fused {sp.get('fused', {}).get('runtime_ms', 0.0):.4f} ms (lower bound) | "
+          f"dense fused {dn.get('fused', {}).get('runtime_ms', 0.0):.4f} ms (more realistic for dense work)")
     conv = perf.get("sol_convention", {}) or {}; term = (perf.get("workload", {}) or {}).get("tensor_core_term", {}) or {}
     other_priced = term.get("non_contraction_other_macs_priced")
     print(f"  Headline: {conv.get('headline', 'unlabelled')} (issue #58 convention B). Tensor-core term prices contraction MACs"

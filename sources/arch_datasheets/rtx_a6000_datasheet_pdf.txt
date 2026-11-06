@@ -1,0 +1,28 @@
+[SOLAR provenance excerpt: lines 8-31, 143-144 of the pdftotext -layout extract of the NVIDIA RTX A6000 datasheet (nvidia.com PDF), 'SPECIFICATIONS' column and footnotes, URL https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/quadro-product-literature/proviz-print-nvidia-rtx-a6000-datasheet-us-nvidia-1454980-r9-web%20(1).pdf, fetched 2026-11-06T06:58:03Z; full extract sha256 7a86216389d86a0d6055b9f5881bb396f6853904f4459806bd72e5dd2be51462 (153 lines, retained privately by the release lane); raw document sha256 749a45d06f55f7657ce3f9a8a51167be6bd1153f6a5149769b2048b50bc0299e. Left-hand prose column removed (columns 84+ kept) on the table lines. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+SPECIFICATIONS
+GPU memory                       48 GB GDDR6
+
+Memory interface                 384-bit
+Memory bandwidth                 768 GB/s
+Error-correcting code (ECC)      Yes
+NVIDIA Ampere architecture-      10,752
+based CUDA Cores
+
+NVIDIA third-generation          336
+Tensor Cores
+NVIDIA second-generation         84
+RT Cores
+
+Single-precision performance     38.7 TFLOPS7
+
+RT Core performance              75.6 TFLOPS7
+
+Tensor performance               309.7 TFLOPS8
+
+NVIDIA NVLink                    Connects two NVIDIA RTX
+                                 A6000 GPUs12
+
+NVIDIA NVLink bandwidth          112.5 GB/s (bidirectional)
+precision. | 4 Via adapter/connector/bracket. | 5 Quadro Sync II card sold separately. | 6 Windows 7, 8, 8.1, 10, and Linux. | 7 Peak
+rates based on GPU Boost Clock. | 8 Effective teraFLOPS (TFLOPS) using the new sparsity feature. | 9 Display ports are on by default

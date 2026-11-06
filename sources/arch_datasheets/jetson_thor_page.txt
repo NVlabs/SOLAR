@@ -1,0 +1,33 @@
+[SOLAR provenance excerpt: lines 296-326 of the HTML tag-stripped text extract of the nvidia.com Jetson Thor page, 'NVIDIA Jetson Thor Series' module comparison (T5000 / T4000), URL https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/, fetched 2026-11-06T06:58:03Z; full extract sha256 2cf812f1ddb343209930f10a56cc81601b6305d3ff6519a1bded0199d63c1e0b (886 lines, retained privately by the release lane); raw document sha256 2faf0d97d38c27a830860d64575213de07e2d73a7eb3370bb78da93f4c618689. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+ NVIDIA Jetson Thor Series
+ Jetson AGX Thor Developer Kit
+ Jetson T5000
+ Jetson T4000
+ AI Performance
+ 2070 TFLOPS (FP4—Sparse)
+ 1200 TFLOPS (FP4—Sparse)
+ GPU
+ 2560-core NVIDIA Blackwell architecture GPU with fifth-gen Tensor Cores
+ Multi-Instance GPU (MIG) with 10 TPCs
+ 1536-core NVIDIA Blackwell architecture GPU with fifth-gen Tensor Cores
+ Multi-Instance GPU (MIG) with six TPCs
+ GPU Max Frequency
+ 1.57 GHz
+ 1.53 GHz
+ CPU
+ 14-core Arm® Neoverse®-V3AE 64-bit CPU
+ 1 MB L2 cache per core
+ 16 MB shared system L3 cache
+ 12-core Arm® Neoverse®-V3AE 64-bit CPU
+ 1 MB L2 cache per core
+ 16 MB shared system L3 cache
+ CPU Max Frequency
+ 2.6 GHz
+ Vision Accelerator
+ 1x PVA v3
+ Memory
+ 128 GB 256-bit LPDDR5X
+ 273 GB/s
+ 64 GB 256-bit LPDDR5X
+ 273 GB/s

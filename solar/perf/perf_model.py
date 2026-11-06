@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import numbers
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -38,6 +39,8 @@ import yaml
 
 from solar.common.constants import BYTES_PER_ELEMENT, DEFAULT_PRECISION
 from solar.common.utils import ensure_directory, NoAliasDumper, yaml_safe_load
+from solar.perf.arch_rates import (DEFAULT_SOL_MODE, SOL_MODES, SOL_MODE_NOTES, applied_key, check_sol_mode, mode_key,
+                                   resolve_arch_rates)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -519,7 +522,7 @@ _ZEROED_REASONS = frozenset(_ZEROED_WORK)
 def _rate_class(rate_key: str) -> str:
     """The hardware rate CLASS an applied ``MAC_per_cycle_*`` key denotes (issue #58, P2-rate-class-1): derived from the
     key the fallback chain actually selected, never assumed from the workload precision."""
-    if rate_key.endswith("_tc"):
+    if re.search(r"_tc(_dense|_sparse)?$", rate_key):    # issue #14: the applied key is the explicit _dense / _sparse spelling
         return "tensor_core"
     if rate_key.endswith("_sm"):
         return "sm"
@@ -620,7 +623,9 @@ def _default_rate_remainder_note(total: Dict[str, Any], macs_default: int, rate_
     for; `rate_is_fallback` says whether the fallback chain substituted another key (P2-rate-class-1)."""
     typed = total.get("macs_typed") if isinstance(total.get("macs_typed"), dict) else None
     cls = _rate_class(rate_key); words = _RATE_CLASS_WORDS[cls]
-    fallback = requested_key is not None and requested_key != rate_key
+    # issue #14: the applied key is reported in its explicit `_dense` / `_sparse` spelling; the spelling of the REQUESTED
+    # bare key is the same rate (selected by sol_mode), not a fallback-chain substitution
+    fallback = requested_key is not None and re.sub(r"_(dense|sparse)$", "", rate_key) != requested_key
     rec: Dict[str, Any] = {"macs": int(macs_default), "rate_key": rate_key, "rate_class": cls,
                            **({"requested_rate_key": requested_key} if requested_key else {}), "rate_is_fallback": bool(fallback),
                            **({"precision": precision} if precision else {})}
@@ -714,6 +719,7 @@ class EinsumGraphPerfModel:
         arch_config: str = "H100_PCIe",
         precision: str = DEFAULT_PRECISION,
         copy_analysis: bool = True,
+        sol_mode: str = DEFAULT_SOL_MODE,
     ) -> Optional[Dict[str, Any]]:
         """Predict performance and write `perf_<arch>.yaml`.
 
@@ -723,10 +729,14 @@ class EinsumGraphPerfModel:
             arch_config: Architecture name (e.g., "H100_PCIe") or path to a YAML file.
             precision: Precision used for selecting MAC throughput keys.
             copy_analysis: If True, copy analysis into output dir as `analysis.yaml`.
+            sol_mode: issue #14 -- which tensor-core peak set prices the headline SOL: ``"sparse"`` (default; the
+                vendor's structured-sparsity peak, a lower bound) or ``"dense"`` (the more realistic estimate for dense
+                work).  Both SOLs are always written (``sol_sparse`` / ``sol_dense``); the mode selects the top-level set.
 
         Returns:
             Perf dict or None on failure.
         """
+        sol_mode = check_sol_mode(sol_mode)        # ValueError before anything is read or written
         analysis_path = Path(analysis_path)
         out_dir = ensure_directory(output_dir)
 
@@ -757,6 +767,9 @@ class EinsumGraphPerfModel:
             if self.debug:
                 logger.debug(f"failed loading arch config: {arch_config}")
             return None
+        # issue #14: a flat view of the profile where every bare MAC_per_cycle_<p>_tc key holds the rate of the selected
+        # peak set (dense | sparse); legacy bare keys mean dense; the explicit keys and the resolution record stay in the view
+        arch = resolve_arch_rates(arch, sol_mode)
 
         arch_name = str(arch.get("name") or Path(str(arch_config)).stem or "arch")
 
@@ -870,6 +883,8 @@ class EinsumGraphPerfModel:
                 else:
                     mac_per_cycle_raw = 1.0; mac_rate_key_used = "MAC_per_cycle (default 1.0: no rate key in the profile)"
 
+        mac_rate_key_bare = mac_rate_key_used                        # the bare key the chain selected (mode-independent spelling)
+        mac_rate_key_used = applied_key(arch, mac_rate_key_used)     # issue #14: reported as the explicit _dense / _sparse key it came from
         sm_per_cycle_raw = arch.get("MAC_per_cycle_fp32_sm", 0)
 
         # Tensor-core cycles (matmul/conv MACs).  MACs whose operands were
@@ -936,7 +951,7 @@ class EinsumGraphPerfModel:
                 # exact int kept here: no count is converted to float before every
                 # conflict / conservation refusal has run (conservation-float-order-1); the raw rate is
                 # admitted through `to_rate` below, after those refusals, before any arithmetic or truth test
-                compute_dtype_rates[dt] = {"key": dt_key, "MAC_per_cycle": dt_rate, "macs": eff_macs,   # RAW rate: validated in the rate layer
+                compute_dtype_rates[dt] = {"key": applied_key(arch, dt_key), "MAC_per_cycle": dt_rate, "macs": eff_macs,   # RAW rate: validated in the rate layer
                                            "layer_macs_bound": bound}
                 priced_quantized_macs += eff_macs
                 continue
@@ -1358,6 +1373,33 @@ class EinsumGraphPerfModel:
         speedup_fp_vs_fused = fin("speedup.fused_prefetched_vs_fused", (fused_total_cycles / fused_prefetched_total_cycles) if fused_prefetched_total_cycles > 0 else 1.0)
         memred_fused_vs_unfused = fin("memory_reduction.fused_vs_unfused", 1.0 - (total_fused_bytes / total_orojenesis_bytes) if total_orojenesis_bytes > 0 else 0.0)
         memred_fp_vs_unfused = fin("memory_reduction.fused_prefetched_vs_unfused", 1.0 - (total_fused_prefetched_bytes / total_orojenesis_bytes) if total_orojenesis_bytes > 0 else 0.0)
+        # ── issue #14: BOTH SOLs.  The tensor-core term is linear in 1 / rate per priced bucket, so the other peak set's
+        # cycles follow from the same validated counts and that set's rates (validated at the same rate boundary); the
+        # memory terms do not depend on the mode.  The selected mode's block reproduces the top-level numbers.
+        sol_blocks: Dict[str, Any] = {}
+        _bare_key = lambda k: re.sub(r"_(dense|sparse)$", "", k)     # the explicit applied key -> its mode-independent spelling
+        for _mode in SOL_MODES:
+            _rate_keys: Dict[str, str] = {}; _rates: Dict[str, float] = {}
+            def _mode_rate(bare: str, fallback_value: float) -> float:
+                k = mode_key(arch, bare, _mode)
+                if k not in arch:                                   # the unit default (no rate key in the profile)
+                    return fallback_value
+                r = to_rate(k, arch[k]); _rate_keys[bare] = k; _rates[k] = r
+                return r
+            _r_main = _mode_rate(mac_rate_key_bare, mac_per_cycle)
+            _tc = fin(f"sol_{_mode}.compute_tc_cycles (default-rate term)", macs_tc_default_f / _r_main if _r_main > 0 else 0.0,
+                      macs=macs_tc_default_f, rate=_r_main)
+            for dt, rec in compute_dtype_rates.items():
+                if rec.get("MAC_per_cycle"):
+                    _r_dt = _mode_rate(_bare_key(rec["key"]), rec["MAC_per_cycle"])
+                    _tc = fin(f"sol_{_mode}.compute_tc_cycles (+ {dt} term)", _tc + rec["macs"] / _r_dt, macs=rec["macs"], rate=_r_dt)
+            _sections: Dict[str, Any] = {}
+            for _name, _mem in (("unfused", unfused_mem_cycles), ("fused", fused_mem_cycles), ("fused_prefetched", fused_prefetched_mem_cycles)):
+                _total = max(_tc, _mem)
+                _sections[_name] = {"compute_tc_cycles": int(_tc), "total_cycles": int(_total),
+                                    "runtime_ms": fin(f"sol_{_mode}.{_name}.runtime_ms", _total / cycles_per_ms, total_cycles=_total),
+                                    "bottleneck": "compute" if _tc >= _mem else "memory"}
+            sol_blocks[_mode] = {**_sections, "rate_keys": _rate_keys, "rates": _rates, "note": SOL_MODE_NOTES[_mode]}
         # FINAL traffic totals (after every re-pricing and the dtype-bytes selection): finite AND non-negative
         # (traffic-count-validation-1); each value here is already a checked float, this is the last gate before the record
         total_orojenesis_bytes = fin("unfused.memory_bytes (final)", total_orojenesis_bytes, nonneg=True)
@@ -1407,8 +1449,13 @@ class EinsumGraphPerfModel:
         }
         perf: Dict[str, Any] = {
             "sol_convention": dict(SOL_CONVENTION),
+            # issue #14: the peak set the top-level unfused/fused/fused_prefetched numbers are priced at, and the default
+            "sol_mode": sol_mode,
+            "sol_mode_default": DEFAULT_SOL_MODE,
             "arch": {
                 "name": arch_name,
+                "sol_mode": sol_mode,
+                "sol_rate_resolution": arch["sol_rate_resolution"],
                 "freq_GHz": freq_ghz,
                 "DRAM_byte_per_cycle": dram_bw,
                 "mac_per_cycle_key": mac_key,
@@ -1495,6 +1542,9 @@ class EinsumGraphPerfModel:
                 "arithmetic_intensity": fused_prefetched_ai,
                 "bottleneck": "compute" if compute_cycles >= fused_prefetched_mem_cycles else "memory",
             },
+            # issue #14: both peak sets, always; the top-level sections above equal sol_<sol_mode>
+            "sol_sparse": sol_blocks["sparse"],
+            "sol_dense": sol_blocks["dense"],
             # weight_elements / weight_bytes are the PARAMETER FOOTPRINT of
             # the analysis (distinct parameters per consuming op), not the
             # weight traffic (analysis `weight_read_elements`); the three

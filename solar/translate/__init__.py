@@ -154,6 +154,9 @@ class SolResult:
     unfused_ms: Optional[float] = None
     macs: Optional[int] = None
     macs_typed: Optional[dict] = None          # issue #58: the aggregate's typed components (perf workload.macs_typed)
+    sol_mode: str = "sparse"                   # issue #14: the peak set fused_ms / unfused_ms are priced at (default sparse)
+    sol_sparse: Optional[dict] = None          # {fused_ms, unfused_ms, fused_prefetched_ms, rate_keys} -- assumes sparsity eligibility; lower bound
+    sol_dense: Optional[dict] = None           # same at the dense peaks -- the realistic bound for dense work
     perf_path: Optional[Path] = None
     analysis_path: Optional[Path] = None
     einsum_path: Optional[Path] = None
@@ -309,6 +312,13 @@ def finalize_verify(result: VerifyResult, *, model_path, ir_path,
     return rc
 
 
+def _sol_block(perf, mode):
+    """issue #14: the ``sol_<mode>`` runtimes of a perf record as a flat dict (None fields when absent)."""
+    b = perf.get(f"sol_{mode}") or {}
+    return {"fused_ms": b.get("fused", {}).get("runtime_ms"), "unfused_ms": b.get("unfused", {}).get("runtime_ms"),
+            "fused_prefetched_ms": b.get("fused_prefetched", {}).get("runtime_ms"), "rate_keys": dict(b.get("rate_keys") or {})}
+
+
 def sol(ir_path, definition_dir, out_dir, arch: str = "B200",
         precision: str = "fp16", fallback_adapter=None, custom_inputs=None,
         measure_density: bool = False, density_overrides: Optional[dict] = None,
@@ -320,7 +330,8 @@ def sol(ir_path, definition_dir, out_dir, arch: str = "B200",
         mem_budget_gb: Optional[float] = None,
         measure_timeout: Optional[int] = None,
         measure_attention_density: bool = False,
-        allow_unbound_constants: bool = False) -> SolResult:
+        allow_unbound_constants: bool = False,
+        sol_mode: str = "sparse") -> SolResult:
     """Original-shape trace -> einsum graph -> analysis -> SOL perf.
 
     The trace step shells out to scripts/trace_saved_ir.py (it owns the
@@ -453,7 +464,7 @@ def sol(ir_path, definition_dir, out_dir, arch: str = "B200",
     EinsumGraphPerfModel(debug=False).predict(
         analysis_path, ensure_directory(perf_dir),
         arch_config=arch, precision=perf_precision or precision,
-        copy_analysis=False)
+        copy_analysis=False, sol_mode=sol_mode)
     perf_path = perf_dir / f"perf_{arch}.yaml"
 
     perf = yaml.safe_load(perf_path.read_text())
@@ -475,6 +486,7 @@ def sol(ir_path, definition_dir, out_dir, arch: str = "B200",
         "perf_path": str(perf_path),
         "precision": precision,
         "perf_precision": perf_precision or precision,
+        "sol_mode": sol_mode,
         "workload_idx": workload_idx,
         "note": ("numbers admitted by a hash-matched numerical receipt for "
                  "exactly these inputs" if strict else
@@ -488,6 +500,8 @@ def sol(ir_path, definition_dir, out_dir, arch: str = "B200",
         unfused_ms=perf["unfused"]["runtime_ms"],
         macs=perf["workload"]["total_macs"],
         macs_typed=perf["workload"].get("macs_typed"),
+        sol_mode=perf.get("sol_mode", sol_mode),
+        sol_sparse=_sol_block(perf, "sparse"), sol_dense=_sol_block(perf, "dense"),
         perf_path=perf_path, analysis_path=analysis_path,
         einsum_path=einsum_path, dsl_dir=dsl_dir, log=log,
         validated=bool(strict), validation_status=validation["status"],

@@ -84,6 +84,10 @@ def _add_sol(sub):
     p.add_argument("--perf-precision", default=None,
                    help="Bill the perf stage at this precision (default: "
                         "--precision).")
+    p.add_argument("--sol-mode", choices=["sparse", "dense"], default="sparse",
+                   help="tensor-core peak set for the headline SOL (issue #14): sparse "
+                        "(default; assumes structured-sparsity eligibility, a lower bound) "
+                        "or dense (the realistic bound); perf_<arch>.yaml carries both.")
     # strict receipt gate (library parity, A7)
     p.add_argument("--strict", action="store_true",
                    help="Refuse to trace unless --receipt hash-matches the "
@@ -185,6 +189,7 @@ def main() -> int:
                         density_overrides=overrides,
                         workload_idx=args.workload_idx,
                         perf_precision=args.perf_precision,
+                        sol_mode=args.sol_mode,
                         strict=args.strict, receipt=args.receipt,
                         source_path=args.source_path,
                         axes=axes or None, mem_budget_gb=args.mem_budget,

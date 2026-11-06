@@ -37,13 +37,15 @@ def _predict(analysis, out, arch, precision):
 @pytest.mark.parametrize("profile, precision, applied_key, cls, fallback", [
     ("H100_SXM.yaml", "fp32", "MAC_per_cycle_fp32_sm", "sm", True),          # the reviewer's reproduction: no fp32 tensor-core key -> SM fallback
     ("B200.yaml", "fp32", "MAC_per_cycle_fp32_sm", "sm", True),
-    ("A6000.yaml", "fp32", "MAC_per_cycle_fp32_tc", "tensor_core", False),   # native fp32 tensor-core key
-    ("H100_SXM.yaml", "fp16", "MAC_per_cycle_fp16_tc", "tensor_core", False),
-    ("A6000.yaml", "bf16", "MAC_per_cycle_bf16_tc", "tensor_core", False),
-], ids=["h100-fp32-sm-fallback", "b200-fp32-sm-fallback", "a6000-fp32-tc", "h100-fp16-tc", "a6000-bf16-tc"])
+    # issue #14: the A6000's "estimated" fp32 tensor-core key is gone (fp32 falls back to the SM rate like every other profile),
+    # and the applied tensor-core key is the explicit spelling of the default (sparse) peak set
+    ("A6000.yaml", "fp32", "MAC_per_cycle_fp32_sm", "sm", True),
+    ("H100_SXM.yaml", "fp16", "MAC_per_cycle_fp16_tc_sparse", "tensor_core", False),
+    ("A6000.yaml", "bf16", "MAC_per_cycle_bf16_tc_sparse", "tensor_core", False),
+], ids=["h100-fp32-sm-fallback", "b200-fp32-sm-fallback", "a6000-fp32-sm-fallback", "h100-fp16-tc", "a6000-bf16-tc"])
 def test_receipt_names_the_applied_rate_class(mixed_analysis, tmp_path, profile, precision, applied_key, cls, fallback):
     prof = yaml.safe_load((ARCH / profile).read_text())
-    assert (applied_key in prof) and ((f"MAC_per_cycle_{precision}_tc" in prof) is not fallback), profile
+    assert (applied_key in prof) and ((f"MAC_per_cycle_{precision}_tc_sparse" in prof) is not fallback), profile
     perf = _predict(mixed_analysis, tmp_path / "perf", ARCH / profile, precision)
     r = perf["workload"]["default_rate_remainder"]
     assert r["rate_key"] == applied_key == perf["arch"]["mac_per_cycle_key_applied"] and r["rate_class"] == cls == perf["arch"]["mac_rate_class_applied"]
@@ -75,5 +77,6 @@ def test_profile_without_any_mac_rate_key_reports_the_unit_default_class(mixed_a
 
 def test_rate_class_derivation_is_by_key_suffix_only():
     assert _rate_class("MAC_per_cycle_fp32_tc") == "tensor_core" and _rate_class("MAC_per_cycle_nvfp4_tc") == "tensor_core"
+    assert _rate_class("MAC_per_cycle_fp16_tc_sparse") == "tensor_core" and _rate_class("MAC_per_cycle_fp16_tc_dense") == "tensor_core"   # issue #14 spellings
     assert _rate_class("MAC_per_cycle_fp32_sm") == "sm" and _rate_class("MAC_per_cycle (default 1.0: no rate key in the profile)") == "default_unit"
     assert _rate_class("something_else") == "unknown"

@@ -1,0 +1,12 @@
+[SOLAR provenance excerpt: lines 336-343, 382-383 of the HTML tag-stripped text extract of the nvidia.com NVIDIA DGX B200 page, 'NVIDIA DGX B200 Specifications', URL https://www.nvidia.com/en-us/data-center/dgx-b200/, fetched 2026-11-06T06:58:02Z; full extract sha256 c19f31c4e6ef586c5d471884b4bd6c10e4a95db22ff995a46c96db5196635107 (469 lines, retained privately by the release lane); raw document sha256 3ad63bb03436aa2823a20a0656455911af4ee873032ea6e64a1bfa03219d0760. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+ NVIDIA DGX B200 Specifications
+ GPU
+ 8x NVIDIA Blackwell GPUs
+ GPU Memory
+ 1,440 GB total, 64 TB/s HBM3e bandwidth
+ Performance
+ FP4 Tensor Core: 144 PFLOPS | 72 PFLOPS*
+ FP8 Tensor Core: 72 PFLOPS**
+ *Shown in sparse | dense
+ **Specification shown in sparse. Dense performance is ½ sparse spec shown.

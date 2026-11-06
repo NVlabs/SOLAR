@@ -1118,7 +1118,8 @@ class PyTorchToEinsum:
     _CONST_OPERAND_OPS: "set[str]" = {
         "conv1d", "conv2d", "conv3d",
         "conv_transpose1d", "conv_transpose2d", "conv_transpose3d",
-        "linear", "matmul", "bmm", "addmm", "mm", "embedding",
+        "linear", "matmul", "bmm", "addmm", "addmv", "baddbmm", "addbmm", "mm", "mv", "dot",
+        "embedding",
     }
 
     def _repair_torchview_quirks(
@@ -3055,20 +3056,55 @@ class PyTorchToEinsum:
             return None
         return x.slot, weight.slot, bias.slot
 
-    @staticmethod
-    def _addmm_positional_operands(input_shapes: List[Any]) -> Optional[Tuple[List[Any], List[Any], List[Any]]]:
-        """Return (bias, mat1, mat2) shapes for a splittable addmm, else None.
+    # ``bias + contraction`` ops split like ``addmm`` into a contraction layer
+    # (MACs) and a ``bias_add`` layer (other_ops).  Value: the type of the
+    # contraction layer, whose handler bills it from the two matrices.
+    _BIASED_CONTRACTION_LAYER_TYPE = {
+        "addmm": "matmul",
+        "addmv": "matmul",
+        "baddbmm": "bmm",
+        "addbmm": "addbmm",
+    }
 
-        Requires exactly three recorded tensor shapes with 2D mat1/mat2 whose
-        inner extents agree and a rank-1 or rank-2 bias.  Provenance
-        (parameter vs runtime input) plays no role: the slots are positional.
+    @staticmethod
+    def _addmm_positional_operands(
+        input_shapes: List[Any], node_type: str = "addmm"
+    ) -> Optional[Tuple[List[Any], List[Any], List[Any]]]:
+        """Return (bias, mat1, mat2) shapes for a splittable addmm-family op, else None.
+
+        Requires exactly three recorded tensor shapes: ``addmm`` takes 2D
+        mat1/mat2 whose inner extents agree and a rank-1 or rank-2 bias;
+        ``addmv`` a 2D matrix and a vector; ``baddbmm``/``addbmm`` two 3D
+        batches with matching batch and inner extents.  The bias must
+        broadcast (right-aligned) to the output.  Provenance (parameter vs
+        runtime input) plays no role: the slots are positional.
         """
         if len(input_shapes) != 3 or not all(isinstance(s, list) for s in input_shapes):
             return None
         bias_shape, mat1_shape, mat2_shape = input_shapes
-        if len(mat1_shape) != 2 or len(mat2_shape) != 2 or mat1_shape[1] != mat2_shape[0]:
-            return None
-        if len(bias_shape) not in (1, 2):
+        if node_type == "addmm":
+            if len(mat1_shape) != 2 or len(mat2_shape) != 2 or mat1_shape[1] != mat2_shape[0]:
+                return None
+            if len(bias_shape) not in (1, 2):
+                return None
+        elif node_type == "addmv":
+            if len(mat1_shape) != 2 or len(mat2_shape) != 1 or mat1_shape[1] != mat2_shape[0]:
+                return None
+            if len(bias_shape) > 1:
+                return None
+            if bias_shape and bias_shape[0] not in (1, mat1_shape[0]):
+                return None
+        elif node_type in ("baddbmm", "addbmm"):
+            if (len(mat1_shape) != 3 or len(mat2_shape) != 3 or mat1_shape[0] != mat2_shape[0]
+                    or mat1_shape[2] != mat2_shape[1]):
+                return None
+            out = ([mat1_shape[0]] if node_type == "baddbmm" else []) + [mat1_shape[1], mat2_shape[2]]
+            if len(bias_shape) > len(out):
+                return None
+            for extent, full in zip(bias_shape, out[len(out) - len(bias_shape):]):
+                if extent not in (1, full):
+                    return None
+        else:
             return None
         return bias_shape, mat1_shape, mat2_shape
 
@@ -3082,12 +3118,14 @@ class PyTorchToEinsum:
         operands to the ``F.linear`` signature (:meth:`_linear_operands`).
         """
         node_type = str(node_data.get("type", "")).lower()
-        if node_type == "addmm":
-            # torch.addmm(bias, mat1, mat2) binds its operands by position, so
-            # the split needs all three recorded as tensors with 2D matrices;
-            # anything else is left to the AddmmHandler, which refuses what it
-            # cannot bind instead of guessing.
-            return self._addmm_positional_operands(node_data.get("input_shapes") or []) is not None
+        if node_type in self._BIASED_CONTRACTION_LAYER_TYPE:
+            # torch.addmm(bias, mat1, mat2) (and addmv/baddbmm/addbmm) bind
+            # their operands by position, so the split needs all three recorded
+            # as tensors with matrices of the right rank; anything else is left
+            # to the op's handler, which refuses what it cannot bind instead of
+            # guessing.
+            return self._addmm_positional_operands(
+                node_data.get("input_shapes") or [], node_type) is not None
         return self._linear_operands(node_data) is not None
 
     def _validate_input_types_alignment(self, node_id: str, node_data: Dict[str, Any]) -> None:
@@ -3137,7 +3175,8 @@ class PyTorchToEinsum:
         # by position. Entries are (slot, tensor name, shape, type, producer);
         # producer is None for parameters.
         node_type = str(node_data.get("type", "")).lower()
-        if node_type == "addmm":
+        biased = node_type in self._BIASED_CONTRACTION_LAYER_TYPE
+        if biased:
             # torch.addmm(bias, mat1, mat2): ordered semantic slots, bound by
             # position whatever the operands' provenance (nn.Parameter, buffer
             # or runtime input).  _should_split_linear_with_bias has already
@@ -3146,12 +3185,12 @@ class PyTorchToEinsum:
             node_connections = (node_data.get("connections") or {}).get("inputs") or []
             if len(node_connections) != 3 or len(input_shapes) != 3:
                 raise ValueError(
-                    f"addmm '{node_id}': cannot bind (bias, mat1, mat2) by position, "
+                    f"{node_type} '{node_id}': cannot bind (bias, mat1, mat2) by position, "
                     f"{len(node_connections)} ordered operands for {len(input_shapes)} recorded shapes")
         entries = resolve_operands(
             self, node_id, node_data, op_graph, start_nodes_info, start_node_id_map
         )
-        if node_type == "addmm":
+        if biased:
             bias_entry, activation_entry, weight_entry = entries[0], entries[1], entries[2]
         else:
             activation_entry, weight_entry, bias_entry = (
@@ -3189,12 +3228,16 @@ class PyTorchToEinsum:
         # nn.Linear stores the weight [out, in] (equation ...K,NK->...N);
         # torch.addmm stores it [in, out] (MK,KN->MN), so the matmul layer of an
         # addmm split is typed and billed as a matmul.
-        matmul_op_name = "matmul" if node_type == "addmm" else "linear"
+        matmul_op_name = self._BIASED_CONTRACTION_LAYER_TYPE.get(node_type, "linear")
         try:
             einsum_op = self._einsum_analyzer.get_einsum_op(matmul_op_name, matmul_ts)
             matmul_equation = einsum_op.equation
             matmul_operands = {o.name: list(o.dims) for o in einsum_op.operands}
         except Exception:
+            if node_type in ("addmv", "baddbmm", "addbmm"):
+                # No synthesised equation for the new family: an operand set the
+                # handler refuses must surface, not be billed as another shape.
+                raise
             # Fallback equation
             if matmul_op_name == "matmul":
                 matmul_equation = "MK,KN->MN"

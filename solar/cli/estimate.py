@@ -21,6 +21,8 @@ def main():
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--timeout", type=int, default=300)
     p.add_argument("--mem-budget-gb", type=float, default=16)
+    p.add_argument("--sol-mode", choices=["sparse", "dense"], default="sparse",
+                   help="tensor-core peak set for the headline SOL (issue #14): sparse (default; assumes structured-sparsity eligibility, a lower bound) or dense (the realistic bound); result.json carries both")
     a = vars(p.parse_args())
     from solar.common.cli_logging import configure as _configure_cli_logging
     _configure_cli_logging(bool(a.get("debug")))

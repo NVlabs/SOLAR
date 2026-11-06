@@ -1,0 +1,67 @@
+[SOLAR provenance excerpt: lines 355-419 of the HTML tag-stripped text extract of the nvidia.com NVIDIA H200 product page, specifications table, URL https://www.nvidia.com/en-us/data-center/h200/, fetched 2026-11-06T06:58:00Z; full extract sha256 ef815c88238fab782c9ba94105563b75968a4bca26b65f3e071d235c8ab9b252 (492 lines, retained privately by the release lane); raw document sha256 1ff6d53286a019a2e8964891ef8591143e3f786bfc703c913af658e15cdd2c88. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+ NVIDIA H200 GPU
+ H200 SXM¹
+ H200 NVL¹
+ FP64
+ 34 TFLOPS
+ 30 TFLOPS
+ FP64 Tensor Core
+ 67 TFLOPS
+ 60 TFLOPS
+ FP32
+ 67 TFLOPS
+ 60 TFLOPS
+ TF32 Tensor Core²
+ 989 TFLOPS
+ 835 TFLOPS
+ BFLOAT16 Tensor Core²
+ 1,979 TFLOPS
+ 1,671 TFLOPS
+ FP16 Tensor Core²
+ 1,979 TFLOPS
+ 1,671 TFLOPS
+ FP8 Tensor Core²
+ 3,958 TFLOPS
+ 3,341 TFLOPS
+ INT8 Tensor Core²
+ 3,958 TFLOPS
+ 3,341 TFLOPS
+ GPU Memory
+ 141GB
+ 141GB
+ GPU Memory Bandwidth
+ 4.8TB/s
+ 4.8TB/s
+ Decoders
+ 7 NVDEC
+ 7 JPEG
+ 7 NVDEC
+ 7 JPEG
+ Confidential Computing
+ Supported
+ Supported
+ Max Thermal Design Power (TDP)
+ Up to 700W (configurable)
+ Up to 600W (configurable)
+ Multi-Instance GPUs
+ Up to 7 MIGs @18GB each
+ Up to 7 MIGs @16.5GB each
+ Form Factor
+ SXM
+ PCIe
+ Dual-slot air-cooled
+ Interconnect
+ NVIDIA NVLink™: 900GB/s
+ PCIe Gen5: 128GB/s
+ 2- or 4-way NVIDIA NVLink bridge:
+ 900GB/s per GPU
+ PCIe Gen5: 128GB/s
+ Server Options
+ NVIDIA HGX™ H200 partner and NVIDIA-Certified Systems™ with 4 or 8 GPUs
+ NVIDIA MGX™ H200 NVL partner and NVIDIA-Certified Systems with up to 8 GPUs
+ NVIDIA AI Enterprise
+ Add-on
+ Included
+ 1 Preliminary specifications. May be subject to change.
+ 2 With sparsity.

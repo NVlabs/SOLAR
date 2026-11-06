@@ -223,16 +223,18 @@ class TestSyntheticScaledMm:
         _scaled_mm_graph(tmp_path, [M, KP], [KP, N], Q_SCALES, [M, N], [FP4, FP4, FP8, FP8], BF16)
         p = _perf(tmp_path, "B200"); w = p["workload"]
         assert w.get("status") is None and "incomplete_layers" not in w
-        assert p["arch"]["compute_dtype_rates"]["nvfp4"]["MAC_per_cycle"] == 2_415_000
-        assert p["fused"]["compute_tc_cycles"] == int(Q_MACS / 2_415_000) == 28_455   # cycles are reported as integers
+        assert p["arch"]["compute_dtype_rates"]["nvfp4"]["MAC_per_cycle"] == 6_000_000
+        # issue #14: the B200 nvfp4 rate is the sparse (default sol_mode) peak, 18 PFLOPS -> 6,000,000 MAC/cycle at 1.5 GHz
+        assert p["fused"]["compute_tc_cycles"] == int(Q_MACS / 6_000_000) == 11_453   # cycles are reported as integers
 
     def test_fp8_on_h100_uses_the_fp8_rate(self, tmp_path):
         d = 4096   # large enough for the integer cycle count to be meaningful
         _scaled_mm_graph(tmp_path, [d, d], [d, d], [[1], [1]], [d, d], [FP8, FP8, FP32, FP32], BF16)
         p = _perf(tmp_path, "H100_PCIe"); w = p["workload"]
         assert w.get("status") is None
-        assert p["arch"]["compute_dtype_rates"]["fp8"]["MAC_per_cycle"] == 378_000
-        assert p["fused"]["compute_tc_cycles"] == int(d ** 3 / 378_000) == 181_797   # not the bf16 rate (363,595)
+        assert p["arch"]["compute_dtype_rates"]["fp8"]["MAC_per_cycle"] == 756_500
+        # issue #14: H100_PCIe fp8 sparse (default sol_mode) 3026 TFLOPS -> 756,500 MAC/cycle at 2.0 GHz
+        assert p["fused"]["compute_tc_cycles"] == int(d ** 3 / 756_500) == 90_838   # not the bf16 rate (181,677)
 
 
 # ── route-195 capture: the copy lowering must not recur ────────────────────
@@ -323,8 +325,8 @@ class TestComputeDtypeScope:
         assert layer["macs"] == 1024 * 4096 * 2048 == 8_589_934_592 and "compute_dtype" not in layer
         assert "macs_by_compute_dtype" not in analysis["total"]
         p = _perf(tmp_path, "H100_PCIe")
-        assert p["arch"]["MAC_per_cycle"] == 189_000 and "compute_dtype_rates" not in p["arch"]
-        assert p["fused"]["compute_tc_cycles"] == int(8_589_934_592 / 189_000) == 45_449
+        assert p["arch"]["MAC_per_cycle"] == 378_250 and "compute_dtype_rates" not in p["arch"]
+        assert p["fused"]["compute_tc_cycles"] == int(8_589_934_592 / 378_250) == 22_709   # issue #14: bf16 sparse (default) 1513 TFLOPS
         assert p["workload"].get("status") is None
 
 
@@ -347,7 +349,7 @@ class TestCombinedQualification:
         assert info.value.layers == {"Model._scaled_mm": "nvfp4"}
         b = _perf(tmp_path, "B200"); wb = b["workload"]
         assert wb["incomplete_layers"] == {"Model._scaled_mm": "einsum_operands_unresolved"} and "rate_unavailable" not in wb["prediction_qualification"]
-        assert b["fused"]["compute_tc_cycles"] == int(Q_MACS / 2_415_000)
+        assert b["fused"]["compute_tc_cycles"] == int(Q_MACS / 6_000_000)
 
     def test_no_rate_text_survives_in_any_qualification(self):
         # the rate marker is no longer a qualification: nothing in the wording helper mentions it
@@ -403,14 +405,14 @@ class TestProjectionRefusal:
         # B200 prices both layers: the bf16 one at the workload rate, the FP4 one at the nvfp4 rate
         b = _perf(tmp_path, "B200")
         assert b["workload"].get("status") is None
-        assert b["fused"]["compute_tc_cycles"] == int(self.MM_MACS / 603_751 + Q_MACS / 2_415_000)
+        assert b["fused"]["compute_tc_cycles"] == int(self.MM_MACS / 1_500_000 + Q_MACS / 6_000_000)
 
     def test_non_fp4_layer_on_h100_is_priced_as_before(self, tmp_path):
         analysis = _mixed_graph(tmp_path, with_fp4=False)
         assert "macs_by_compute_dtype" not in analysis["total"]
         p = _perf(tmp_path, "H100_PCIe")
-        assert p["workload"].get("status") is None and p["arch"]["MAC_per_cycle"] == 189_000
-        assert p["fused"]["compute_tc_cycles"] == int(self.MM_MACS / 189_000) and (tmp_path / "perf_H100_PCIe" / "perf_H100_PCIe.yaml").exists()
+        assert p["workload"].get("status") is None and p["arch"]["MAC_per_cycle"] == 378_250
+        assert p["fused"]["compute_tc_cycles"] == int(self.MM_MACS / 378_250) and (tmp_path / "perf_H100_PCIe" / "perf_H100_PCIe.yaml").exists()
 
     def test_metadata_declaration_alone_does_not_refuse_but_is_recorded(self, tmp_path):
         """mac-scope-1: the ``metadata.yaml`` dtype_conversions declaration ("a quantized dtype appears somewhere
@@ -420,13 +422,13 @@ class TestProjectionRefusal:
         _mixed_graph(tmp_path, with_fp4=False)
         (tmp_path / "metadata.yaml").write_text(yaml.safe_dump({"dtype_conversions": [{"orig_dtypes": "torch.float4_e2m1fn_x2", "new_dtypes": "torch.float32"}]}))
         p = _perf(tmp_path, "H100_PCIe")
-        assert p["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_bf16_tc" and p["arch"]["MAC_per_cycle"] == 189_000
-        assert p["fused"]["compute_tc_cycles"] == int(self.MM_MACS / 189_000) and p["workload"].get("status") is None
+        assert p["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_bf16_tc" and p["arch"]["MAC_per_cycle"] == 378_250
+        assert p["fused"]["compute_tc_cycles"] == int(self.MM_MACS / 378_250) and p["workload"].get("status") is None
         unbound = p["workload"]["quant_metadata_unbound"]
         assert unbound["dtype"] == "nvfp4" and unbound["rate_in_profile"] is False and unbound["orig_dtypes"] == "torch.float4_e2m1fn_x2"
         assert "no MAC-bearing layer" in unbound["note"] and (tmp_path / "perf_H100_PCIe" / "perf_H100_PCIe.yaml").exists()
         b = _perf(tmp_path, "B200")
-        assert b["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_nvfp4_tc" and b["arch"]["MAC_per_cycle"] == 2_415_000
+        assert b["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_nvfp4_tc" and b["arch"]["MAC_per_cycle"] == 6_000_000
         assert b["workload"]["quant_orig_dtype"] == "torch.float4_e2m1fn_x2" and b["workload"].get("status") is None and "quant_metadata_unbound" not in b["workload"]
 
     def test_metadata_declaration_rides_along_as_evidence_on_a_layer_bound_refusal(self, tmp_path):
@@ -447,7 +449,7 @@ class TestProjectionRefusal:
         _mixed_graph(tmp_path, with_fp4=False)
         (tmp_path / "metadata.yaml").write_text(yaml.safe_dump({"dtype_conversions": [{"orig_dtypes": "torch.float8_e4m3fn", "new_dtypes": "torch.float32"}]}))
         p = _perf(tmp_path, "H100_PCIe")
-        assert p["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_fp8_tc" and p["arch"]["MAC_per_cycle"] == 378_000
+        assert p["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_fp8_tc" and p["arch"]["MAC_per_cycle"] == 756_500
 
     def test_stale_prediction_is_quarantined_by_the_refusal(self, tmp_path):
         _scaled_mm_graph(tmp_path, [M, KP], [KP, N], Q_SCALES, [M, N], [FP4, FP4, FP8, FP8], BF16)
@@ -512,12 +514,12 @@ class TestReview4Controls:
         if name == "zero_mac_dtype_entry":
             assert p["arch"]["compute_dtype_rates"]["nvfp4"] == {"key": "MAC_per_cycle_nvfp4_tc", "MAC_per_cycle": None, "macs": 0.0, "status": "traffic_only_no_rate_needed"}
         if name == "bf16_macs_plus_fp4_traffic_metadata":
-            assert p["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_bf16_tc" and p["fused"]["compute_tc_cycles"] == int(1_000_000 / 189_000)
+            assert p["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_bf16_tc" and p["fused"]["compute_tc_cycles"] == int(1_000_000 / 378_250)
             assert p["workload"]["quant_metadata_unbound"]["dtype"] == "nvfp4"
         if name == "fp8_traffic_only_missing_rate":
             assert p["workload"]["quant_metadata_unbound"]["dtype"] == "fp8" and p["workload"]["total_macs"] == 0
         if name == "mixed_b200":
-            assert p["arch"]["compute_dtype_rates"]["nvfp4"]["MAC_per_cycle"] == 2_415_000
+            assert p["arch"]["compute_dtype_rates"]["nvfp4"]["MAC_per_cycle"] == 6_000_000
 
     @pytest.mark.parametrize("name", ["mixed_analysis_only", "mixed_analysis_plus_metadata", "first_refused"])
     def test_controls_that_must_refuse_name_the_mac_bearing_layers(self, tmp_path, name):
@@ -678,15 +680,15 @@ class TestRound2FreshControls:
     def test_absence_is_not_contradiction_total_only_record_prices(self, tmp_path):
         a = _fresh_analysis(); a["layers"] = {"bf16": {"macs": 1_000_000}}; a["total"]["macs_by_compute_dtype"] = {"nvfp4": 2_000_000}
         d = _fresh(tmp_path, "b200-total-only", a, meta=False, arch="B200")
-        assert d["state"] == "PRICED" and d["perf"]["arch"]["compute_dtype_rates"]["nvfp4"] == {"key": "MAC_per_cycle_nvfp4_tc", "MAC_per_cycle": 2_415_000.0, "macs": 2_000_000.0, "layer_macs_bound": 0}
-        assert d["perf"]["fused"]["compute_tc_cycles"] == int(1_000_000 / 603_751 + 2_000_000 / 2_415_000)
+        assert d["state"] == "PRICED" and d["perf"]["arch"]["compute_dtype_rates"]["nvfp4"] == {"key": "MAC_per_cycle_nvfp4_tc_sparse", "MAC_per_cycle": 6_000_000.0, "macs": 2_000_000.0, "layer_macs_bound": 0}
+        assert d["perf"]["fused"]["compute_tc_cycles"] == int(1_000_000 / 1_500_000 + 2_000_000 / 6_000_000)
 
     def test_layers_without_aggregate_price_at_their_own_rate_on_b200(self, tmp_path):
         a = _fresh_analysis(); a["total"].pop("macs_by_compute_dtype")
         d = _fresh(tmp_path, "b200-layer-only", a, meta=False, arch="B200")
         assert d["state"] == "PRICED" and "compute_dtype_evidence_disagreement" not in d["perf"]["workload"]
         assert d["perf"]["arch"]["compute_dtype_rates"]["nvfp4"]["macs"] == 2_000_000.0
-        assert d["perf"]["fused"]["compute_tc_cycles"] == int(1_000_000 / 603_751 + 2_000_000 / 2_415_000)
+        assert d["perf"]["fused"]["compute_tc_cycles"] == int(1_000_000 / 1_500_000 + 2_000_000 / 6_000_000)
 
 
 class TestRepriceSuccessor:
@@ -895,7 +897,7 @@ class TestMalformedCounts:
         assert d['state'] == 'REFUSED' and d['receipt']['reason'] == 'non-conserving compute-dtype split'
         a = _fresh_analysis(); a['layers'] = {}; a['total']['macs_by_compute_dtype']['nvfp4'] = 3_000_000
         d = _fresh(tmp_path, 'exactly-full', a, meta=False, arch='B200')
-        assert d['state'] == 'PRICED' and d['perf']['fused']['compute_tc_cycles'] == int(3_000_000 / 2_415_000)
+        assert d['state'] == 'PRICED' and d['perf']['fused']['compute_tc_cycles'] == int(3_000_000 / 6_000_000)
 
 
 def _fresh_typed(tmp_path, name, data, monkeypatch, arch="B200"):
@@ -1482,8 +1484,8 @@ class TestRound11RateAndDerivedBoundary:
     def test_representable_inputs_price_identically_to_round_10(self, tmp_path):
         a = _fresh_analysis("mixed_analysis_only")
         d = _run_arch(tmp_path, "baseline", a)
-        assert d["state"] == "PRICED" and d["perf"]["workload"]["total_macs"] == 3_000_000 and d["perf"]["arch"]["MAC_per_cycle"] == 603751.0
-        assert d["perf"]["arch"]["compute_dtype_rates"]["nvfp4"]["MAC_per_cycle"] == 2415000.0 and type(d["perf"]["arch"]["compute_dtype_rates"]["nvfp4"]["macs"]) is float
+        assert d["state"] == "PRICED" and d["perf"]["workload"]["total_macs"] == 3_000_000 and d["perf"]["arch"]["MAC_per_cycle"] == 1500000.0   # issue #14: B200 sparse (default sol_mode) bf16 4.5 PFLOPS
+        assert d["perf"]["arch"]["compute_dtype_rates"]["nvfp4"]["MAC_per_cycle"] == 6000000.0 and type(d["perf"]["arch"]["compute_dtype_rates"]["nvfp4"]["macs"]) is float
 
 
 class TestCIFail26NumpyScalarNormalisation:
@@ -1785,7 +1787,7 @@ class TestRound14ZeroMacRateAndStaticAliases:
 
     # -- zero-MAC buckets ----------------------------------------------------------------------------------------
     @pytest.mark.parametrize("representation", ["aggregate_only", "zero_layer_and_aggregate"])
-    @pytest.mark.parametrize("rate", [0, 2_415_000.0, "not-a-rate", None], ids=["zero", "valid", "string", "absent"])
+    @pytest.mark.parametrize("rate", [0, 6_000_000.0, "not-a-rate", None], ids=["zero", "valid", "string", "absent"])
     def test_zero_mac_dtype_bucket_prices_whatever_rate_the_profile_declares(self, tmp_path, representation, rate):
         a = self._total_only(); a["total"]["macs_by_compute_dtype"] = {"nvfp4": 0}
         if representation == "zero_layer_and_aggregate":

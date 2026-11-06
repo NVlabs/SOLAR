@@ -245,7 +245,8 @@ def test_nvfp4_gemm_holds_on_h100_and_prices_on_b200(nvfp4_case):
     assert b["workload"].get("status") != "incomplete"
     assert lid not in (b["workload"].get("incomplete_layers") or {})
     rate = b["arch"]["compute_dtype_rates"]["nvfp4"]                 # the merged an earlier change perf model adds `layer_macs_bound` beside these three
-    assert {k: rate[k] for k in ("key", "MAC_per_cycle", "macs")} == {"key": "MAC_per_cycle_nvfp4_tc", "MAC_per_cycle": 2_415_000.0, "macs": float(M * N * K)}
+    # issue #14: the applied key is the explicit sparse (default sol_mode) spelling; B200 nvfp4 sparse 18 PFLOPS -> 6,000,000 MAC/cycle
+    assert {k: rate[k] for k in ("key", "MAC_per_cycle", "macs")} == {"key": "MAC_per_cycle_nvfp4_tc_sparse", "MAC_per_cycle": 6_000_000.0, "macs": float(M * N * K)}
     # every MAC is in the nvfp4 bucket: no MAC is priced at the bf16 rate
     assert b["workload"]["total_macs"] == M * N * K
 
@@ -262,7 +263,7 @@ def test_fp8_gemm_is_bound_to_fp8_and_priced_on_h100(tmp_path):
     h = EinsumGraphPerfModel().predict(str(tmp_path / "analysis" / "analysis.yaml"), str(tmp_path / "perf_H100_PCIe"),
                                        arch_config="H100_PCIe", precision="bf16")
     assert h["workload"].get("status") != "incomplete"
-    assert h["arch"]["compute_dtype_rates"]["fp8"]["MAC_per_cycle"] == 378_000.0
+    assert h["arch"]["compute_dtype_rates"]["fp8"]["MAC_per_cycle"] == 756_500.0   # issue #14: H100_PCIe fp8 sparse (default) 3026 TFLOPS
 
 
 def test_bf16_gemm_carries_no_compute_dtype_fields(tmp_path):

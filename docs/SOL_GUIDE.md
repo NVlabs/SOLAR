@@ -14,6 +14,24 @@ version used to produce a result.
 
 - **Peak hardware rates.** Use the selected hardware profile's compute rates and
   DRAM bandwidth for the declared computation precision and memory accounting mode.
+- **Sparse vs dense tensor-core peak (`--sol-mode`, issue #14).** Every shipped
+  hardware profile carries BOTH vendor peaks per precision
+  (`peak_TFLOPS_<p>_dense` / `peak_TFLOPS_<p>_sparse`, with the derived
+  `MAC_per_cycle_<p>_tc_dense` / `_sparse` = TFLOPS x 1e12 / 2 FLOP per MAC /
+  (freq_GHz x 1e9), i.e. TFLOPS x 1000 / 2 / freq_GHz). The headline SOL is
+  priced at one set, selected by `--sol-mode {sparse,dense}` (default
+  **sparse**). The sparse SOL *assumes* the workload is eligible for the
+  vendor's 2:4 structured-sparsity tensor-core rate; it is a lower bound that
+  no dense kernel can reach, and it does not claim that a given workload
+  satisfies 2:4 sparsity. The **dense SOL is the more realistic estimate**
+  (the realistic bound) for dense work. Every perf record carries both as
+  `sol_sparse` and `sol_dense` (unfused / fused / fused_prefetched runtimes
+  and the rate keys used) next to `sol_mode` and `sol_mode_default`; the
+  top-level sections hold the selected mode's numbers. A user profile that
+  spells a rate with the legacy bare key `MAC_per_cycle_<p>_tc` declares a
+  dense rate; sparse mode then falls back to it and records
+  `sparse_fallback_to_dense`. Where the vendor publishes no sparse figure
+  (FP32 on the CUDA cores, FP64) the two sets are equal.
 - **Memory scenario.** Fused SOL counts each required external storage region once
   for reads and each required output write once, assuming perfect fusion and reuse
   of intermediates on chip. Unfused SOL includes intermediate accesses. Capacity,

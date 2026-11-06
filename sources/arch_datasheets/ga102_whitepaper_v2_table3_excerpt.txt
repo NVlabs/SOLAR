@@ -1,0 +1,96 @@
+[SOLAR provenance excerpt: lines 1-3, 8, 532-534, 537-613, 622-631 of the pdftotext -layout extract of the NVIDIA Ampere GA102 GPU Architecture whitepaper v2 (nvidia.com PDF), Table 3 'NVIDIA RTX A6000 and NVIDIA A40 Specs' and the peak-rate footnotes, URL https://www.nvidia.com/content/PDF/nvidia-ampere-ga-102-gpu-architecture-whitepaper-v2.pdf, fetched 2026-11-06T06:58:03Z; full extract sha256 d611c4890d62a65dde8e087ac6c03d6944af3b3aab09e6cfd20658e235a60d04 (2013 lines, retained privately by the release lane); raw document sha256 28887b489ecd250911b912fead603ce8aa25e8fc3128c9ba0933cf452334868a. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+NVIDIA AMPERE GA102 GPU
+ARCHITECTURE
+Second-Generation RTX
+         Updated with NVIDIA RTX A6000 and NVIDIA A40 Information   V2.0
+   1.   Peak rates are based on GPU Boost Clock.
+   2.   Effective TOPS / TFLOPS using the new Sparsity Feature
+   3.   TOPS = IMAD-based integer math
+Table 3.         NVIDIA RTX A6000 and NVIDIA A40 Specs
+
+ Graphics Card                              NVIDIA RTX A6000                 NVIDIA A40
+ GPU Codename                                      GA102                         GA102
+ GPU Architecture                             NVIDIA Ampere                 NVIDIA Ampere
+ GPCs                                                 7                             7
+ TPCs                                                42                            42
+ SMs                                                 84                            84
+ CUDA Cores / SM                                    128                           128
+ CUDA Cores / GPU                                  10752                         10752
+ Tensor Cores / SM                              4 (3rd Gen)                   4 (3rd Gen)
+ Tensor Cores / GPU                            336 (3rd Gen)                 336 (3rd Gen)
+ RT Cores                                      84 (2nd Gen)                  84 (2nd Gen)
+ GPU Boost Clock (MHz)                             1800                          1740
+ Peak FP32 TFLOPS (non-Tensor)        1
+                                                    38.7                          37.4
+ Peak FP16 TFLOPS (non-Tensor)        1
+                                                    38.7                          37.4
+ Peak BF16 TFLOPS (non-Tensor)        1
+                                                    38.7                          37.4
+ Peak INT32 TOPS (non-Tensor)       1,3
+                                                    19.4                          18.7
+ Peak FP16 Tensor TFLOPS                       154.8/309.6       2
+                                                                             149.7/299.4    2
+
+
+
+ with FP16 Accumulate   1
+
+
+
+ Peak FP16 Tensor TFLOPS                        154.8/309.6      2
+                                                                              149.7/299.4   2
+
+
+
+ with FP32 Accumulate   1
+
+
+
+ Peak BF16 Tensor TFLOPS                        154.8/309.6      2
+                                                                              149.7/299.4   2
+
+
+
+ with FP32 Accumulate   1
+
+
+
+ Peak TF32 Tensor TFLOPS        1
+                                                77.4/154.8   2
+                                                                              74.8/149.62
+
+
+
+ Peak INT8 Tensor TOPS      1
+                                                309.7/619.4      2
+                                                                              299.3/598.6   2
+
+
+
+ Peak INT4 Tensor TOPS      1
+                                               619.3/1238.6      2
+                                                                             598.7/1197.4   2
+
+
+
+ Frame Buffer Memory Size and Type               49152 MB                      49152 MB
+                                                  GDDR6                         GDDR6
+ Memory Interface                                 384-bit                       384-bit
+ Memory Clock (Data Rate)                         16 Gbps                      14.5 Gbps
+ Memory Bandwidth                               768 GB/sec                    696 GB/sec
+ ROPs                                               112                           112
+ Pixel Fill-rate (Gigapixels/sec)                  201.6                         194.9
+ Texture Units                                      336                           336
+ Texel Fill-rate (Gigatexels/sec)                  604.8                         584.6
+ L1 Data Cache/Shared Memory                     10752 KB                      10752 KB
+ L2 Cache Size                               6144 KB                   6144 KB
+ Register File Size                          21504 KB                  21504 KB
+ TGP (Total Graphics Power)                    300W                      300W
+ Transistor Count                           28.3 Billion              28.3 Billion
+ Die Size                                   628.4 mm    2
+                                                                      628.4 mm  2
+
+
+
+ Manufacturing Process                 Samsung 8 nm 8N NVIDIA    Samsung 8 nm 8N NVIDIA

@@ -50,6 +50,12 @@ class EstimateResult:
     fallback_reason: Optional[str] = None
     work_contract: str = "as-written"
     macs_typed: Optional[dict] = None          # issue #58: the aggregate's typed components (perf workload.macs_typed)
+    # issue #14: fused_ms / unfused_ms are priced at ``sol_mode`` (default sparse: ASSUMES the workload is eligible for
+    # the structured-sparsity tensor-core rate, a lower bound); dense is the realistic bound; both peak sets ride along
+    sol_mode: str = "sparse"
+    sol_mode_default: str = "sparse"
+    sol_sparse: Optional[dict] = None          # {fused_ms, unfused_ms, fused_prefetched_ms, rate_keys}
+    sol_dense: Optional[dict] = None
 
 
 def _sha(path):
@@ -201,7 +207,13 @@ def _validated_ir(source, ir, out, source_type, timeout, mem_budget_gb, rtol, at
     return Path(translate_with_einsum(dsl, out / "einsum")), validation
 
 
-def _analyze(graph, out, arch, precision):
+def _sol_block(perf, mode):
+    b = perf.get(f"sol_{mode}") or {}
+    return {"fused_ms": b.get("fused", {}).get("runtime_ms"), "unfused_ms": b.get("unfused", {}).get("runtime_ms"),
+            "fused_prefetched_ms": b.get("fused_prefetched", {}).get("runtime_ms"), "rate_keys": dict(b.get("rate_keys") or {})}
+
+
+def _analyze(graph, out, arch, precision, sol_mode="sparse"):
     from solar.analysis import EinsumGraphAnalyzer
     from solar.perf import EinsumGraphPerfModel
     analysis_dir = out / "analysis"
@@ -212,19 +224,22 @@ def _analyze(graph, out, arch, precision):
         raise PipelineError("Analysis did not produce a result")
     perf = EinsumGraphPerfModel(dtype_bytes=True).predict(
         analysis_dir / "analysis.yaml", out / "perf", arch_config=str(arch),
-        precision=precision, copy_analysis=False)
+        precision=precision, copy_analysis=False, sol_mode=sol_mode)
     if not perf:
         raise PipelineError("Performance analysis did not produce a result")
     values = (perf["fused"]["runtime_ms"], perf["unfused"]["runtime_ms"],
               perf["workload"]["total_macs"])
     if not all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in values):
         raise PipelineError("Non-finite or negative SOL result")
-    return values + (perf["workload"].get("macs_typed"),)      # issue #58: typed components ride along (report-only)
+    # issue #58: typed components ride along (report-only); issue #14: both peak sets ride along
+    return values + (perf["workload"].get("macs_typed"), {"sol_mode": perf["sol_mode"], "sol_mode_default": perf["sol_mode_default"],
+                                                           "sol_sparse": _sol_block(perf, "sparse"), "sol_dense": _sol_block(perf, "dense")})
 
 
 def estimate(source_path, out_dir, *, mode="auto", source_type="pytorch", arch="B200",
              precision="fp16", ir_path=None, api_key_file=None, llm_model=None,
-             max_retries=3, timeout=300, mem_budget_gb=16, rtol=1e-4, atol=1e-5):
+             max_retries=3, timeout=300, mem_budget_gb=16, rtol=1e-4, atol=1e-5,
+             sol_mode="sparse"):
     """Estimate as-written SOL, with explicit provenance and failure semantics.
 
     ``auto`` tries v0, falling back ONLY on UnsupportedError to v1.
@@ -237,6 +252,8 @@ def estimate(source_path, out_dir, *, mode="auto", source_type="pytorch", arch="
     """
     if mode not in {"auto", "v0", "v1", "v2"}:
         raise ValueError("mode must be auto, v0, v1 or v2")
+    if sol_mode not in {"sparse", "dense"}:
+        raise ValueError("sol_mode must be sparse (default; assumes structured-sparsity eligibility, a lower bound) or dense (the realistic bound)")
     if source_type not in {"pytorch", "cuda", "jax", "triton"}:
         raise ValueError("source_type must be pytorch, cuda, jax or triton")
     if timeout <= 0 or mem_budget_gb <= 0 or max_retries < 1:
@@ -254,7 +271,7 @@ def estimate(source_path, out_dir, *, mode="auto", source_type="pytorch", arch="
     (out / "request.json").write_text(json.dumps({
         "source": str(source), "source_sha256": _sha(source), "mode": mode,
         "source_type": source_type, "arch": str(arch), "arch_sha256": _sha(arch),
-        "precision": precision, "work_contract": "as-written",
+        "precision": precision, "work_contract": "as-written", "sol_mode": sol_mode,
     }, indent=2))
     fallback = None
     used = mode
@@ -289,9 +306,9 @@ def estimate(source_path, out_dir, *, mode="auto", source_type="pytorch", arch="
         if used in {"v1", "v2"}:
             graph, validation = _validated_ir(source, ir, out, source_type, timeout,
                                                mem_budget_gb, rtol, atol)
-        fused, unfused, macs, macs_typed = _analyze(graph, out, arch, precision)
+        fused, unfused, macs, macs_typed, sols = _analyze(graph, out, arch, precision, sol_mode)
         result = EstimateResult(mode, used, fused, unfused, macs, str(out), _sha(source),
-                                _sha(arch), precision, validation, fallback, macs_typed=macs_typed)
+                                _sha(arch), precision, validation, fallback, macs_typed=macs_typed, **sols)
         (out / "result.json").write_text(json.dumps(asdict(result), indent=2, allow_nan=False))
         return result
     except Exception as exc:

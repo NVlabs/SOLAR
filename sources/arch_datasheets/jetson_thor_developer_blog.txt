@@ -1,0 +1,23 @@
+[SOLAR provenance excerpt: lines 57-75, 101-102 of the HTML tag-stripped text extract of the developer.nvidia.com blog 'Introducing NVIDIA Jetson Thor', Table 1 module specifications, URL https://developer.nvidia.com/blog/introducing-nvidia-jetson-thor-the-ultimate-platform-for-physical-ai/, fetched 2026-11-06T07:03:33Z; full extract sha256 bb79b91277856c333816fda94bcfb07d07ff3c20d92e44f84db10916c80d2443 (295 lines, retained privately by the release lane); raw document sha256 f9617a29aeae2afaefe4dfa2b9362ef7bdc6142f8f9b04179e36ebe3441cd0ff. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+ NVIDIA Jetson T5000
+ NVIDIA Jetson T4000*
+ AI performance
+ 2070 TFLOPS (Sparse FP4) 1035 TFLOPS (Dense FP4 | Sparse FP8 | Sparse INT8) 517 TFLOPs (Dense FP8 | Sparse FP16)
+ 1200 TFLOPS (Sparse FP4) 600 TFLOPS (Dense FP4 | Sparse FP8 | Sparse INT8) 300  TFLOPs (Dense FP8 | Sparse FP16)
+ GPU
+ 2560-core NVIDIA Blackwell architecture GPU with 96 fifth-generation Tensor Core MIG with 10 TPCs
+ 1536-core NVIDIA Blackwell architecture GPU with 64 fifth-generation Tensor Core MIG with 6 TPCs
+ CPU
+ 14-core Arm Neoverse-V3AE 64-bit CPU
+ 12-core Arm Neoverse-V3AE 64-bit CPU
+ Memory
+ 128 GB 256-bit LPDDR5X, 273 GB/s
+ 64 GB 256-bit LPDDR5X, 273 GB/s
+ Frequency
+ 1.57 GHz max GPU
+2.6 GHz max CPU
+ 1.57 GHz max GPU
+2.6 GHz max CPU
+ Table 1. NVIDIA Jetson AGX Thor Developer Kit module specifications
+ * Preliminary and subject to change

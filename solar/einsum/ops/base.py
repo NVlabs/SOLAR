@@ -482,7 +482,9 @@ def compute_cost_from_equation(equation: str, tensor_shapes: TensorShapes) -> in
     The cost model is the product of every unique rank used by the equation.
     Compound ranks like ``P+R`` are split into atoms; kernel atoms such as
     ``R`` are resolved from concrete input operands, and output-position atoms
-    such as ``P`` are resolved from the output shapes.
+    such as ``P`` are resolved from the output shapes.  A rank that is size 1
+    in one operand and larger in another is a broadcast rank and takes the
+    larger extent regardless of operand order.
     """
     if not equation or "->" not in equation:
         return 0
@@ -509,8 +511,12 @@ def compute_cost_from_equation(equation: str, tensor_shapes: TensorShapes) -> in
                 atoms = _parse_dim_atoms(token)
                 if len(atoms) == 1 and dim_offset < len(shape):
                     atom = atoms[0]
-                    if all_ranks.get(atom) is None:
-                        all_ranks[atom] = int(shape[dim_offset])
+                    extent = int(shape[dim_offset])
+                    current = all_ranks.get(atom)
+                    # First occurrence binds; a later, larger extent replaces a
+                    # size-1 one (broadcast semantics), never the reverse.
+                    if current is None or (current == 1 and extent > 1):
+                        all_ranks[atom] = extent
 
     _resolve(input_tokens, tensor_shapes.inputs)
     _resolve([output_tokens], tensor_shapes.outputs)

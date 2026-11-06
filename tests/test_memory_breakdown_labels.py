@@ -186,8 +186,35 @@ def _strip_note_text(text: str):
     return "".join(lines[:i] + lines[j:]), "".join(lines[i:j])
 
 
-def _without_convention_b(perf: dict) -> dict:
+# issue #14 (sparse/dense tensor-core peaks, additive): the authorized report additions on top of the golden baseline --
+# top-level `sol_mode`, `sol_mode_default`, `sol_sparse`, `sol_dense` and, inside `arch`, `sol_mode` and
+# `sol_rate_resolution`.  For this fixture (fp32 on H100_PCIe) the applied rate is the SM rate, which has no sparse
+# variant, so every pre-existing number -- including the headline cycles and runtimes -- is unchanged by the mode.
+ISSUE14_TOP_KEYS = ("sol_mode", "sol_mode_default", "sol_sparse", "sol_dense")
+ISSUE14_ARCH_KEYS = ("sol_mode", "sol_rate_resolution")
+
+
+def _strip_issue14_text(text: str):
+    """Remove the issue-14 additions from the YAML text (the four top-level entries and the two `arch` entries).  Returns
+    (stripped, removed)."""
+    lines = text.splitlines(keepends=True); removed = []
+    for header, indent in (("sol_mode: sparse\n", 0), ("sol_mode_default: sparse\n", 0), ("sol_sparse:\n", 0), ("sol_dense:\n", 0),
+                           ("  sol_mode: sparse\n", 2), ("  sol_rate_resolution:\n", 2)):
+        lines, r = _cut(lines, header, indent); removed += r
+    return "".join(lines), "".join(removed)
+
+
+def _without_issue14(perf: dict) -> dict:
     q = copy.deepcopy(perf)
+    for k in ISSUE14_TOP_KEYS:
+        q.pop(k, None)
+    for k in ISSUE14_ARCH_KEYS:
+        q["arch"].pop(k, None)
+    return q
+
+
+def _without_convention_b(perf: dict) -> dict:
+    q = _without_issue14(perf)
     q.pop("sol_convention", None); q["workload"].pop("tensor_core_term", None); q["workload"]["default_rate_remainder"].pop(REMAINDER_ADDED_KEY, None)
     return q
 
@@ -226,7 +253,8 @@ class TestGoldenByteIdentity:
         the one convention-B-altered leaf (the remainder note, compared exactly at the dict level below)."""
         _, yml = reports[mode]
         new_text = yml.read_text()
-        stripped, removed = _strip_metadata_text(new_text)
+        stripped, removed_14 = _strip_issue14_text(new_text)
+        stripped, removed = _strip_metadata_text(stripped)
         stripped, removed_b = _strip_convention_b_text(stripped)
         golden_text = GOLDEN[mode].read_text()
         stripped_wo_note, new_note = _strip_note_text(stripped)
@@ -234,6 +262,16 @@ class TestGoldenByteIdentity:
         assert stripped_wo_note == golden_wo_note, "a pre-existing byte of the report changed"
         meta = yaml.safe_load("memory_breakdown:\n" + removed)["memory_breakdown"]
         assert set(meta) == set(META_KEYS), "only the two metadata keys were added"
+        # the removed issue-14 text is exactly the authorized structure, and both peak sets reproduce the golden runtimes
+        # (fp32 on H100_PCIe prices at the SM rate, which has no sparse variant)
+        assert removed_14.count("sol_sparse:\n") == 1 and removed_14.count("sol_dense:\n") == 1 and "  sol_rate_resolution:\n" in removed_14
+        p, _ = reports[mode]
+        golden = yaml.safe_load(golden_text)
+        assert p["sol_mode"] == p["sol_mode_default"] == "sparse" and p["arch"]["sol_mode"] == "sparse"
+        for blk in ("sol_sparse", "sol_dense"):
+            for section in ("unfused", "fused", "fused_prefetched"):
+                assert p[blk][section]["runtime_ms"] == golden[section]["runtime_ms"] and p[blk][section]["total_cycles"] == golden[section]["total_cycles"]
+            assert p[blk]["rate_keys"] == {"MAC_per_cycle_fp32_sm": "MAC_per_cycle_fp32_sm"}
         # the removed convention-B text is exactly the authorized structure (parsed from the removed lines themselves)
         conv = yaml.safe_load(removed_b.replace("  tensor_core_term:", "tensor_core_term:").replace(f"    {REMAINDER_ADDED_KEY}:", f"{REMAINDER_ADDED_KEY}:"))
         assert set(conv) == {"sol_convention", "tensor_core_term", REMAINDER_ADDED_KEY}
@@ -257,7 +295,8 @@ class TestGoldenByteIdentity:
                 assert new[path] == v + NOTE_SUFFIX and type(new[path]) is str, path
                 continue
             assert new[path] == v and type(new[path]) is type(v), path
-        assert set(p) == set(golden) | {"sol_convention"}
+        assert set(p) == set(golden) | {"sol_convention"} | set(ISSUE14_TOP_KEYS)
+        assert set(p["arch"]) == set(golden["arch"]) | set(ISSUE14_ARCH_KEYS)
         assert set(p["workload"]) == set(golden["workload"]) | {"tensor_core_term"}
         assert set(p["workload"]["default_rate_remainder"]) == set(golden["workload"]["default_rate_remainder"]) | {REMAINDER_ADDED_KEY}
         assert set(p["memory_breakdown"]) == set(golden["memory_breakdown"]) | set(META_KEYS)
@@ -269,6 +308,7 @@ class TestGoldenByteIdentity:
         from collections import Counter
         _, yml = reports[mode]
         new_text = yml.read_text(); golden_text = GOLDEN[mode].read_text()
+        new_text, _removed_14 = _strip_issue14_text(new_text)        # issue #14 additions carry their own numbers (checked above)
         stripped, removed_b = _strip_convention_b_text(new_text)
         stripped_wo_note, new_note = _strip_note_text(stripped)
         golden_wo_note, golden_note = _strip_note_text(golden_text)
@@ -283,7 +323,9 @@ class TestGoldenByteIdentity:
         convention-B contract: no leaf removed, one leaf altered (the note suffix), the added leaves with these keys, types and values."""
         p, _ = reports[mode]
         golden = yaml.safe_load(GOLDEN[mode].read_text())
-        new = dict(_walk(_without_metadata(p))); old = dict(_walk(golden))
+        # issue #14: the sparse/dense SOL blocks and the resolver record are stripped first (their own byte-identity and
+        # key-set assertions live in test_additions_are_byte_identical_to_the_golden / test_top_level_key_sets)
+        new = dict(_walk(_without_issue14(_without_metadata(p)))); old = dict(_walk(golden))
         assert set(old) - set(new) == set(), "a pre-existing leaf disappeared"
         assert {k for k in set(new) & set(old) if new[k] != old[k] or type(new[k]) is not type(old[k])} == {NOTE_PATH}
         added = set(new) - set(old)
