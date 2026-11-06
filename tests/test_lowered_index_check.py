@@ -450,7 +450,7 @@ def _fresh_kernel(body):
 # index IS float -- the corrected record is the one kept here.  Columns:
 # name, body, expected_float (Numba rejects a float64 index), and the value
 # Numba returned for X = arange(4.0) when it compiled (reviewer's record).
-# `uint64_bool_min` is kept apart below: Numba rejects that `min()` itself.
+# `uint64_bool_min` is kept apart below: Numba < 0.68 rejects that `min()` itself, Numba >= 0.68 types it uint64.
 # ---------------------------------------------------------------------------
 
 REVIEW6_CASES = [
@@ -518,21 +518,55 @@ def test_review6_controls_static_verdict(name, body, expected_float, expected_va
         assert bool(findings) == expected_float, (name, [f.reason for f in findings])
 
 
-def test_review6_uint64_bool_min_is_reported_from_the_unification_model():
-    # Numba rejects `min(uint64, bool)` outright (no overload), so there is no
-    # index typing to agree with; the checker reports its uint64/int64 model.
-    findings = check_lowered_source(_fresh_kernel(REVIEW6_UINT64_BOOL_MIN))
-    assert len(findings) == 1 and 'uint64' in findings[0].reason
+REVIEW6_UINT64_BOOL_IFEXP = 'j = np.uint64(1) if flag else True\nreturn X[j]'
+REVIEW6_UINT64_INT64_MIN = 'j = min(np.uint64(1), np.int64(3))\nreturn X[j]'
+
+
+def test_review6_uint64_bool_unifies_to_uint64_in_the_unification_model():
+    # Numba's unify(uint64, boolean) is uint64 (checked on 0.61.2 and 0.68.1): a bool operand never
+    # triggers the uint64/int64 -> float64 rule, only a SIGNED int64 operand does.  The checker is a
+    # proof-of-float-ness diagnostic, so it must stay silent on the bool pairings (min, max and the
+    # conditional expression alike) and keep reporting the signed pairing.
+    for body in (REVIEW6_UINT64_BOOL_MIN, REVIEW6_UINT64_BOOL_MIN.replace('min', 'max'), REVIEW6_UINT64_BOOL_IFEXP):
+        assert check_lowered_source(_fresh_kernel(body)) == [], body
+    findings = check_lowered_source(_fresh_kernel(REVIEW6_UINT64_INT64_MIN))
+    assert len(findings) == 1 and 'uint64' in findings[0].reason and 'float64' in findings[0].reason
 
 
 @pytest.mark.skipif(not HAS_NUMBA, reason="numba not installed")
-def test_review6_uint64_bool_min_numba_rejects_the_min_call_itself():
+def test_review6_uint64_bool_min_numba_never_types_a_float_index():
+    # Policy witness independent of Numba's overload set: numba < 0.68 has no min()/max() overload for a
+    # Boolean operand and rejects the CALL (message names `min`/`max`, never a float getitem); numba >= 0.68
+    # (`ol_min` accepts types.Boolean) compiles it with a uint64 index, so X[min(np.uint64(1), True)] is
+    # X[1].  In neither release does a float64 index exist, and the checker reports none.
     import numba
+    sig = (numba.types.Array(numba.float64, 1, 'C'), numba.float64, numba.boolean)
+    X = np.arange(4, dtype=np.float64)
+    for body in (REVIEW6_UINT64_BOOL_MIN, REVIEW6_UINT64_BOOL_MIN.replace('min', 'max')):
+        env = {}
+        exec(compile(_fresh_kernel(body), '<reviewer-uint64_bool_minmax>', 'exec'), env)
+        fn = env['probe']
+        try:
+            fn.compile(sig)
+        except numba.core.errors.TypingError as exc:
+            msg = str(exc)
+            assert ('min' in msg or 'max' in msg) and 'getitem' not in msg and 'float' not in msg, msg
+        else:
+            assert float(fn(X, 1.75, True)) == 1.0
+        assert check_lowered_source(_fresh_kernel(body)) == [], body
+    # the conditional-expression form compiles on every release (unify(uint64, boolean) == uint64)
     env = {}
-    exec(compile(_fresh_kernel(REVIEW6_UINT64_BOOL_MIN), '<reviewer-uint64_bool_min>', 'exec'), env)
+    exec(compile(_fresh_kernel(REVIEW6_UINT64_BOOL_IFEXP), '<reviewer-uint64_bool_ifexp>', 'exec'), env)
+    env['probe'].compile(sig)
+    assert float(env['probe'](X, 1.75, True)) == 1.0 and float(env['probe'](X, 1.75, False)) == 1.0
+    assert check_lowered_source(_fresh_kernel(REVIEW6_UINT64_BOOL_IFEXP)) == []
+    # the SIGNED pairing is the real rule on every release: Numba rejects the float index, the checker reports it
+    env = {}
+    exec(compile(_fresh_kernel(REVIEW6_UINT64_INT64_MIN), '<reviewer-uint64_int64_min>', 'exec'), env)
     with pytest.raises(numba.core.errors.TypingError) as info:
-        env['probe'].compile((numba.types.Array(numba.float64, 1, 'C'), numba.float64, numba.boolean))
-    assert 'min' in str(info.value) and 'getitem' not in str(info.value)
+        env['probe'].compile(sig)
+    assert 'getitem' in str(info.value) and 'float' in str(info.value)
+    assert len(check_lowered_source(_fresh_kernel(REVIEW6_UINT64_INT64_MIN))) == 1
 
 
 @pytest.mark.skipif(not HAS_NUMBA, reason="numba not installed")

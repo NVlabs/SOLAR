@@ -86,6 +86,8 @@ _INT_CASTS = {"int", "np.intp", "np.int64", "np.int32", "np.int16", "np.int8",
 # Only 64-bit unsigned values hit Numba's unify(uint64, int64) -> float64
 # rule; uint8/16/32 unify with int64 to int64 and with uint64 to uint64, so
 # they keep their own kinds (never collapsed to "int", an earlier fix P2-2).
+# A bool unifies with any integer kind to that kind (unify(uint64, boolean)
+# is uint64), so it never makes the pair float.
 _UINT_CASTS = {"np.uint64", "np.uintp", "numba.uintp", "numba.uint64"}
 _NARROW_UINT_CASTS = {"np.uint32": "uint32", "np.uint16": "uint16", "np.uint8": "uint8",
                       "numba.uint32": "uint32", "numba.uint16": "uint16", "numba.uint8": "uint8"}
@@ -154,21 +156,25 @@ def _unify(kinds: List[Kind], what: str) -> Kind:
             return ("float", f"{what} has a float64 operand: {k[1]}")
     if None in tags:
         return _UNKNOWN
-    if "uint" in tags and ("int" in tags or "bool" in tags):
+    if "uint" in tags and "int" in tags:
         u = next(k for k in kinds if k[0] == "uint")
-        s = next(k for k in kinds if k[0] in ("int", "bool"))
+        s = next(k for k in kinds if k[0] == "int")
         return ("float", f"{what} unifies uint64 with int64 to float64 "
                          f"({u[1]}; {s[1]})")
     if "uint" in tags:
-        # uint64 with narrower unsigned operands stays uint64 (Numba:
-        # (uint64, uint32) -> uint64)
+        # uint64 with bool or narrower unsigned operands stays uint64 (Numba:
+        # (uint64, uint32) -> uint64, (uint64, boolean) -> uint64; a bool
+        # never triggers the signed rule -- checked on numba 0.61 and 0.68)
         return ("uint", f"{what} of uint64 operands")
-    if "int" in tags or "bool" in tags:
-        # narrower unsigned with a signed int64 unifies to int64
+    if "int" in tags:
+        # bool or narrower unsigned with a signed int64 unifies to int64
         return ("int", f"{what} of int64 operands")
-    # only narrow unsigned kinds: the widest of them
-    widest = max(tags, key=lambda t: int(t[4:]))
-    return (widest, f"{what} of {widest} operands")
+    narrow = [t for t in tags if t in _NARROW_UINT_KINDS]
+    if narrow:
+        # narrow unsigned kinds (with or without bool): the widest of them
+        widest = max(narrow, key=lambda t: int(t[4:]))
+        return (widest, f"{what} of {widest} operands")
+    return ("bool", f"{what} of bool operands")
 
 
 class _KernelTyper:
