@@ -29,6 +29,7 @@ DATASHEET_FP32_TFLOPS = {
     "L40S": (91.6, "NVIDIA L40S datasheet: 91.6 TFLOPS FP32"),
     "A6000": (38.71, "NVIDIA RTX A6000 datasheet: 38.7 TFLOPS FP32 (10,752 CUDA cores x 2 x 1.8 GHz = 38.71)"),
     "B200": (75.0, "NVIDIA HGX B200 datasheet: FP32 600 TFLOPS per 8 GPUs = 75 per GPU (issue #14 re-basing)"),
+    "B300_SXM": (75.0, "NVIDIA Blackwell Ultra datasheet, HGX B300 per-GPU column: FP32 75 TFLOPS (issue #12)"),
     # issue #14: Jetson previously stored the FLOP rate (9,554 = 15e12 / 1.57e9, encoding 30 TFLOPS) and was pinned here as a
     # strict expected failure; the file now stores MACs (4,777) and the check passes like every other arch.
     "Jetson_Thor_T5000": (15.0, "NVIDIA Jetson AGX Thor specification: 15 TFLOPS FP32 (CUDA cores)"),
@@ -138,3 +139,47 @@ def test_historically_sparse_files_keep_their_provenance_note(arch):
 def test_every_arch_yaml_is_covered_or_declared():
     names = {p.stem for p in ARCH_DIR.glob("*.yaml")}
     assert names == set(DATASHEET_FP32_TFLOPS), names
+
+
+# B300_SXM (issue #12): per tensor-core precision, (dense, sparse) peak as published for one HGX B300 GPU, nominal 1.5 GHz.
+# Sources: NVIDIA Blackwell Ultra datasheet / Blackwell Technical Brief Table 3 (per GPU) and the nvidia.com HGX B300 column
+# (per 8 GPUs, / 8): FP4 108/144 PFLOPS, FP8 72 (sparse), FP16/BF16 36 (sparse), TF32 18 (sparse); INT8 307 TOPS (sparse) per GPU.
+B300_SXM_PEAKS = {
+    "tf32": (1125.0, 2250.0),
+    "fp16": (2250.0, 4500.0),
+    "bf16": (2250.0, 4500.0),
+    "fp8": (4500.0, 9000.0),
+    "int8": (153.5, 307.0),
+    "nvfp4": (13500.0, 18000.0),
+    "fp64": (1.2, 1.2),
+}
+
+
+@pytest.mark.parametrize("precision", sorted(B300_SXM_PEAKS))
+@pytest.mark.parametrize("kind", ["dense", "sparse"])
+def test_b300_sxm_rates_match_the_sourced_peaks(precision, kind):
+    cfg = _load("B300_SXM")
+    assert cfg["name"] == "B300_SXM" and cfg["freq_GHz"] == 1.5
+    dense, sparse = B300_SXM_PEAKS[precision]
+    peak = dense if kind == "dense" else sparse
+    assert cfg[f"peak_TFLOPS_{precision}_{kind}"] == peak
+    expected = peak * 1000.0 / 2.0 / 1.5
+    got = cfg[f"MAC_per_cycle_{precision}_tc_{kind}"]
+    assert abs(got - expected) / expected <= 1e-3, f"{precision} {kind}: {got} vs {expected}"
+
+
+def test_b300_sxm_memory_and_scope():
+    cfg = _load("B300_SXM")
+    assert abs(cfg["DRAM_byte_per_cycle"] * cfg["freq_GHz"] - 7700.0) / 7700.0 <= 1e-3, "7.7 TB/s per GPU"
+    assert "SRAM_capacity" not in cfg, "no published L2/SRAM size"
+    assert not [k for k in cfg if k.startswith("MAC_per_cycle_fp32_tc")]
+    # INT8 is far below FP8 on Blackwell Ultra (dropped earlier file priced it at the FP8 rate)
+    assert cfg["peak_TFLOPS_int8_sparse"] < cfg["peak_TFLOPS_fp8_sparse"] / 20
+    assert cfg["peak_TFLOPS_fp64_dense"] < 2
+
+
+def test_b300_sxm_loads_through_the_perf_model_loader():
+    from solar.perf.perf_model import EinsumGraphPerfModel
+    cfg = EinsumGraphPerfModel()._load_arch_config("B300_SXM")
+    assert cfg["name"] == "B300_SXM"
+    assert cfg["MAC_per_cycle_fp16_tc_dense"] == 750000 and cfg["MAC_per_cycle_nvfp4_tc_sparse"] == 6000000

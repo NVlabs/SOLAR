@@ -34,6 +34,8 @@ brief, an HTML page or HTTP 403; its H100 SXM column matches the nvidia.com
 product page figure for figure, and it is the only fetched document that
 prints the H100 PCIe column.
 
+B300_SXM (issue #12) adds four captures fetched 2026-11-11 UTC: the nvidia.com HGX page (second capture, HGX B300 column), the nvidia.com DGX B300 page, the NVIDIA Blackwell Ultra Datasheet PDF and the NVIDIA Blackwell Architecture Technical Brief PDF (the two PDFs are served from NVIDIA's asset CDN, linked from nvidia.com). `figures_by_config.B300_SXM` records the printed figures and how the rounded per-GPU values were reconciled with the per-system figures.
+
 Sparse versus dense: vendor tables print tensor-core rates "with sparsity"
 (2:4 structured sparsity) or as `dense | sparse` pairs. SOLAR records both;
 the sparse figure is a lower bound that assumes 2:4 eligibility and the dense

@@ -1,0 +1,59 @@
+[SOLAR provenance excerpt: lines 837-899 of the pdftotext -layout (poppler) extract of the NVIDIA Blackwell Architecture Technical Brief PDF, Table 3 'System Specifications for HGX B300 and HGX B200', URL https://dam-cdn.nvd.orangelogic.com/AssetLink/gl2l4l4812s5fw0p614s6i8bv6mi3vx5.pdf, fetched 2026-11-11T00:00:58Z; full extract sha256 e65b03e80c6b4b00c7a8c57f054aa3f513ae9791e28bd472d6d547fc84ae43c4 (1126 lines, retained privately by the release lane); raw document sha256 df58a797c6bc4236b1877b634fe31ff8da4c82fff289605adfb5aaca424aec69. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+Table 3.       System Specifications for HGX B300 and HGX B200
+
+                                  HGX B300                              HGX B200
+
+                                              Per Server Specs Below
+
+ Blackwell GPUs        16 Blackwell Ultra Die for 8 GPUs     16 Blackwell Die for 8 GPUs
+
+ FP4 Tensor Core             108/144 petaFLOPS                   72/144 petaFLOPS
+ Dense/Sparse
+
+ FP8/FP6 Tensor Core          36/72 petaFLOPS                     36/72 petaFLOPS
+ Dense/Sparse
+
+ Fast Memory                        2.1 TB                             Up to 1.4 TB
+
+ Aggregate Memory                  62 TB/s                             Up to 62 TB/s
+ Bandwidth
+
+ Aggregate NVLink                 14.4 TB/s                              14.4 TB/s
+ Switch Bandwidth
+
+                                               Per GPU Specs Below
+
+ FP4 Tensor Core              14/18 petaFLOPS                        9/18 petaFLOPS
+ Dense/Sparse
+
+ FP8/FP6 Tensor Core           4.5/9 petaFLOPS                    4.5/9 petaFLOPS
+ Dense/Sparse
+
+ INT8 Tensor Core            0.15/ 0.30 petaOPS                      4.5/9 petaOPS
+ Dense/Sparse
+
+                                                                                                      25
+NVIDIA Blackwell Architecture Technical Brief
+                                                                           NVIDIA Blackwell HGX
+
+ FP16/BF16 Tensor            2.2/4.5 petaFLOPS             2.2/4.5 petaFLOPS
+ Core
+ Dense/Sparse
+
+ TF32 Tensor Core            1.1/2.2 petaFLOPS             1.1/2.2 petaFLOPS
+ Dense/Sparse
+
+ FP32                          75 teraFLOPS                  75 teraFLOPS
+
+ FP64 Tensor Core |            1.2 teraFLOPS                 37 teraFLOPS
+ FP64
+
+ GPU memory |             270 GB HBM3e | 7.7 TB/s     Up to 192 GB HBM3e | 7.7 TB/s
+ Bandwidth
+
+ Max thermal design               1100 W                         1000W
+ power (TDP)
+
+ Interconnect                    NVLink 5                       NVLink 5
+                                PCIe Gen6                      PCIe Gen5

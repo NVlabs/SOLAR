@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# NVIDIA B300 (Blackwell Ultra, one SXM GPU of an HGX B300 8-GPU system).  GitHub issue #12.
+#
+# Same schema as B200.yaml (issue #14): every tensor-core precision <p> carries BOTH vendor peaks and the two derived rates
+#   peak_TFLOPS_<p>_dense / peak_TFLOPS_<p>_sparse        (TFLOPS; TOPS for integer types; PFLOPS x 1000)
+#   MAC_per_cycle_<p>_tc_dense / MAC_per_cycle_<p>_tc_sparse = peak x 1e12 / 2 FLOP per MAC / (freq_GHz x 1e9)
+#                                                          = peak_TFLOPS x 1000 / 2 / freq_GHz
+# MAC_per_cycle_* are MACs per cycle, not FLOPs (one FMA = one MAC = two FLOPs); freq_GHz is a nominal
+# conversion clock.  `--sol-mode` (default sparse) selects the set the headline SOL is priced at: the sparse
+# SOL ASSUMES the workload is eligible for the 2:4 structured-sparsity tensor-core rate (a lower bound dense
+# kernels cannot reach); the dense SOL is the realistic bound for dense work.  Both are always written.
+# No sparse figure is published for FP32 (CUDA cores) or FP64, so sparse == dense there.  No fp32 tensor-core
+# key: fp32 uses the SM rate.  No SRAM_capacity / L2 figure: NVIDIA publishes no L2 size for this part.
+#
+# Note on INT8: the published Blackwell Ultra INT8 tensor-core rate (307 sparse TOPS per GPU) is far below its FP8
+# rate (9000 sparse TFLOPS) and below B200's INT8 rate (9000 sparse TOPS); it is NOT the FP8 rate.
+#
+# source: NVIDIA-published documents below (captured under sources/arch_datasheets/, SOURCES.json: URL, fetch date, sha256):
+#   [D] NVIDIA Blackwell Ultra Datasheet, "Individual Blackwell Ultra GPU Specifications", HGX B300 column:
+#       https://resources.nvidia.com/en-us-blackwell-architecture/blackwell-ultra-datasheet
+#       (FP4 TC "18 PFLOPS | 14 PFLOPS"; FP8/FP6 TC "9 PFLOPS"; INT8 TC "307 TOPS"; FP16/BF16 TC "4.5 PFLOPS";
+#        TF32 TC "2.2 PFLOPS"; FP32 "75 TFLOPS"; FP64/FP64 TC "1.2 TFLOPS"; "270 GB HBM3E | 7.7 TB/s";
+#        footnotes "1. Specification in Sparse | Dense", "2. Specification in sparse. Dense is 1/2 sparse spec shown")
+#   [T] NVIDIA Blackwell Architecture Technical Brief, Table 3 (HGX B300 per-GPU: FP4 "14/18" dense/sparse,
+#       FP8 "4.5/9", INT8 "0.15/0.30 petaOPS", FP16/BF16 "2.2/4.5", TF32 "1.1/2.2", FP32 75, FP64 1.2, "270 GB HBM3e | 7.7 TB/s")
+#   [H] NVIDIA HGX platform page / DGX B300 page, HGX B300 column, per 8 GPUs: https://www.nvidia.com/en-us/data-center/hgx/
+#       ("FP4 144 PFLOPS | 108 PFLOPS"; "FP8/FP6 72 PFLOPS"; "FP16/BF16 36 PFLOPS"; "TF32 18 PFLOPS"; "FP32 600 TFLOPS";
+#        "Total Memory 2.1 TB"); https://www.nvidia.com/en-us/data-center/dgx-b300/
+# Where the per-GPU datasheet rounds a figure, the exact value is the [H] system figure / 8 (FP4 dense 108/8 = 13.5 PFLOPS,
+# printed "14"; TF32 sparse 18/8 = 2.25 PFLOPS, printed "2.2"; FP16/BF16 36/8 = 4.5 PFLOPS).  Units: FP16 dense =
+# 36 PFLOPS / 8 GPUs / 2 = 2250 TFLOPS -> 2250 x 1000 / 2 / 1.5 = 750000 MAC/cycle.
+
+name: "B300_SXM"
+DRAM_capacity: 289910292480  # source [D]/[T]: "270 GB HBM3E" per GPU, taken as 270 x 2^30 bytes like B200.yaml's 180 GB; unused by the roofline
+DRAM_byte_per_cycle: 5133.3  # source [D]/[T]: "7.7 TB/s" per GPU; / 1.5 GHz = 5133.3
+freq_GHz: 1.5  # nominal conversion clock, same as B200.yaml; NVIDIA publishes no boost/base clock for this part, so this is a conversion constant, not a sourced clock (predicted runtimes depend only on the peaks)
+
+# CUDA-core (SM) FP32: no sparsity variant
+peak_TFLOPS_fp32_sm: 75  # source [D]/[T]/[H]: FP32 75 TFLOPS per GPU (600 TFLOPS per 8 GPUs)
+MAC_per_cycle_fp32_sm: 25000  # = 75 x 1000 / 2 / 1.5
+
+# TF32 Tensor Core
+peak_TFLOPS_tf32_dense: 1125  # source [T] "1.1" (rounded); exact = [H] TF32 18 PFLOPS per 8 GPUs sparse -> 2250 per GPU, dense = half
+peak_TFLOPS_tf32_sparse: 2250  # source [H]: TF32 Tensor Core 18 PFLOPS per 8 GPUs (specification in sparse); [D] prints 2.2 (rounded)
+MAC_per_cycle_tf32_tc_dense: 375000  # = 1125 x 1000 / 2 / 1.5
+MAC_per_cycle_tf32_tc_sparse: 750000  # = 2250 x 1000 / 2 / 1.5
+
+# FP16 Tensor Core
+peak_TFLOPS_fp16_dense: 2250  # source [H]: FP16/BF16 Tensor Core 36 PFLOPS per 8 GPUs sparse -> 4500 per GPU sparse, dense = half; [T] 2.2 (rounded)
+peak_TFLOPS_fp16_sparse: 4500  # source [D]/[H]: FP16/BF16 Tensor Core 4.5 PFLOPS per GPU (36 PFLOPS per 8 GPUs), specification in sparse
+MAC_per_cycle_fp16_tc_dense: 750000  # = 2250 x 1000 / 2 / 1.5
+MAC_per_cycle_fp16_tc_sparse: 1500000  # = 4500 x 1000 / 2 / 1.5
+
+# BF16 Tensor Core (same row as FP16 in the datasheet)
+peak_TFLOPS_bf16_dense: 2250  # source [H]: FP16/BF16 Tensor Core 36 PFLOPS per 8 GPUs, sparse -> dense = half
+peak_TFLOPS_bf16_sparse: 4500  # source [D]/[H]: FP16/BF16 Tensor Core 4.5 PFLOPS per GPU, specification in sparse
+MAC_per_cycle_bf16_tc_dense: 750000  # = 2250 x 1000 / 2 / 1.5
+MAC_per_cycle_bf16_tc_sparse: 1500000  # = 4500 x 1000 / 2 / 1.5
+
+# FP8 Tensor Core
+peak_TFLOPS_fp8_dense: 4500  # source [T]: FP8/FP6 Tensor Core "4.5/9 petaFLOPS" dense/sparse; [D] 9 PFLOPS in sparse, dense = half
+peak_TFLOPS_fp8_sparse: 9000  # source [D]/[H]: FP8/FP6 Tensor Core 9 PFLOPS per GPU (72 PFLOPS per 8 GPUs), specification in sparse
+MAC_per_cycle_fp8_tc_dense: 1500000  # = 4500 x 1000 / 2 / 1.5
+MAC_per_cycle_fp8_tc_sparse: 3000000  # = 9000 x 1000 / 2 / 1.5
+
+# INT8 Tensor Core (TOPS).  Per-GPU figure from [D]/[T]; the per-system "3 POPS" on the HGX page is a coarse rounding
+# (3 POPS / 8 = 375 TOPS does not match the per-GPU 307 TOPS) and is not used.
+peak_TFLOPS_int8_dense: 153.5  # source [D]: INT8 Tensor Core 307 TOPS per GPU in sparse, dense = half; [T] "0.15/0.30 petaOPS"
+peak_TFLOPS_int8_sparse: 307  # source [D]: INT8 Tensor Core 307 TOPS per GPU (specification in sparse)
+MAC_per_cycle_int8_tc_dense: 51166.7  # = 153.5 x 1000 / 2 / 1.5 (51166.67)
+MAC_per_cycle_int8_tc_sparse: 102333.3  # = 307 x 1000 / 2 / 1.5 (102333.33)
+
+# FP4 Tensor Core (NVFP4)
+peak_TFLOPS_nvfp4_dense: 13500  # source [H]: FP4 Tensor Core "144 PFLOPS | 108 PFLOPS" per 8 GPUs (sparse | dense) -> 13.5 PFLOPS per GPU; [D]/[T] print it rounded as 14
+peak_TFLOPS_nvfp4_sparse: 18000  # source [D]/[T]/[H]: FP4 Tensor Core 18 PFLOPS per GPU sparse (144 PFLOPS per 8 GPUs)
+MAC_per_cycle_nvfp4_tc_dense: 4500000  # = 13500 x 1000 / 2 / 1.5
+MAC_per_cycle_nvfp4_tc_sparse: 6000000  # = 18000 x 1000 / 2 / 1.5
+
+# FP64 Tensor Core: the vendor publishes no sparse rate, sparse == dense.  [D]/[T] print 1.2 TFLOPS per GPU
+# ([H] "10 TFLOPS" per 8 GPUs is coarser: 10 / 8 = 1.25).
+peak_TFLOPS_fp64_dense: 1.2  # source [D]/[T]: FP64/FP64 Tensor Core 1.2 TFLOPS per GPU (no sparsity figure)
+peak_TFLOPS_fp64_sparse: 1.2  # = dense (no sparse FP64 rate is published)
+MAC_per_cycle_fp64_tc_dense: 400  # = 1.2 x 1000 / 2 / 1.5
+MAC_per_cycle_fp64_tc_sparse: 400  # = dense

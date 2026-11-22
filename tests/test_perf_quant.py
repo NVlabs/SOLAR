@@ -396,16 +396,24 @@ class TestPerfPrecisions:
         )
         self.analysis_path = analysis_dir / "analysis.yaml"
 
-    def _predict(self, precision):
-        perf_dir = self.tmp_path / f"perf_{precision}"
+    def _predict(self, precision, arch_config="B200"):
+        perf_dir = self.tmp_path / f"perf_{arch_config}_{precision}"
         perf_dir.mkdir(exist_ok=True)
         model = EinsumGraphPerfModel()
         perf = model.predict(
             str(self.analysis_path), str(perf_dir),
-            arch_config="B200", precision=precision,
+            arch_config=arch_config, precision=precision,
         )
         assert perf is not None, f"Predict failed for precision={precision}"
         return perf
+
+    def test_b300_sxm_precision_ordering_and_rates(self):
+        """GitHub issue #12: B300_SXM loads by name and resolves per-precision tensor-core rates (sparse default)."""
+        perfs = {p: self._predict(p, "B300_SXM") for p in ("fp32", "fp16", "fp8", "nvfp4")}
+        macs = {p: v["arch"]["MAC_per_cycle"] for p, v in perfs.items()}
+        assert macs["fp16"] == 1500000 and macs["fp8"] == 3000000 and macs["nvfp4"] == 6000000
+        assert macs["fp32"] < macs["fp16"] < macs["fp8"] < macs["nvfp4"]
+        assert perfs["fp16"]["arch"]["mac_per_cycle_key"] == "MAC_per_cycle_fp16_tc"
 
     def test_fp32_uses_sm_key(self):
         """fp32 should fall back to fp32_tc (or fp32_sm) key."""

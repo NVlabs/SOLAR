@@ -226,7 +226,7 @@ python3 -m pytest tests/test_learned_param_matmul.py \
 │   └── cli/          # console scripts (solar-*) and python -m solar.cli.<name> entry points
 ├── skills/           # vendor-neutral coding-agent skills (symlinked from .claude/ and .agents/)
 ├── scripts/          # verify_saved_ir.py, trace_saved_ir.py, diff_ir_stages.py, gen_solexecbench_adapter.py
-├── configs/arch/     # A6000, B200, H100_PCIe, H100_SXM, H200_SXM, L40S, Jetson_Thor_T5000 (dense + sparse peaks per precision; README.md there)
+├── configs/arch/     # A6000, B200, B300_SXM, H100_PCIe, H100_SXM, H200_SXM, L40S, Jetson_Thor_T5000 (dense + sparse peaks per precision; README.md there)
 ├── patches/          # torchview patches applied by install.sh
 ├── examples/, examples_jax/   # pytorch examples; jax fixtures
 └── tests/

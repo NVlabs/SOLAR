@@ -399,6 +399,126 @@
    "excerpt_lines": 5,
    "document_author": "NVIDIA Corporation",
    "host": "developer.nvidia.com"
+  },
+  {
+   "id": "hgx_page_b300",
+   "url": "https://www.nvidia.com/en-us/data-center/hgx/",
+   "url_effective": "https://www.nvidia.com/en-us/data-center/hgx/",
+   "http_status": "200",
+   "content_type": "text/html",
+   "fetched_utc": "2026-11-11T00:00:31Z",
+   "raw_bytes": 331233,
+   "raw_sha256": "b3d67d03629b55a4d9991c4c40496fb1b30b0c92634a5f7c76aa90322c6d51e9",
+   "kind": "html",
+   "extract_file": "hgx_b300_page.txt",
+   "extract_sha256": "4d6a7f065af1922a0cb253c2db82dec9486ecd1d73fdf2c3f5a992442d4e226b",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "95ae28889c9f0f48bbfe80065ed74bf7bf36bd7a08e8cb1f4964a16aa7d6464d",
+    "lines": 601,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     424,
+     482
+    ]
+   ],
+   "excerpt_lines": 53,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "dgx_b300_page",
+   "url": "https://www.nvidia.com/en-us/data-center/dgx-b300/",
+   "url_effective": "https://www.nvidia.com/en-us/data-center/dgx-b300/",
+   "http_status": "200",
+   "content_type": "text/html",
+   "fetched_utc": "2026-11-11T00:00:40Z",
+   "raw_bytes": 553236,
+   "raw_sha256": "422eaf06ec89579831678fe55f8a21cd976d15d22ebd118a08dd367ad9d01524",
+   "kind": "html",
+   "extract_file": "dgx_b300_page.txt",
+   "extract_sha256": "196d70e64088c347b4f37cbb9bf98966321a39240826829cdefa41d003ed96d9",
+   "full_extract": {
+    "how": "HTML tag-stripped text",
+    "sha256": "523af8688111c52d2f90ba1576c9dc078a1395c8d02be0ea9ae1030150b1bd13",
+    "lines": 876,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     346,
+     357
+    ],
+    [
+     382,
+     383
+    ]
+   ],
+   "excerpt_lines": 16,
+   "document_author": "NVIDIA Corporation",
+   "host": "nvidia.com"
+  },
+  {
+   "id": "blackwell_ultra_datasheet_pdf",
+   "url": "https://dam-cdn.nvd.orangelogic.com/AssetLink/1k0p832eq8r5ca0u5383ie5o4tp3bst1.pdf",
+   "url_effective": "https://dam-cdn.nvd.orangelogic.com/AssetLink/1k0p832eq8r5ca0u5383ie5o4tp3bst1.pdf",
+   "http_status": "200",
+   "content_type": "application/pdf",
+   "fetched_utc": "2026-11-11T00:00:55Z",
+   "raw_bytes": 438824,
+   "raw_sha256": "ccdffc064731cc160016f4c7a77ecfa37983038bcaf60e39190ba4175b39c7c8",
+   "kind": "pdf",
+   "extract_file": "blackwell_ultra_datasheet_pdf.txt",
+   "extract_sha256": "8cf4944a2e52f323202d689547c91aeb8cc423092d8d98e859cbca7bbebdce26",
+   "full_extract": {
+    "how": "pdftotext -layout (poppler)",
+    "sha256": "3edae0cf3d504694c13990f6893993961ee9f25b53dac821fca2d417a888a2b1",
+    "lines": 370,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     238,
+     289
+    ]
+   ],
+   "excerpt_lines": 54,
+   "document_author": "NVIDIA Corporation",
+   "host": "dam-cdn.nvd.orangelogic.com (NVIDIA DAM CDN, link from nvidia.com)"
+  },
+  {
+   "id": "blackwell_arch_tech_brief_pdf",
+   "url": "https://dam-cdn.nvd.orangelogic.com/AssetLink/gl2l4l4812s5fw0p614s6i8bv6mi3vx5.pdf",
+   "url_effective": "https://dam-cdn.nvd.orangelogic.com/AssetLink/gl2l4l4812s5fw0p614s6i8bv6mi3vx5.pdf",
+   "http_status": "200",
+   "content_type": "application/pdf",
+   "fetched_utc": "2026-11-11T00:00:58Z",
+   "raw_bytes": 1268171,
+   "raw_sha256": "df58a797c6bc4236b1877b634fe31ff8da4c82fff289605adfb5aaca424aec69",
+   "kind": "pdf",
+   "extract_file": "blackwell_arch_tech_brief_pdf.txt",
+   "extract_sha256": "4a7bd3dd667413e712d43e2837fa375125dfa79e7702faecde0269ce8b63f224",
+   "full_extract": {
+    "how": "pdftotext -layout (poppler)",
+    "sha256": "e65b03e80c6b4b00c7a8c57f054aa3f513ae9791e28bd472d6d547fc84ae43c4",
+    "lines": 1126,
+    "retained": "privately by the release lane (not in the repository)"
+   },
+   "extract_kind": "public_excerpt",
+   "excerpt_of_full_extract_lines": [
+    [
+     837,
+     899
+    ]
+   ],
+   "excerpt_lines": 59,
+   "document_author": "NVIDIA Corporation",
+   "host": "dam-cdn.nvd.orangelogic.com (NVIDIA DAM CDN, link from nvidia.com)"
   }
  ],
  "figures_by_config": {
@@ -559,6 +679,38 @@
     "the module data sheet note 'FP8 TFLOPs is equivalent to INT8 TOPs' (relayed by the maintainers; data sheet not fetchable)"
    ],
    "gap": "Jetson AGX Thor Series Module Data Sheet: jetson_thor_datasheet HTTP 404; jetson_thor_ds_alt returned a 3 KB HTML footer page (no document); jetson_thor_devkit_page HTTP 404"
+  },
+  "B300_SXM": {
+   "capture": [
+    "blackwell_ultra_datasheet_pdf",
+    "blackwell_arch_tech_brief_pdf",
+    "hgx_page_b300",
+    "dgx_b300_page"
+   ],
+   "column": "HGX B300 (per-GPU column of the Blackwell Ultra datasheet and Blackwell Technical Brief Table 3; per-8-GPU system column of the HGX / DGX B300 pages, per-GPU = / 8)",
+   "printed": {
+    "datasheet per GPU: FP4 Tensor Core(1)": "18 PFLOPS | 14 PFLOPS",
+    "datasheet per GPU: FP8/FP6 Tensor Core(2)": "9 PFLOPS",
+    "datasheet per GPU: INT8 Tensor Core(2)": "307 TOPS",
+    "datasheet per GPU: FP16/BF16 Tensor Core(2)": "4.5 PLFOPS (sic)",
+    "datasheet per GPU: TF32 Tensor Core(2)": "2.2 PFLOPS",
+    "datasheet per GPU: FP32": "75 TFLOPS",
+    "datasheet per GPU: FP64/FP64 Tensor Core": "1.2 TFLOPS",
+    "datasheet per GPU: GPU Memory | Bandwidth": "270 GB HBM3E | 7.7 TB/s",
+    "tech brief Table 3 per GPU (dense/sparse)": "FP4 14/18; FP8/FP6 4.5/9; INT8 0.15/0.30 petaOPS; FP16/BF16 2.2/4.5; TF32 1.1/2.2; FP32 75; FP64 1.2 (petaFLOPS / teraFLOPS)",
+    "HGX page per 8 GPUs": "FP4 144 PFLOPS | 108 PFLOPS; FP8/FP6 72 PFLOPS; INT8 3 POPS; FP16/BF16 36 PFLOPS; TF32 18 PFLOPS; FP32 600 TFLOPS; FP64/FP64 Tensor Core 10 TFLOPS; Total Memory 2.1 TB",
+    "DGX B300 page per 8 GPUs": "Total GPU Memory 2.1 TB; FP4 144 PFLOPS | 108 PFLOPS; FP8 72 PFLOPS"
+   },
+   "footnote": "1. Specification in Sparse | Dense; 2. Specification in sparse. Dense is 1/2 sparse spec shown.",
+   "dense_rule": "sparse = published sparse figure; dense = sparse / 2 (FP4 dense printed); where the per-GPU datasheet rounds, the exact value is the system figure / 8 (FP4 dense 13.5 PFLOPS, TF32 sparse 2250 TFLOPS)",
+   "disagreements_resolved": {
+    "FP4 dense": "per-GPU datasheet and tech brief print 14 PFLOPS (rounded); HGX page 108 PFLOPS / 8 = 13.5 PFLOPS is used: 13500 TFLOPS",
+    "INT8": "HGX page per-system 3 POPS / 8 = 375 TOPS is inconsistent with the per-GPU datasheet 307 TOPS (and tech brief 0.15/0.30 petaOPS); per-GPU 307 sparse / 153.5 dense used",
+    "FP64": "per-GPU datasheet 1.2 TFLOPS used; the HGX page prints 10 TFLOPS per system (10 / 8 = 1.25)",
+    "memory": "per-GPU 270 GB HBM3E (HGX B300) used; the datasheet prints 279 GB for the GB300 NVL72 GPU, the HGX page 2.1 TB per 8 GPUs",
+    "clock": "no document states a clock; freq_GHz 1.5 is a nominal conversion constant like B200"
+   },
+   "note": "issue #12; replaces the dropped earlier derived B300 file (not in this tree). No L2/SRAM figure is published, so no SRAM_capacity."
   }
  },
  "other_fetches_and_gaps": [

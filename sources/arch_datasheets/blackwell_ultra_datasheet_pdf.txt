@@ -1,0 +1,54 @@
+[SOLAR provenance excerpt: lines 238-289 of the pdftotext -layout (poppler) extract of the NVIDIA Blackwell Ultra Datasheet PDF (linked as 'Read the NVIDIA Blackwell Ultra Datasheet' from the nvidia.com HGX page via resources.nvidia.com/en-us-blackwell-architecture/blackwell-ultra-datasheet), 'Technical Specifications' table, GB300 NVL72 and HGX B300 columns, URL https://dam-cdn.nvd.orangelogic.com/AssetLink/1k0p832eq8r5ca0u5383ie5o4tp3bst1.pdf, fetched 2026-11-11T00:00:55Z; full extract sha256 3edae0cf3d504694c13990f6893993961ee9f25b53dac821fca2d417a888a2b1 (370 lines, retained privately by the release lane); raw document sha256 ccdffc064731cc160016f4c7a77ecfa37983038bcaf60e39190ba4175b39c7c8. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+ Technical Specifications
+
+                                                                                   GB300 NVL72                                      HGX B300
+
+ Blackwell Ultra GPUs | Grace CPUs                                                      72 | 36                                          8 | 0
+
+ CPU Cores                                                              2,592 Arm Neoverse V2 Cores                                         -
+
+ Total FP4 Tensor Core1                                                1,440 PFLOPS | 1,080 PFLOPS                          144 PFLOPS | 108 PFLOPS
+
+ Total FP8/FP6 Tensor Core2                                                         720 PFLOPS                                      72 PFLOPS
+
+ Total Fast Memory                                                                       37 TB                                           2.1 TB
+
+ Total Memory Bandwidth                                                                576 TB/s                                         62 TB/s
+
+ Total NVLink Switch Bandwidth                                                         130 TB/s                                         14.4 TB/s
+
+                                                                                           Individual Blackwell Ultra GPU Specifications
+
+ FP4 Tensor Core1                                                          20 PFLOPS | 15 PFLOPS                              18 PFLOPS | 14 PFLOPS
+
+ FP8/FP6 Tensor Core2                                                                10 PFLOPS                                       9 PFLOPS
+
+ INT8 Tensor Core2                                                                    330 TOPS                                       307 TOPS
+
+ FP16/BF16 Tensor Core2                                                               5 PFLOPS                                      4.5 PLFOPS
+
+ TF32 Tensor Core2                                                                   2.5 PFLOPS                                     2.2 PFLOPS
+
+ FP32                                                                                80 TFLOPS                                      75 TFLOPS
+
+ FP64/FP64 Tensor Core                                                               1.3 TFLOPS                                     1.2 TFLOPS
+
+ GPU Memory | Bandwidth                                                     279 GB HBM3E | 8 TB/s                            270 GB HBM3E | 7.7 TB/s
+
+ Multi-Instance GPU (MIG)                                                                                          7
+
+ Decompression Engine                                                                                             Yes
+
+ Decoders                                                                                                      7 NVDEC3
+                                                                                                               7 nvJPEG
+
+ Max Thermal Design Power (TDP)                                          Configurable up to 1,400 W                         Configurable up to 1,100 W
+
+ Interconnect                                                                                       Fifth-Generation NVLink: 1.8 TB/s
+                                                                                                          PCIe Gen6: 256 GB/s
+
+ Server Options                                                     NVIDIA GB300 NVL72 partner and                        NVIDIA HGX B300 partner and
+                                                                       NVIDIA-Certified Systems™                            NVIDIA-Certified Systems
+1. Specification in Sparse | Dense
+2. Specification in sparse. Dense is ½ sparse spec shown.

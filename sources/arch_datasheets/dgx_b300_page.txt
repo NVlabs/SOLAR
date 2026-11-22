@@ -1,0 +1,16 @@
+[SOLAR provenance excerpt: lines 346-357, 382-383 of the HTML tag-stripped text extract of the nvidia.com NVIDIA DGX B300 page, 'NVIDIA DGX B300 Specifications', URL https://www.nvidia.com/en-us/data-center/dgx-b300/, fetched 2026-11-11T00:00:40Z; full extract sha256 523af8688111c52d2f90ba1576c9dc078a1395c8d02be0ea9ae1030150b1bd13 (876 lines, retained privately by the release lane); raw document sha256 422eaf06ec89579831678fe55f8a21cd976d15d22ebd118a08dd367ad9d01524. Factual specification rows and footnotes only; text (c) NVIDIA Corporation, reproduced verbatim for citation, see README.md.]
+
+                NVIDIA DGX B300 Specifications
+GPUs
+8x NVIDIA Blackwell Ultra SXM
+CPU
+Intel® Xeon® 6776P Processors
+Total GPU Memory
+2.1 TB
+Performance
+FP4 Tensor Core: 144 PFLOPS | 108 PFLOPS*
+     FP8 Tensor Core: 72 PFLOPS**
+NVIDIA NVLink™ Switch System
+2x
+*Specification shown in sparse | dense
+       **Specification in sparse. Dense is ½ sparse spec shown.
